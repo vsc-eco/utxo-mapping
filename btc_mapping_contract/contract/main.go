@@ -22,6 +22,8 @@ import (
 	"fmt"
 
 	"contract-template/sdk"
+
+	"github.com/holiman/uint256"
 )
 
 func main() {
@@ -37,8 +39,15 @@ func MappingContract(incomingTx *string) *string {
 	proofHex := ""
 	instructions := ""
 	// panic("test")
-	mappingContract := mapping.NewMappingContract()
+	mappingContract := mapping.NewMappingContract("publickey")
 	mappingContract.HandleMap(&rawTxHex, &proofHex, &instructions)
 	fmt.Println(mappingContract)
 	return incomingTx
+}
+
+func UnmappingContract(tx *string) *string {
+	sdk.Log(*tx)
+
+	// derived from tx
+	amount := uint256.NewInt(0)
 }

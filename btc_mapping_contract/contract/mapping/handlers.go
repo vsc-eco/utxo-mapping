@@ -3,7 +3,6 @@ package mapping
 import (
 	"bytes"
 	"encoding/hex"
-	"errors"
 	"fmt"
 
 	"github.com/btcsuite/btcd/wire"
@@ -23,9 +22,9 @@ func (mc *MappingContract) HandleMap(rawTxHex *string, proofHex *string, instruc
 	if err != nil {
 		sdk.Abort(err.Error())
 	}
+	verifyProof(&proof)
 	// TODO: create from instruction string once format is known
-	instructionRawArray := []string{}
-	mc.instructions = mc.createInstructionObjects(&instructionRawArray)
+	mc.setInstructions(instructionsString)
 
 	var msgTx wire.MsgTx
 	err = msgTx.Deserialize(bytes.NewReader(rawTx))
@@ -33,32 +32,28 @@ func (mc *MappingContract) HandleMap(rawTxHex *string, proofHex *string, instruc
 		sdk.Abort(err.Error())
 	}
 
+	// gets all outputs the address of which is specified in the instructions
+	relevantOutputs := *mc.indexOutputs(&msgTx)
+
 	// create new utxos entries for all of the relevant outputs in the incoming transaction
-	for _, output := range tx.Outputs {
-		if internalAddress, ok := mc.getInternalAddressForBitcoinAddress(output.Address); ok {
+	for _, utxo := range relevantOutputs {
+		if internalAddress, ok := mc.getInternalAddressForBitcoinAddress(utxo.Address); ok {
 			// Create UTXO entry
-			utxoKey := fmt.Sprintf("%s:%d", tx.TxID, output.Index)
-			mc.utxos[utxoKey] = Utxo{
-				txID:    tx.TxID,
-				index:   output.Index,
-				address: output.Address,
-				amount:  output.Amount,
-			}
+			utxoKey := fmt.Sprintf("%s:%d", utxo.TxID, utxo.Vout)
+			mc.utxos[utxoKey] = utxo
+			mc.observedTxs[utxoKey] = true
 
 			balance := mc.balances[internalAddress]
-			balance.Add(&balance, &output.Amount)
+			balance.Add(&balance, &utxo.Amount)
 			mc.balances[internalAddress] = balance
 
-			totalMapped.Add(&totalMapped, &output.Amount)
+			totalMapped.Add(&totalMapped, &utxo.Amount)
 		}
 	}
 
-	// sum the total ouputs
-	if totalMapped.IsZero() {
-		return errors.New("no valid outputs found for mapping")
+	if !totalMapped.IsZero() {
+		mc.activeSupply.Add(&mc.activeSupply, &totalMapped)
 	}
-
-	mc.activeSupply.Add(&mc.activeSupply, &totalMapped)
 
 	return nil
 }
