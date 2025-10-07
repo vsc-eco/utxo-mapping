@@ -1,38 +1,48 @@
 package mapping
 
 import (
-	"contract-template/contract/utils"
-
-	"github.com/holiman/uint256"
+	"github.com/btcsuite/btcd/wire"
 )
 
-type accountInfo struct {
+type AccountInfo struct {
 	modifiedAt uint64 // hive block height
 	address    string // Caip10address (bitcoin address they can recieve funds at)
 }
 
-type utxo utils.Utxo
-
-type SignedUtxo struct {
-	utxo      utxo
-	signature string
+type Utxo struct {
+	txId      string // tx containing the output
+	vout      uint32
+	amount    int64
+	pkScript  []byte
+	confirmed bool
 }
 
-type instrutions struct {
+type SigningData struct {
+	Tx                 *wire.MsgTx
+	UnsignedSignHashes []UnsignedSigHash
+}
+
+type UnsignedSigHash struct {
+	index         int
+	sigHash       []byte
+	witnessScript []byte
+	amount        int64
+}
+
+type MappingInstrutions struct {
 	rawInstructions *[]string
-	addressType     utils.AddressType
 	addresses       map[string]bool
 }
 
-type MappingContract struct {
+type ContractState struct {
 	// change this
-	accountRegistry map[string]accountInfo // map[blockchainId]AccountInfo maps vsc did to account info
-	balances        map[string]uint256.Int
-	observedTxs     map[string]bool
-	utxos           map[string]utxo
-	utxoSpends      map[string]SignedUtxo
-	instructions    instrutions // map of addresses (created from instructions) to the original raw instruction
-	activeSupply    uint256.Int
-	baseFee         uint64
-	publicKey       string
+	accountRegistry  map[string]AccountInfo // map[blockchainId]AccountInfo maps vsc did to account info
+	addressTagLookup map[string]string      // map of addresses to the tags they were created with
+	balances         map[string]uint64
+	observedTxs      map[string]bool
+	utxos            map[string]Utxo
+	instructions     *MappingInstrutions
+	activeSupply     uint64
+	baseFeeRate      int64 // sats per byte
+	publicKey        string
 }

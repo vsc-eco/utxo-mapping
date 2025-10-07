@@ -1,31 +1,23 @@
 package mapping
 
-import (
-	"contract-template/contract/utils"
-
-	"github.com/holiman/uint256"
-)
-
-func NewMappingContract(publicKey string) *MappingContract {
-	return &MappingContract{
-		accountRegistry: make(map[string]accountInfo),
-		balances:        make(map[string]uint256.Int),
+func NewContractState(publicKey string) *ContractState {
+	return &ContractState{
+		accountRegistry: make(map[string]AccountInfo),
+		balances:        make(map[string]uint64),
 		observedTxs:     make(map[string]bool),
-		utxos:           make(map[string]utxo),
-		utxoSpends:      make(map[string]SignedUtxo),
-		activeSupply:    *uint256.NewInt(0),
-		baseFee:         0,
+		utxos:           make(map[string]Utxo),
+		activeSupply:    0,
+		baseFeeRate:     1,
 		publicKey:       publicKey,
 	}
 }
 
-func (mc *MappingContract) setInstructions(rawInstrucions *string) {
+func (cs *ContractState) setInstructions(rawInstrucions *string) {
 	// TODO: parse from the raw instructions once format is established
 	instrutionsArray := []string{}
 
-	mc.instructions = instrutions{
+	cs.instructions = &MappingInstrutions{
 		rawInstructions: &instrutionsArray,
-		addressType:     utils.P2WSH,
 		addresses:       make(map[string]bool),
 	}
 }

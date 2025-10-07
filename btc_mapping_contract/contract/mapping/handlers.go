@@ -2,58 +2,71 @@ package mapping
 
 import (
 	"bytes"
+	"contract-template/sdk"
 	"encoding/hex"
 	"fmt"
 
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/holiman/uint256"
-
-	"contract-template/sdk"
 )
 
-func (mc *MappingContract) HandleMap(rawTxHex *string, proofHex *string, instructionsString *string) error {
-	var totalMapped uint256.Int
+func (cs *ContractState) HandleMap(rawTxHex *string, proofHex *string, instructionsString *string) error {
+	var totalMapped uint64
 
 	rawTx, err := hex.DecodeString(*rawTxHex)
 	if err != nil {
-		sdk.Abort(err.Error())
+		return err
 	}
 	proof, err := hex.DecodeString(*proofHex)
 	if err != nil {
-		sdk.Abort(err.Error())
+		return err
 	}
 	verifyProof(&proof)
 	// TODO: create from instruction string once format is known
-	mc.setInstructions(instructionsString)
+	cs.setInstructions(instructionsString)
 
 	var msgTx wire.MsgTx
 	err = msgTx.Deserialize(bytes.NewReader(rawTx))
 	if err != nil {
-		sdk.Abort(err.Error())
+		return err
 	}
 
 	// gets all outputs the address of which is specified in the instructions
-	relevantOutputs := *mc.indexOutputs(&msgTx)
+	relevantOutputs := *cs.indexOutputs(&msgTx)
 
 	// create new utxos entries for all of the relevant outputs in the incoming transaction
 	for _, utxo := range relevantOutputs {
-		if internalAddress, ok := mc.getInternalAddressForBitcoinAddress(utxo.Address); ok {
+		_, addrs, _, err := txscript.ExtractPkScriptAddrs(utxo.pkScript, &chaincfg.TestNet3Params)
+		if err != nil {
+			sdk.Abort(err.Error())
+		}
+		if vscAddress, ok := cs.getInternalAddressForBitcoinAddress(addrs[0].EncodeAddress()); ok {
 			// Create UTXO entry
-			utxoKey := fmt.Sprintf("%s:%d", utxo.TxID, utxo.Vout)
-			mc.utxos[utxoKey] = utxo
-			mc.observedTxs[utxoKey] = true
+			utxoKey := fmt.Sprintf("%s:%d", utxo.txId, utxo.vout)
+			cs.utxos[utxoKey] = utxo
+			cs.observedTxs[utxoKey] = true
 
-			balance := mc.balances[internalAddress]
-			balance.Add(&balance, &utxo.Amount)
-			mc.balances[internalAddress] = balance
+			// increment balance for recipient account (vsc account not btc account)
+			balance := cs.balances[vscAddress]
+			balance += uint64(utxo.amount)
+			cs.balances[vscAddress] = balance
 
-			totalMapped.Add(&totalMapped, &utxo.Amount)
+			totalMapped += uint64(utxo.amount)
 		}
 	}
 
-	if !totalMapped.IsZero() {
-		mc.activeSupply.Add(&mc.activeSupply, &totalMapped)
+	if totalMapped != 0 {
+		cs.activeSupply += totalMapped
 	}
 
 	return nil
+}
+
+func (cs *ContractState) HandleUnmap(amount int64, destinationAddress string) {
+	inputUtxos, totalInputAmt, err := cs.getInputUtxos(amount)
+	if err != nil {
+		sdk.Abort(err.Error())
+	}
+	signingData := cs.createSpendTransaction(inputUtxos)
 }
