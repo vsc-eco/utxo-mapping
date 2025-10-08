@@ -10,6 +10,92 @@ import (
 	"github.com/btcsuite/btcd/wire"
 )
 
+func deductVscFee(amount int64) (int64, error) {
+	const MINFEE int64 = 1000
+	const FEERATE float64 = 0.01
+	percentageFee := int64(float64(amount) * FEERATE)
+	finalFee := MINFEE
+	if percentageFee > MINFEE {
+		finalFee = percentageFee
+	}
+	if finalFee >= amount {
+		return 0, errors.New("Transaction too small to cover fee.")
+	}
+	return finalFee, nil
+}
+
+func (cs *ContractState) getInputUtxos(amount int64) ([]*Utxo, int64, error) {
+	// approximate size of including a new PSWSH input (base tx size plus signature)
+	// slight overestimate (+1 at the end) to make sure there's enough balance
+	const P2WSHAPPROXINPUTSIZE = 40 + 1 + (72+68+3)/4 + 1
+
+	inputs := []*Utxo{}
+
+	// base size (10 bytes) + size of 1 output (34 bytes)
+	initialSize := int64(10 + 34)
+
+	// amount + basic fee
+	requiredAmount := amount + initialSize*int64(cs.baseFeeRate)
+	// assume the larger for first tx since this is just estimation
+
+	// accumulates amount of all inputs
+	accAmount := int64(0)
+
+	// first loops, find first tx sufficient to cover spend
+	for _, utxo := range cs.utxos {
+		if !utxo.confirmed {
+			continue
+		}
+		// calculates amount required to cover initial tx plus the addition of itself as an input
+		wouldBeRequired := requiredAmount + (P2WSHAPPROXINPUTSIZE * cs.baseFeeRate)
+		if utxo.amount >= wouldBeRequired {
+			return []*Utxo{&utxo}, utxo.amount, nil
+		}
+	}
+	// second loop, only if first did not find anything
+	// accumulate utxos until enough combined balance to cover spend
+	// avoids unconfirmed txs
+	unconfirmedTxs := []*Utxo{}
+	for _, utxo := range cs.utxos {
+		if utxo.confirmed {
+			inputs = append(inputs, &utxo)
+			accAmount += utxo.amount
+			requiredAmount += (P2WSHAPPROXINPUTSIZE * cs.baseFeeRate)
+			// greater than or equal
+			if accAmount >= requiredAmount {
+				return inputs, accAmount, nil
+			}
+		} else {
+			unconfirmedTxs = append(unconfirmedTxs, &utxo)
+		}
+
+	}
+	// uses unconfirmed txs only if all confirmed txs are insufficient
+	for _, utxo := range unconfirmedTxs {
+		inputs = append(inputs, utxo)
+		accAmount += utxo.amount
+		requiredAmount += (P2WSHAPPROXINPUTSIZE * cs.baseFeeRate)
+		if accAmount >= requiredAmount {
+			return inputs, accAmount, nil
+		}
+	}
+	// this really should never happen
+	return nil, 0, errors.New("Total available balance insufficient to complete transaction.")
+}
+
+func (cs *ContractState) calculatSegwitFee(baseSize int64, witnessScripts map[int][]byte) int64 {
+	// estimates size of segwit signatures
+	witnessDataSize := int64(0)
+	for _, witnessScript := range witnessScripts {
+		// +3 is for size flags, but small enough to be represented by themselves so just 1 byte per
+		witnessDataSize += 72 + int64(len(witnessScript)) + 3
+	}
+	totalSize := baseSize + witnessDataSize
+	// +3 to round up, + 2 for has witness data flag
+	vSize := (baseSize*3+totalSize+3)/4 + 2
+	return vSize * cs.baseFeeRate
+}
+
 func (cs *ContractState) createSpendTransaction(
 	inputs []*Utxo,
 	totalInputsAmount int64,
@@ -19,7 +105,9 @@ func (cs *ContractState) createSpendTransaction(
 ) (*SigningData, error) {
 	tx := wire.NewMsgTx(wire.TxVersion)
 
-	for _, utxo := range inputs {
+	// create all witness script now for better size estimation
+	witnessScripts := make(map[int][]byte)
+	for index, utxo := range inputs {
 		txHash, err := chainhash.NewHashFromStr(utxo.txId)
 		if err != nil {
 			return nil, err
@@ -28,6 +116,18 @@ func (cs *ContractState) createSpendTransaction(
 		outPoint := wire.NewOutPoint(txHash, utxo.vout)
 		txIn := wire.NewTxIn(outPoint, nil, nil)
 		tx.AddTxIn(txIn)
+
+		_, addrs, _, err := txscript.ExtractPkScriptAddrs(utxo.pkScript, &chaincfg.TestNet3Params)
+		if err != nil {
+			return nil, err
+		}
+		address := addrs[0].EncodeAddress()
+		tag := cs.addressTagLookup[address]
+		_, witnessScript, err := createP2WSHAddress(cs.publicKey, tag, &chaincfg.TestNet3Params)
+		if err != nil {
+			return nil, err
+		}
+		witnessScripts[index] = witnessScript
 	}
 
 	destAddr, err := btcutil.DecodeAddress(destAddress, &chaincfg.TestNet3Params)
@@ -41,12 +141,13 @@ func (cs *ContractState) createSpendTransaction(
 		return nil, err
 	}
 
-	txOut := wire.NewTxOut(sendAmount, destScript)
-	tx.AddTxOut(txOut)
+	destTxOut := wire.NewTxOut(sendAmount, destScript)
+	tx.AddTxOut(destTxOut)
 
-	basicFee := int64(tx.SerializeSize()) * cs.baseFeeRate
+	baseSize := int64(tx.SerializeSize())
+	fee := cs.calculatSegwitFee(baseSize, witnessScripts)
 
-	totalChange := totalInputsAmount - sendAmount - basicFee
+	totalChange := totalInputsAmount - sendAmount
 
 	// constants in sats
 	const DUSTTHRESHOLD = 546
@@ -58,42 +159,43 @@ func (cs *ContractState) createSpendTransaction(
 	if totalChange > DUSTTHRESHOLD {
 		// split if above SPLITTHRESHOLD, taking into account the added fee
 		// for each split (about 34 bytes per output)
-		changeOuputs := totalChange / (SPLITTHRESHOLD + 34*cs.baseFeeRate)
-		if changeOuputs < 1 {
-			changeOuputs = 1
-		}
-		if changeOuputs > MAXCHANGEOUTPUTS {
-			changeOuputs = MAXCHANGEOUTPUTS
-		}
-		eachChangeAmount := (totalChange / changeOuputs) - 34*cs.baseFeeRate
 		changeAddressObj, err := btcutil.DecodeAddress(changeAddress, &chaincfg.TestNet3Params)
 		if err != nil {
 			return nil, err
 		}
-		changePkScript, err := txscript.PayToAddrScript(changeAddressObj)
+		changeScript, err := txscript.PayToAddrScript(changeAddressObj)
 		if err != nil {
 			return nil, err
 		}
+		// create a dummy change ouput to calculate additional fee for adding change outputs
+		changeOutputSize := int64(wire.NewTxOut(int64(0), changeScript).SerializeSize())
 
-		for i := int64(0); i < changeOuputs; i++ {
-			txOutChange := wire.NewTxOut(int64(eachChangeAmount), changePkScript)
+		numChangeOuputs := totalChange / SPLITTHRESHOLD
+		if numChangeOuputs < 1 {
+			numChangeOuputs = 1
+		}
+		if numChangeOuputs > MAXCHANGEOUTPUTS {
+			numChangeOuputs = MAXCHANGEOUTPUTS
+		}
+		// recalculate the size/fee
+		baseSize += numChangeOuputs * changeOutputSize
+		fee = cs.calculatSegwitFee(baseSize, witnessScripts)
+
+		eachChangeAmount := totalChange / numChangeOuputs
+
+		for i := int64(0); i < numChangeOuputs; i++ {
+			txOutChange := wire.NewTxOut(eachChangeAmount, changeScript)
 			tx.AddTxOut(txOutChange)
 		}
 	}
 
+	// modify the value of the destination amount to deduct the final fee
+	tx.TxOut[0].Value = sendAmount - fee
+
 	// P2WSH: Calculate witness sighash
-	unsignedSignHashes := make([]UnsignedSigHash, len(inputs))
+	unsignedSigHashes := make([]UnsignedSigHash, len(inputs))
 	for i, utxo := range inputs {
-		_, addrs, _, err := txscript.ExtractPkScriptAddrs(txOut.PkScript, &chaincfg.TestNet3Params)
-		if err != nil {
-			return nil, err
-		}
-		address := addrs[0].EncodeAddress()
-		tag := cs.addressTagLookup[address]
-		_, witnessScript, err := createP2WSHAddress(cs.publicKey, tag, &chaincfg.TestNet3Params)
-		if err != nil {
-			return nil, err
-		}
+		witnessScript := witnessScripts[i]
 
 		sigHashes := txscript.NewTxSigHashes(tx, txscript.NewCannedPrevOutputFetcher(utxo.pkScript, utxo.amount))
 
@@ -110,8 +212,8 @@ func (cs *ContractState) createSpendTransaction(
 			return nil, err
 		}
 
-		unsignedSignHashes[i] = UnsignedSigHash{
-			index:         i,
+		unsignedSigHashes[i] = UnsignedSigHash{
+			index:         uint32(i),
 			sigHash:       sigHash,
 			witnessScript: witnessScript,
 			amount:        utxo.amount,
@@ -120,61 +222,34 @@ func (cs *ContractState) createSpendTransaction(
 
 	return &SigningData{
 		Tx:                 tx,
-		UnsignedSignHashes: unsignedSignHashes,
+		UnsignedSignHashes: unsignedSigHashes,
 	}, nil
 }
 
-func (cs *ContractState) getInputUtxos(amount int64) ([]*Utxo, int64, error) {
-	// approximate size of including a new PSWSH input (base tx size plus signature)
-	// slight overestimate to make sure there's enough balance
-	const P2WSHAPPROXINPUTSIZE = 40 + 1 + 260/4
+func attachSignatures(signingData *SigningData, signatures map[uint32][]byte) {
+	for _, inputData := range signingData.UnsignedSignHashes {
+		signature := signatures[inputData.index]
 
-	inputs := []*Utxo{}
-
-	// base size (10 bytes) + size of 1 output (34 bytes)
-	initialSize := int64(10 + 34)
-
-	requiredAmount := initialSize * int64(cs.baseFeeRate)
-	// assume the larger for first tx since this is just estimation
-
-	// accumulates amount of all inputs
-	accAmount := int64(0)
-
-	// first loops, find first tx sufficient to cover spend
-	for _, utxo := range cs.utxos {
-		// calculates amount required to cover initial tx plus the addition of itself as an input
-		wouldBeRequired := requiredAmount + P2WSHAPPROXINPUTSIZE
-		// less than or equal
-		if amount <= wouldBeRequired {
-			return []*Utxo{&utxo}, utxo.amount, nil
-		}
-	}
-	// second loop, only if first did not find anything
-	// accumulate utxos until enough combined balance to cover spend
-	// avoids unconfirmed txs
-	unconfirmedTxs := []*Utxo{}
-	for _, utxo := range cs.utxos {
-		if utxo.confirmed {
-			inputs = append(inputs, &utxo)
-			accAmount += utxo.amount
-			requiredAmount += P2WSHAPPROXINPUTSIZE
-			// greater than or equal
-			if accAmount >= requiredAmount {
-				return inputs, accAmount, nil
-			}
-		} else {
-			unconfirmedTxs = append(unconfirmedTxs, &utxo)
+		witness := wire.TxWitness{
+			signature,
+			inputData.witnessScript,
 		}
 
+		signingData.Tx.TxIn[inputData.index].Witness = witness
 	}
-	// uses unconfirmed txs only if all confirmed txs are insufficient
-	for _, utxo := range unconfirmedTxs {
-		inputs = append(inputs, utxo)
-		accAmount += utxo.amount
-		if accAmount >= requiredAmount {
-			return inputs, accAmount, nil
+}
+
+func indexUnconfimedOutputs(SigningData *SigningData) []Utxo {
+	utxos := make([]Utxo, len(SigningData.Tx.TxOut))
+	for index, txOut := range SigningData.Tx.TxOut {
+		utxo := Utxo{
+			txId:      SigningData.Tx.TxID(),
+			vout:      uint32(index),
+			amount:    txOut.Value,
+			pkScript:  txOut.PkScript,
+			confirmed: false,
 		}
+		utxos = append(utxos, utxo)
 	}
-	// this really should never happen
-	return nil, 0, errors.New("Total available balance insufficient to complete transaction.")
+	return utxos
 }

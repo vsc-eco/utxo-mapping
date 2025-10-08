@@ -21,10 +21,6 @@ func (cs *ContractState) getInternalAddressForBitcoinAddress(btcAddress string) 
 	return "", false
 }
 
-func verifyProof(proof *[]byte) bool {
-	return true
-}
-
 func (cs *ContractState) createInstructionMap() error {
 	if cs.instructions.rawInstructions == nil {
 		return errors.New("Instructions not populated")

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"contract-template/sdk"
 	"encoding/hex"
+	"errors"
 	"fmt"
 
 	"github.com/btcsuite/btcd/chaincfg"
@@ -12,7 +13,7 @@ import (
 )
 
 func (cs *ContractState) HandleMap(rawTxHex *string, proofHex *string, instructionsString *string) error {
-	var totalMapped uint64
+	var totalMapped int64
 
 	rawTx, err := hex.DecodeString(*rawTxHex)
 	if err != nil {
@@ -22,9 +23,11 @@ func (cs *ContractState) HandleMap(rawTxHex *string, proofHex *string, instructi
 	if err != nil {
 		return err
 	}
-	verifyProof(&proof)
+	if !verifyProof(&proof) {
+		return errors.New("Proof could not be validated")
+	}
 	// TODO: create from instruction string once format is known
-	cs.setInstructions(instructionsString)
+	// cs.setInstructions(instructionsString)
 
 	var msgTx wire.MsgTx
 	err = msgTx.Deserialize(bytes.NewReader(rawTx))
@@ -48,25 +51,75 @@ func (cs *ContractState) HandleMap(rawTxHex *string, proofHex *string, instructi
 			cs.observedTxs[utxoKey] = true
 
 			// increment balance for recipient account (vsc account not btc account)
-			balance := cs.balances[vscAddress]
-			balance += uint64(utxo.amount)
-			cs.balances[vscAddress] = balance
+			cs.balances[vscAddress] += utxo.amount
 
-			totalMapped += uint64(utxo.amount)
+			totalMapped += utxo.amount
 		}
 	}
 
 	if totalMapped != 0 {
 		cs.activeSupply += totalMapped
+		cs.userSupply += totalMapped
 	}
 
 	return nil
 }
 
-func (cs *ContractState) HandleUnmap(amount int64, destinationAddress string) {
-	inputUtxos, totalInputAmt, err := cs.getInputUtxos(amount)
+// Returns: raw tx hex to be broadcast
+func (cs *ContractState) HandleUnmap(amount int64, destBtcAddress string) string {
+	vscFee, err := deductVscFee(amount)
 	if err != nil {
 		sdk.Abort(err.Error())
 	}
-	signingData := cs.createSpendTransaction(inputUtxos)
+	postFeeAmount := amount - vscFee
+	inputUtxos, totalInputAmt, err := cs.getInputUtxos(postFeeAmount)
+	if err != nil {
+		sdk.Abort(err.Error())
+	}
+	changeAddress, _, err := createP2WSHAddress(cs.publicKey, "", &chaincfg.TestNet3Params)
+	signingData, err := cs.createSpendTransaction(
+		inputUtxos,
+		totalInputAmt,
+		destBtcAddress,
+		changeAddress,
+		postFeeAmount,
+	)
+	if err != nil {
+		sdk.Abort(err.Error())
+	}
+
+	signatures := make(map[uint32][]byte, len(signingData.UnsignedSignHashes))
+	for _, unsignedData := range signingData.UnsignedSignHashes {
+		signature, err := signInput(unsignedData.sigHash)
+		if err != nil {
+			sdk.Abort(err.Error())
+		}
+		signatures[unsignedData.index] = signature
+	}
+	attachSignatures(signingData, signatures)
+
+	var buf bytes.Buffer
+	// this is the same as serialize, but
+	if err := signingData.Tx.BtcEncode(&buf, wire.ProtocolVersion, wire.WitnessEncoding); err != nil {
+		sdk.Abort(err.Error())
+	}
+
+	unconfirmedUtxos := indexUnconfimedOutputs(signingData)
+	for _, utxo := range unconfirmedUtxos {
+		// Create UTXO entry
+		utxoKey := fmt.Sprintf("%s:%d", utxo.txId, utxo.vout)
+		cs.utxos[utxoKey] = utxo
+	}
+
+	cs.balances[sdk.GetEnv().Sender.Address.String()] -= amount
+	cs.activeSupply -= postFeeAmount
+	cs.userSupply -= amount
+	cs.feeSupply += vscFee
+
+	return hex.EncodeToString(buf.Bytes())
+}
+
+func (cs *ContractState) HandleTrasfer(amount int64, destVscAddress string) {
+	cs.balances[sdk.GetEnv().Sender.Address.String()] -= amount
+	cs.balances[destVscAddress] += amount
 }
