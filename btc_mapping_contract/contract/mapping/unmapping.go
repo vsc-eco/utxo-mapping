@@ -35,32 +35,32 @@ func (cs *ContractState) getInputUtxos(amount int64) ([]*Utxo, int64, error) {
 	initialSize := int64(10 + 34)
 
 	// amount + basic fee
-	requiredAmount := amount + initialSize*int64(cs.baseFeeRate)
+	requiredAmount := amount + initialSize*int64(cs.BaseFeeRate)
 	// assume the larger for first tx since this is just estimation
 
 	// accumulates amount of all inputs
 	accAmount := int64(0)
 
 	// first loops, find first tx sufficient to cover spend
-	for _, utxo := range cs.utxos {
-		if !utxo.confirmed {
+	for _, utxo := range cs.Utxos {
+		if !utxo.Confirmed {
 			continue
 		}
 		// calculates amount required to cover initial tx plus the addition of itself as an input
-		wouldBeRequired := requiredAmount + (P2WSHAPPROXINPUTSIZE * cs.baseFeeRate)
-		if utxo.amount >= wouldBeRequired {
-			return []*Utxo{&utxo}, utxo.amount, nil
+		wouldBeRequired := requiredAmount + (P2WSHAPPROXINPUTSIZE * cs.BaseFeeRate)
+		if utxo.Amount >= wouldBeRequired {
+			return []*Utxo{&utxo}, utxo.Amount, nil
 		}
 	}
 	// second loop, only if first did not find anything
 	// accumulate utxos until enough combined balance to cover spend
 	// avoids unconfirmed txs
 	unconfirmedTxs := []*Utxo{}
-	for _, utxo := range cs.utxos {
-		if utxo.confirmed {
+	for _, utxo := range cs.Utxos {
+		if utxo.Confirmed {
 			inputs = append(inputs, &utxo)
-			accAmount += utxo.amount
-			requiredAmount += (P2WSHAPPROXINPUTSIZE * cs.baseFeeRate)
+			accAmount += utxo.Amount
+			requiredAmount += (P2WSHAPPROXINPUTSIZE * cs.BaseFeeRate)
 			// greater than or equal
 			if accAmount >= requiredAmount {
 				return inputs, accAmount, nil
@@ -73,8 +73,8 @@ func (cs *ContractState) getInputUtxos(amount int64) ([]*Utxo, int64, error) {
 	// uses unconfirmed txs only if all confirmed txs are insufficient
 	for _, utxo := range unconfirmedTxs {
 		inputs = append(inputs, utxo)
-		accAmount += utxo.amount
-		requiredAmount += (P2WSHAPPROXINPUTSIZE * cs.baseFeeRate)
+		accAmount += utxo.Amount
+		requiredAmount += (P2WSHAPPROXINPUTSIZE * cs.BaseFeeRate)
 		if accAmount >= requiredAmount {
 			return inputs, accAmount, nil
 		}
@@ -93,7 +93,7 @@ func (cs *ContractState) calculatSegwitFee(baseSize int64, witnessScripts map[in
 	totalSize := baseSize + witnessDataSize
 	// +3 to round up, + 2 for has witness data flag
 	vSize := (baseSize*3+totalSize+3)/4 + 2
-	return vSize * cs.baseFeeRate
+	return vSize * cs.BaseFeeRate
 }
 
 func (cs *ContractState) createSpendTransaction(
@@ -108,22 +108,22 @@ func (cs *ContractState) createSpendTransaction(
 	// create all witness script now for better size estimation
 	witnessScripts := make(map[int][]byte)
 	for index, utxo := range inputs {
-		txHash, err := chainhash.NewHashFromStr(utxo.txId)
+		txHash, err := chainhash.NewHashFromStr(utxo.TxId)
 		if err != nil {
 			return nil, err
 		}
 
-		outPoint := wire.NewOutPoint(txHash, utxo.vout)
+		outPoint := wire.NewOutPoint(txHash, utxo.Vout)
 		txIn := wire.NewTxIn(outPoint, nil, nil)
 		tx.AddTxIn(txIn)
 
-		_, addrs, _, err := txscript.ExtractPkScriptAddrs(utxo.pkScript, &chaincfg.TestNet3Params)
+		_, addrs, _, err := txscript.ExtractPkScriptAddrs(utxo.PkScript, &chaincfg.TestNet3Params)
 		if err != nil {
 			return nil, err
 		}
 		address := addrs[0].EncodeAddress()
-		tag := cs.addressTagLookup[address]
-		_, witnessScript, err := createP2WSHAddress(cs.publicKey, tag, &chaincfg.TestNet3Params)
+		tag := cs.AddressRegistry[address].Tag
+		_, witnessScript, err := createP2WSHAddress(cs.PublicKey, tag, &chaincfg.TestNet3Params)
 		if err != nil {
 			return nil, err
 		}
@@ -197,7 +197,7 @@ func (cs *ContractState) createSpendTransaction(
 	for i, utxo := range inputs {
 		witnessScript := witnessScripts[i]
 
-		sigHashes := txscript.NewTxSigHashes(tx, txscript.NewCannedPrevOutputFetcher(utxo.pkScript, utxo.amount))
+		sigHashes := txscript.NewTxSigHashes(tx, txscript.NewCannedPrevOutputFetcher(utxo.PkScript, utxo.Amount))
 
 		sigHash, err := txscript.CalcWitnessSigHash(
 			witnessScript,
@@ -205,7 +205,7 @@ func (cs *ContractState) createSpendTransaction(
 			txscript.SigHashAll,
 			tx,
 			i,
-			utxo.amount,
+			utxo.Amount,
 		)
 
 		if err != nil {
@@ -213,10 +213,10 @@ func (cs *ContractState) createSpendTransaction(
 		}
 
 		unsignedSigHashes[i] = UnsignedSigHash{
-			index:         uint32(i),
-			sigHash:       sigHash,
-			witnessScript: witnessScript,
-			amount:        utxo.amount,
+			Index:         uint32(i),
+			SigHash:       sigHash,
+			WitnessScript: witnessScript,
+			Amount:        utxo.Amount,
 		}
 	}
 
@@ -228,14 +228,14 @@ func (cs *ContractState) createSpendTransaction(
 
 func attachSignatures(signingData *SigningData, signatures map[uint32][]byte) {
 	for _, inputData := range signingData.UnsignedSignHashes {
-		signature := signatures[inputData.index]
+		signature := signatures[inputData.Index]
 
 		witness := wire.TxWitness{
 			signature,
-			inputData.witnessScript,
+			inputData.WitnessScript,
 		}
 
-		signingData.Tx.TxIn[inputData.index].Witness = witness
+		signingData.Tx.TxIn[inputData.Index].Witness = witness
 	}
 }
 
@@ -243,11 +243,11 @@ func indexUnconfimedOutputs(SigningData *SigningData) []Utxo {
 	utxos := make([]Utxo, len(SigningData.Tx.TxOut))
 	for index, txOut := range SigningData.Tx.TxOut {
 		utxo := Utxo{
-			txId:      SigningData.Tx.TxID(),
-			vout:      uint32(index),
-			amount:    txOut.Value,
-			pkScript:  txOut.PkScript,
-			confirmed: false,
+			TxId:      SigningData.Tx.TxID(),
+			Vout:      uint32(index),
+			Amount:    txOut.Value,
+			PkScript:  txOut.PkScript,
+			Confirmed: false,
 		}
 		utxos = append(utxos, utxo)
 	}

@@ -2,28 +2,52 @@ package mapping
 
 import (
 	"bytes"
+	"contract-template/contract/blocklist"
+	"encoding/hex"
+	"errors"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 )
 
-func verifyTransaction(req *VerificationRequest) (bool, error) {
-	headerMap := make(map[int32][]byte)
-	rawHeader := headerMap[req.blockHeight]
+func constructMerkleProof(proofHex string) ([]chainhash.Hash, error) {
+	proofBytes, err := hex.DecodeString(proofHex)
+	if err != nil {
+		return nil, err
+	}
+	if len(proofBytes)%32 != 0 {
+		return nil, errors.New("invalid proof format")
+	}
+	proof := make([]chainhash.Hash, len(proofBytes)/32)
+	for i := 0; i < len(proofBytes); i += 32 {
+		proof[i/32] = chainhash.Hash(proofBytes[i : i+32])
+	}
+	return proof, nil
+}
+
+func verifyTransaction(req *VerificationRequest, rawTxBytes []byte) error {
+	blockMap := blocklist.BlockDataFromState().BlockMap
+
+	rawHeader := blockMap[req.BlockHeight]
 	var blockHeader wire.BlockHeader
-	blockHeader.BtcDecode(bytes.NewReader(rawHeader), wire.ProtocolVersion, wire.LatestEncoding)
+	blockHeader.BtcDecode(bytes.NewReader(rawHeader[:]), wire.ProtocolVersion, wire.LatestEncoding)
 
 	tx := wire.NewMsgTx(wire.TxVersion)
-	if err := tx.Deserialize(bytes.NewReader(req.rawTx)); err != nil {
-		return false, err
+	if err := tx.Deserialize(bytes.NewReader(rawTxBytes)); err != nil {
+		return err
+	}
+
+	merkleProof, err := constructMerkleProof(req.MerkleProofHex)
+	if err != nil {
+		return err
 	}
 
 	calculatedHash := tx.TxHash()
 
-	if !verifyMerkleProof(calculatedHash, req.txIndex, req.merkleProof, blockHeader.MerkleRoot) {
-		return false, nil
+	if !verifyMerkleProof(calculatedHash, req.TxIndex, merkleProof, blockHeader.MerkleRoot) {
+		return errors.New("transaction invalid")
 	}
-	return true, nil
+	return nil
 }
 
 func verifyMerkleProof(

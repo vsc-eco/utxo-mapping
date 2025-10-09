@@ -1,86 +1,101 @@
 package mapping
 
-func NewContractState(publicKey string) *ContractState {
-	return &ContractState{
-		accountRegistry:  make(map[string]*AccountInfo),
-		addressTagLookup: make(map[string]string),
-		balances:         make(map[string]int64),
-		observedTxs:      make(map[string]bool),
-		utxos:            make(map[string]Utxo),
-		activeSupply:     0,
-		baseFeeRate:      1,
-		publicKey:        publicKey,
+import (
+	"contract-template/sdk"
+	"crypto/sha256"
+	"encoding/hex"
+	"net/url"
+
+	"github.com/CosmWasm/tinyjson"
+	"github.com/btcsuite/btcd/chaincfg"
+)
+
+func IntializeContractState(publicKey string, instructions ...string) (*ContractState, error) {
+	var registry map[string]*AddressMetadata
+	if len(instructions) > 0 {
+		var err error
+		registry, err = parseInstructions(publicKey, instructions)
+		if err != nil {
+			return nil, err
+		}
 	}
+	var balances AccountBalanceMap
+	balanceState := sdk.StateGetObject(BALANCEKEY)
+	err := tinyjson.Unmarshal([]byte(*balanceState), &balances)
+	if err != nil {
+		return nil, err
+	}
+	var observedTxs ObservedTxList
+	obserbedTxsState := sdk.StateGetObject(OBSERVEDKEY)
+	err = tinyjson.Unmarshal([]byte(*obserbedTxsState), &observedTxs)
+	if err != nil {
+		return nil, err
+	}
+	var utxos UtxoMap
+	utxoState := sdk.StateGetObject(UTXOKEY)
+	err = tinyjson.Unmarshal([]byte(*utxoState), &utxos)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ContractState{
+		AddressRegistry: registry,
+		Balances:        balances,
+		ObservedTxs:     observedTxs,
+		Utxos:           utxos,
+		ActiveSupply:    0,
+		BaseFeeRate:     1,
+		PublicKey:       publicKey,
+	}, nil
 }
 
-func NewTestValuesState(publicKey string) *ContractState {
-	accountRegistry := map[string]*AccountInfo{
-		"hive:milo-hpr": &AccountInfo{
-			address: "tb1q7eag20gm5vu6rguwc4hhq8d2jmpude8dhk9z3f0ztrw95nexdnfsppgh6h",
-		},
+const DEPOSITKEY = "deposit_to"
+
+func parseInstructions(publicKey string, instrs []string) (map[string]*AddressMetadata, error) {
+	parsedInstructions := make([]url.Values, len(instrs))
+	registry := make(map[string]*AddressMetadata, len(instrs))
+	for i, instr := range instrs {
+		params, err := url.ParseQuery(instr)
+		parsedInstructions[i] = params
+		if err != nil {
+			return nil, err
+		}
+		if params.Has(DEPOSITKEY) {
+			hasher := sha256.New()
+			hasher.Write([]byte(instr))
+			hashBytes := hasher.Sum(nil)
+			tag := hex.EncodeToString(hashBytes)
+			address, _, err := createP2WSHAddress(publicKey, tag, &chaincfg.TestNet3Params)
+			if err != nil {
+				return nil, err
+			}
+			registry[address] = &AddressMetadata{
+				VscAddress: params.Get(DEPOSITKEY),
+				Tag:        instr,
+			}
+		}
 	}
-	addressTagLookup := map[string]string{
-		"tb1q7eag20gm5vu6rguwc4hhq8d2jmpude8dhk9z3f0ztrw95nexdnfsppgh6h": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-	}
-	instructions := MappingInstrutions{
-		addresses: map[string]bool{"tb1q7eag20gm5vu6rguwc4hhq8d2jmpude8dhk9z3f0ztrw95nexdnfsppgh6h": true},
-	}
-	return &ContractState{
-		accountRegistry:  accountRegistry,
-		addressTagLookup: addressTagLookup,
-		balances:         make(map[string]int64),
-		observedTxs:      make(map[string]bool),
-		utxos:            make(map[string]Utxo),
-		activeSupply:     0,
-		baseFeeRate:      1,
-		publicKey:        publicKey,
-		instructions:     &instructions,
-	}
+	return registry, nil
 }
 
-func NewTestUnmapValuesState(publicKey string) *ContractState {
-	accountRegistry := map[string]*AccountInfo{
-		"hive:milo-hpr": &AccountInfo{
-			address: "tb1q7eag20gm5vu6rguwc4hhq8d2jmpude8dhk9z3f0ztrw95nexdnfsppgh6h",
-		},
+func (cs *ContractState) SaveToState() error {
+	balancesJson, err := tinyjson.Marshal(cs.Balances)
+	if err != nil {
+		return err
 	}
-	addressTagLookup := map[string]string{
-		"tb1q7eag20gm5vu6rguwc4hhq8d2jmpude8dhk9z3f0ztrw95nexdnfsppgh6h": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-	}
-	balances := map[string]int64{
-		"hive:milo-hpr": 119579,
-	}
-	observedTxs := map[string]bool{
-		"5b6808faf6b7bdc53d705efb6b493dadf1f858de47fba0fbdd454772f0f56a0a:0": true,
-	}
-	utxos := map[string]Utxo{
-		"5b6808faf6b7bdc53d705efb6b493dadf1f858de47fba0fbdd454772f0f56a0a:0": Utxo{
-			txId:      "5b6808faf6b7bdc53d705efb6b493dadf1f858de47fba0fbdd454772f0f56a0a",
-			vout:      0,
-			amount:    119579,
-			pkScript:  []byte{0, 32, 246, 122, 133, 61, 27, 163, 57, 161, 163, 142, 197, 111, 112, 29, 170, 150, 195, 198, 228, 237, 189, 138, 40, 165, 226, 88, 220, 90, 79, 38, 108, 211},
-			confirmed: true,
-		},
-	}
-	return &ContractState{
-		accountRegistry:  accountRegistry,
-		addressTagLookup: addressTagLookup,
-		balances:         balances,
-		observedTxs:      observedTxs,
-		utxos:            utxos,
-		instructions:     &MappingInstrutions{},
-		activeSupply:     119579,
-		baseFeeRate:      1,
-		publicKey:        publicKey,
-	}
-}
+	sdk.StateSetObject(BALANCEKEY, string(balancesJson))
 
-func (cs *ContractState) setInstructions(rawInstrucions *string) {
-	// TODO: parse from the raw instructions once format is established
-	instrutionsArray := []string{}
-
-	cs.instructions = &MappingInstrutions{
-		rawInstructions: &instrutionsArray,
-		addresses:       make(map[string]bool),
+	obseredTxsJson, err := tinyjson.Marshal(cs.ObservedTxs)
+	if err != nil {
+		return err
 	}
+	sdk.StateSetObject(OBSERVEDKEY, string(obseredTxsJson))
+
+	utxosJson, err := tinyjson.Marshal(cs.Utxos)
+	if err != nil {
+		return err
+	}
+	sdk.StateSetObject(UTXOKEY, string(utxosJson))
+
+	return nil
 }

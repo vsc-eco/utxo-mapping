@@ -14,6 +14,7 @@ require (
 )
 
 require (
+	github.com/CosmWasm/tinyjson v0.9.0
 	github.com/DataDog/zstd v1.4.5 // indirect
 	github.com/JustinKnueppel/go-result v1.0.0 // indirect
 	github.com/alecthomas/units v0.0.0-20240927000941-0f3dac36c52b // indirect
@@ -93,6 +94,7 @@ require (
 	github.com/jbenet/go-temp-err-catcher v0.1.0 // indirect
 	github.com/jbenet/goprocess v0.1.4 // indirect
 	github.com/jorrizza/ed2curve25519 v0.1.0 // indirect
+	github.com/josharian/intern v1.0.0 // indirect
 	github.com/kilic/bls12-381 v0.1.0 // indirect
 	github.com/klauspost/compress v1.17.11 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
