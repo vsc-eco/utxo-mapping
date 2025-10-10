@@ -9,13 +9,8 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 )
 
-func createP2WSHAddress(pubKeyHex string, tagHex string, network *chaincfg.Params) (string, []byte, error) {
+func createP2WSHAddress(pubKeyHex string, tag []byte, network *chaincfg.Params) (string, []byte, error) {
 	pubKeyBytes, err := hex.DecodeString(pubKeyHex)
-	if err != nil {
-		return "", nil, err
-	}
-
-	tagBytes, err := hex.DecodeString(tagHex)
 	if err != nil {
 		return "", nil, err
 	}
@@ -23,7 +18,7 @@ func createP2WSHAddress(pubKeyHex string, tagHex string, network *chaincfg.Param
 	scriptBuilder := txscript.NewScriptBuilder()
 	scriptBuilder.AddData(pubKeyBytes)              // Push pubkey
 	scriptBuilder.AddOp(txscript.OP_CHECKSIGVERIFY) // OP_CHECKSIGVERIFY
-	scriptBuilder.AddData(tagBytes)                 // Push tag/bits
+	scriptBuilder.AddData(tag)                      // Push tag/bits
 
 	script, err := scriptBuilder.Script()
 	if err != nil {

@@ -3,7 +3,6 @@ package mapping
 import (
 	"contract-template/sdk"
 	"crypto/sha256"
-	"encoding/hex"
 	"net/url"
 
 	"github.com/CosmWasm/tinyjson"
@@ -20,20 +19,26 @@ func IntializeContractState(publicKey string, instructions ...string) (*Contract
 		}
 	}
 	var balances AccountBalanceMap
-	balanceState := sdk.StateGetObject(BALANCEKEY)
+	balanceState := sdk.StateGetObject(balanceKey)
 	err := tinyjson.Unmarshal([]byte(*balanceState), &balances)
 	if err != nil {
 		return nil, err
 	}
 	var observedTxs ObservedTxList
-	obserbedTxsState := sdk.StateGetObject(OBSERVEDKEY)
+	obserbedTxsState := sdk.StateGetObject(obserbedKey)
 	err = tinyjson.Unmarshal([]byte(*obserbedTxsState), &observedTxs)
 	if err != nil {
 		return nil, err
 	}
 	var utxos UtxoMap
-	utxoState := sdk.StateGetObject(UTXOKEY)
+	utxoState := sdk.StateGetObject(utxoKey)
 	err = tinyjson.Unmarshal([]byte(*utxoState), &utxos)
+	if err != nil {
+		return nil, err
+	}
+	var utxoSpends TxSpends
+	utxoSpendsState := sdk.StateGetObject(txSpendsKey)
+	err = tinyjson.Unmarshal([]byte(*utxoSpendsState), &utxoSpends)
 	if err != nil {
 		return nil, err
 	}
@@ -43,6 +48,7 @@ func IntializeContractState(publicKey string, instructions ...string) (*Contract
 		Balances:        balances,
 		ObservedTxs:     observedTxs,
 		Utxos:           utxos,
+		TxSpends:        utxoSpends,
 		ActiveSupply:    0,
 		BaseFeeRate:     1,
 		PublicKey:       publicKey,
@@ -64,8 +70,7 @@ func parseInstructions(publicKey string, instrs []string) (map[string]*AddressMe
 			hasher := sha256.New()
 			hasher.Write([]byte(instr))
 			hashBytes := hasher.Sum(nil)
-			tag := hex.EncodeToString(hashBytes)
-			address, _, err := createP2WSHAddress(publicKey, tag, &chaincfg.TestNet3Params)
+			address, _, err := createP2WSHAddress(publicKey, hashBytes, &chaincfg.TestNet3Params)
 			if err != nil {
 				return nil, err
 			}
@@ -83,19 +88,25 @@ func (cs *ContractState) SaveToState() error {
 	if err != nil {
 		return err
 	}
-	sdk.StateSetObject(BALANCEKEY, string(balancesJson))
+	sdk.StateSetObject(balanceKey, string(balancesJson))
 
 	obseredTxsJson, err := tinyjson.Marshal(cs.ObservedTxs)
 	if err != nil {
 		return err
 	}
-	sdk.StateSetObject(OBSERVEDKEY, string(obseredTxsJson))
+	sdk.StateSetObject(obserbedKey, string(obseredTxsJson))
 
 	utxosJson, err := tinyjson.Marshal(cs.Utxos)
 	if err != nil {
 		return err
 	}
-	sdk.StateSetObject(UTXOKEY, string(utxosJson))
+	sdk.StateSetObject(utxoKey, string(utxosJson))
+
+	utxoSpendsJson, err := tinyjson.Marshal(cs.TxSpends)
+	if err != nil {
+		return err
+	}
+	sdk.StateSetObject(utxoKey, string(utxoSpendsJson))
 
 	return nil
 }

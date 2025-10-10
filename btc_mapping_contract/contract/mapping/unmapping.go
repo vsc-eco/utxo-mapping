@@ -1,6 +1,8 @@
 package mapping
 
 import (
+	"bytes"
+	"encoding/hex"
 	"errors"
 
 	"github.com/btcsuite/btcd/btcutil"
@@ -49,7 +51,7 @@ func (cs *ContractState) getInputUtxos(amount int64) ([]*Utxo, int64, error) {
 		// calculates amount required to cover initial tx plus the addition of itself as an input
 		wouldBeRequired := requiredAmount + (P2WSHAPPROXINPUTSIZE * cs.BaseFeeRate)
 		if utxo.Amount >= wouldBeRequired {
-			return []*Utxo{&utxo}, utxo.Amount, nil
+			return []*Utxo{utxo}, utxo.Amount, nil
 		}
 	}
 	// second loop, only if first did not find anything
@@ -58,7 +60,7 @@ func (cs *ContractState) getInputUtxos(amount int64) ([]*Utxo, int64, error) {
 	unconfirmedTxs := []*Utxo{}
 	for _, utxo := range cs.Utxos {
 		if utxo.Confirmed {
-			inputs = append(inputs, &utxo)
+			inputs = append(inputs, utxo)
 			accAmount += utxo.Amount
 			requiredAmount += (P2WSHAPPROXINPUTSIZE * cs.BaseFeeRate)
 			// greater than or equal
@@ -66,7 +68,7 @@ func (cs *ContractState) getInputUtxos(amount int64) ([]*Utxo, int64, error) {
 				return inputs, accAmount, nil
 			}
 		} else {
-			unconfirmedTxs = append(unconfirmedTxs, &utxo)
+			unconfirmedTxs = append(unconfirmedTxs, utxo)
 		}
 
 	}
@@ -102,7 +104,7 @@ func (cs *ContractState) createSpendTransaction(
 	destAddress string,
 	changeAddress string,
 	sendAmount int64,
-) (*SigningData, error) {
+) (*SigningData, *wire.MsgTx, error) {
 	tx := wire.NewMsgTx(wire.TxVersion)
 
 	// create all witness script now for better size estimation
@@ -110,7 +112,7 @@ func (cs *ContractState) createSpendTransaction(
 	for index, utxo := range inputs {
 		txHash, err := chainhash.NewHashFromStr(utxo.TxId)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		outPoint := wire.NewOutPoint(txHash, utxo.Vout)
@@ -119,26 +121,30 @@ func (cs *ContractState) createSpendTransaction(
 
 		_, addrs, _, err := txscript.ExtractPkScriptAddrs(utxo.PkScript, &chaincfg.TestNet3Params)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		address := addrs[0].EncodeAddress()
 		tag := cs.AddressRegistry[address].Tag
-		_, witnessScript, err := createP2WSHAddress(cs.PublicKey, tag, &chaincfg.TestNet3Params)
+		tagBytes, err := hex.DecodeString(tag)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
+		}
+		_, witnessScript, err := createP2WSHAddress(cs.PublicKey, tagBytes, &chaincfg.TestNet3Params)
+		if err != nil {
+			return nil, nil, err
 		}
 		witnessScripts[index] = witnessScript
 	}
 
 	destAddr, err := btcutil.DecodeAddress(destAddress, &chaincfg.TestNet3Params)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Create output script for destination
 	destScript, err := txscript.PayToAddrScript(destAddr)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	destTxOut := wire.NewTxOut(sendAmount, destScript)
@@ -161,11 +167,11 @@ func (cs *ContractState) createSpendTransaction(
 		// for each split (about 34 bytes per output)
 		changeAddressObj, err := btcutil.DecodeAddress(changeAddress, &chaincfg.TestNet3Params)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		changeScript, err := txscript.PayToAddrScript(changeAddressObj)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		// create a dummy change ouput to calculate additional fee for adding change outputs
 		changeOutputSize := int64(wire.NewTxOut(int64(0), changeScript).SerializeSize())
@@ -209,25 +215,31 @@ func (cs *ContractState) createSpendTransaction(
 		)
 
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		unsignedSigHashes[i] = UnsignedSigHash{
 			Index:         uint32(i),
 			SigHash:       sigHash,
 			WitnessScript: witnessScript,
-			Amount:        utxo.Amount,
 		}
 	}
 
+	var buf bytes.Buffer
+	err = tx.Serialize(&buf)
+	if err != nil {
+		return nil, nil, err
+	}
+	txHex := hex.EncodeToString(buf.Bytes())
+
 	return &SigningData{
-		Tx:                 tx,
-		UnsignedSignHashes: unsignedSigHashes,
-	}, nil
+		Tx:                txHex,
+		UnsignedSigHashes: unsignedSigHashes,
+	}, tx, nil
 }
 
-func attachSignatures(signingData *SigningData, signatures map[uint32][]byte) {
-	for _, inputData := range signingData.UnsignedSignHashes {
+func attachSignatures(tx *wire.MsgTx, signingData *SigningData, signatures map[uint32][]byte) {
+	for _, inputData := range signingData.UnsignedSigHashes {
 		signature := signatures[inputData.Index]
 
 		witness := wire.TxWitness{
@@ -235,15 +247,15 @@ func attachSignatures(signingData *SigningData, signatures map[uint32][]byte) {
 			inputData.WitnessScript,
 		}
 
-		signingData.Tx.TxIn[inputData.Index].Witness = witness
+		tx.TxIn[inputData.Index].Witness = witness
 	}
 }
 
-func indexUnconfimedOutputs(SigningData *SigningData) []Utxo {
-	utxos := make([]Utxo, len(SigningData.Tx.TxOut))
-	for index, txOut := range SigningData.Tx.TxOut {
+func indexUnconfimedOutputs(tx *wire.MsgTx) []Utxo {
+	utxos := make([]Utxo, len(tx.TxOut))
+	for index, txOut := range tx.TxOut {
 		utxo := Utxo{
-			TxId:      SigningData.Tx.TxID(),
+			TxId:      tx.TxID(),
 			Vout:      uint32(index),
 			Amount:    txOut.Value,
 			PkScript:  txOut.PkScript,

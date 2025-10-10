@@ -10,21 +10,6 @@ import (
 	"github.com/btcsuite/btcd/wire"
 )
 
-func constructMerkleProof(proofHex string) ([]chainhash.Hash, error) {
-	proofBytes, err := hex.DecodeString(proofHex)
-	if err != nil {
-		return nil, err
-	}
-	if len(proofBytes)%32 != 0 {
-		return nil, errors.New("invalid proof format")
-	}
-	proof := make([]chainhash.Hash, len(proofBytes)/32)
-	for i := 0; i < len(proofBytes); i += 32 {
-		proof[i/32] = chainhash.Hash(proofBytes[i : i+32])
-	}
-	return proof, nil
-}
-
 func verifyTransaction(req *VerificationRequest, rawTxBytes []byte) error {
 	blockMap := blocklist.BlockDataFromState().BlockMap
 
@@ -37,7 +22,7 @@ func verifyTransaction(req *VerificationRequest, rawTxBytes []byte) error {
 		return err
 	}
 
-	merkleProof, err := constructMerkleProof(req.MerkleProofHex)
+	merkleProof, err := merkleProofFromHex(req.MerkleProofHex)
 	if err != nil {
 		return err
 	}
@@ -48,6 +33,21 @@ func verifyTransaction(req *VerificationRequest, rawTxBytes []byte) error {
 		return errors.New("transaction invalid")
 	}
 	return nil
+}
+
+func merkleProofFromHex(proofHex string) ([]chainhash.Hash, error) {
+	proofBytes, err := hex.DecodeString(proofHex)
+	if err != nil {
+		return nil, err
+	}
+	if len(proofBytes)%32 != 0 {
+		return nil, errors.New("invalid proof format")
+	}
+	proof := make([]chainhash.Hash, len(proofBytes)/32)
+	for i := 0; i < len(proofBytes); i += 32 {
+		proof[i/32] = chainhash.Hash(proofBytes[i : i+32])
+	}
+	return proof, nil
 }
 
 func verifyMerkleProof(

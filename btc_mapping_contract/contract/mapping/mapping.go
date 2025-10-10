@@ -2,6 +2,7 @@ package mapping
 
 import (
 	"contract-template/sdk"
+	"fmt"
 
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/txscript"
@@ -40,4 +41,20 @@ func (cs *ContractState) indexOutputs(msgTx *wire.MsgTx) *[]Utxo {
 	}
 
 	return &outputsForVsc
+}
+
+func (cs *ContractState) updateUtxoSpends(txId string) {
+	utxoSpend, ok := cs.TxSpends[txId]
+	if !ok {
+		return
+	}
+	for _, sigHash := range utxoSpend.UnsignedSigHashes {
+		utxoKey := fmt.Sprintf("%s:%d", txId, sigHash.Index)
+		utxo, ok := cs.Utxos[utxoKey]
+		if !ok {
+			continue
+		}
+		utxo.Confirmed = true
+	}
+	delete(cs.TxSpends, txId)
 }

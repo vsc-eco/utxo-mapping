@@ -1,12 +1,9 @@
 package mapping
 
-import (
-	"github.com/btcsuite/btcd/wire"
-)
-
-const BALANCEKEY = "account_balances"
-const OBSERVEDKEY = "observes_txs"
-const UTXOKEY = "utxos"
+const balanceKey = "account_balances"
+const obserbedKey = "observed_txs"
+const utxoKey = "utxos"
+const txSpendsKey = "tx_spends"
 
 //tinyjson:json
 type MappingInputData struct {
@@ -48,15 +45,14 @@ type Utxo struct {
 type HeaderMap map[uint32][]byte
 
 type SigningData struct {
-	Tx                 *wire.MsgTx
-	UnsignedSignHashes []UnsignedSigHash
+	Tx                string
+	UnsignedSigHashes []UnsignedSigHash
 }
 
 type UnsignedSigHash struct {
 	Index         uint32
 	SigHash       []byte
 	WitnessScript []byte
-	Amount        int64
 }
 
 type AddressMetadata struct {
@@ -71,7 +67,12 @@ type AccountBalanceMap map[string]int64
 type ObservedTxList map[string]bool
 
 //tinyjson:json
-type UtxoMap map[string]Utxo
+type UtxoMap map[string]*Utxo
+
+// txs that have been built and stored (for the mapping bot to see and sign)
+//
+//tinyjson:json
+type TxSpends map[string]*SigningData
 
 type ContractState struct {
 	// change this
@@ -79,6 +80,7 @@ type ContractState struct {
 	Balances           AccountBalanceMap           // map of vsc addresses to the btc balance they hold
 	ObservedTxs        ObservedTxList
 	Utxos              UtxoMap
+	TxSpends           TxSpends
 	PossibleRecipients map[string]bool
 	ActiveSupply       int64
 	UserSupply         int64

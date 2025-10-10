@@ -41,6 +41,9 @@ func (cs *ContractState) HandleMap(txData *VerificationRequest) error {
 		return err
 	}
 
+	// removes this tx from utxo spends if present
+	cs.updateUtxoSpends(msgTx.TxID())
+
 	// gets all outputs the address of which is specified in the instructions
 	relevantOutputs := *cs.indexOutputs(&msgTx)
 
@@ -53,7 +56,7 @@ func (cs *ContractState) HandleMap(txData *VerificationRequest) error {
 		if metadata, ok := cs.AddressRegistry[addrs[0].EncodeAddress()]; ok {
 			// Create UTXO entry
 			utxoKey := fmt.Sprintf("%s:%d", utxo.TxId, utxo.Vout)
-			cs.Utxos[utxoKey] = utxo
+			cs.Utxos[utxoKey] = &utxo
 			cs.ObservedTxs[utxoKey] = true
 
 			// increment balance for recipient account (vsc account not btc account)
@@ -83,8 +86,8 @@ func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) string {
 	if err != nil {
 		sdk.Abort(err.Error())
 	}
-	changeAddress, _, err := createP2WSHAddress(cs.PublicKey, "", &chaincfg.TestNet3Params)
-	signingData, err := cs.createSpendTransaction(
+	changeAddress, _, err := createP2WSHAddress(cs.PublicKey, nil, &chaincfg.TestNet3Params)
+	signingData, tx, err := cs.createSpendTransaction(
 		inputUtxos,
 		totalInputAmt,
 		instructions.recipientBtcAddress,
@@ -95,30 +98,35 @@ func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) string {
 		sdk.Abort(err.Error())
 	}
 
-	signatures := make(map[uint32][]byte, len(signingData.UnsignedSignHashes))
-	for _, unsignedData := range signingData.UnsignedSignHashes {
+	// REMOVE FOR PROD
+
+	signatures := make(map[uint32][]byte, len(signingData.UnsignedSigHashes))
+	for _, unsignedData := range signingData.UnsignedSigHashes {
 		signature, err := signInput(unsignedData.SigHash)
 		if err != nil {
 			sdk.Abort(err.Error())
 		}
 		signatures[unsignedData.Index] = signature
 	}
-	attachSignatures(signingData, signatures)
+	attachSignatures(tx, signingData, signatures)
 
 	var buf bytes.Buffer
-	// this is the same as serialize, but
-	if err := signingData.Tx.BtcEncode(&buf, wire.ProtocolVersion, wire.WitnessEncoding); err != nil {
+	// serialize is almost the same but with a different protocol version. Not sure if that
+	// actually changes the result
+	if err := tx.BtcEncode(&buf, wire.ProtocolVersion, wire.WitnessEncoding); err != nil {
 		sdk.Abort(err.Error())
 	}
 
-	unconfirmedUtxos := indexUnconfimedOutputs(signingData)
+	// END REMOVE FOR PROD
+
+	unconfirmedUtxos := indexUnconfimedOutputs(tx)
 	for _, utxo := range unconfirmedUtxos {
-		// Create UTXO entry
+		// create utxo entry
 		utxoKey := fmt.Sprintf("%s:%d", utxo.TxId, utxo.Vout)
-		cs.Utxos[utxoKey] = utxo
+		cs.Utxos[utxoKey] = &utxo
 	}
 
-	// cs.balances[sdk.GetEnv().Sender.Address.String()] -= amount
+	cs.Balances[sdk.GetEnv().Sender.Address.String()] -= amount
 	cs.ActiveSupply -= postFeeAmount
 	cs.UserSupply -= amount
 	cs.FeeSupply += vscFee
