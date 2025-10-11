@@ -2,6 +2,7 @@ package mapping
 
 import (
 	"contract-template/sdk"
+	"encoding/hex"
 	"fmt"
 
 	"github.com/btcsuite/btcd/chaincfg"
@@ -9,7 +10,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 )
 
-func isForVscAcc(txOut *wire.TxOut, addresses map[string]*AddressMetadata) bool {
+func isForVscAcc(txOut *wire.TxOut, addresses map[string]*AddressMetadata) (string, bool) {
 	_, addrs, _, err := txscript.ExtractPkScriptAddrs(txOut.PkScript, &chaincfg.TestNet3Params)
 	if err != nil {
 		sdk.Abort(err.Error())
@@ -18,22 +19,24 @@ func isForVscAcc(txOut *wire.TxOut, addresses map[string]*AddressMetadata) bool 
 	for _, addr := range addrs {
 		addressString := addr.EncodeAddress()
 		if _, ok := addresses[addressString]; ok {
-			return true
+			return addr.EncodeAddress(), true
 		}
 	}
-	return false
+	return "", false
 }
 
 func (cs *ContractState) indexOutputs(msgTx *wire.MsgTx) *[]Utxo {
 	outputsForVsc := []Utxo{}
 
 	for index, txOut := range msgTx.TxOut {
-		if isForVscAcc(txOut, cs.AddressRegistry) {
+		if addr, ok := isForVscAcc(txOut, cs.AddressRegistry); ok {
+
 			utxo := Utxo{
 				TxId:      msgTx.TxID(),
 				Vout:      uint32(index),
 				Amount:    txOut.Value,
 				PkScript:  txOut.PkScript,
+				Tag:       hex.EncodeToString(cs.AddressRegistry[addr].Tag),
 				Confirmed: true,
 			}
 			outputsForVsc = append(outputsForVsc, utxo)

@@ -69,7 +69,7 @@ func TestUnmapping(t *testing.T) {
 	ct.RegisterContract(contractId, ContractWasm)
 	ct.StateSet("mapping_contract", "account_balances", `{"hive:milo-hpr":9878}`)
 	ct.StateSet("mapping_contract", "observed_txs", `{"64240d2b706020087463530cd13304907033dd50b7938817e1016416376876bf:0":true}`)
-	ct.StateSet("mapping_contract", "utxos", `{"64240d2b706020087463530cd13304907033dd50b7938817e1016416376876bf:0":{"tx_id":"64240d2b706020087463530cd13304907033dd50b7938817e1016416376876bf","vout":0,"amount":9878,"pk_script":"ACAqDOQIRoebQvp3OesVzat3ygG3gXqXh5sfWP61LkRHjA==","confirmed":true}}`)
+	ct.StateSet("mapping_contract", "utxos", `{"64240d2b706020087463530cd13304907033dd50b7938817e1016416376876bf:0":{"tx_id":"64240d2b706020087463530cd13304907033dd50b7938817e1016416376876bf","vout":0,"amount":9878,"pk_script":"ACAqDOQIRoebQvp3OesVzat3ygG3gXqXh5sfWP61LkRHjA==","tag":"6ad59da3ece6b8fcfd0cd8c615ed5ec82504fbd81808b2aea5fb750adb01f20c","confirmed":true}}`)
 	ct.StateSet("mapping_contract", "tx_spends", `{}`)
 	ct.StateSet("mapping_contract", "system_supply", `{"active_supply":9878,"user_supply":9878,"fee_supply":0,"base_fee_rate":1}`)
 	ct.StateSet("mapping_contract", "blocklist", `{"block_map":{"4736609":"000000205fe55a9fc06c60fd340c84411363dfd8b574e8bfe6a44ec21f170f0d000000008c84bcca5e78351d0c8f671c7b9f83430e80ad462fa0b808a0be2c3b1c142df4e8b6e968ffff001db2174f36"},"last_height":4736609}`)
@@ -82,7 +82,7 @@ func TestUnmapping(t *testing.T) {
 			Index:                69,
 			OpIndex:              0,
 			Timestamp:            "2025-10-14T00:00:00",
-			RequiredAuths:        []string{"hive:someone"},
+			RequiredAuths:        []string{"hive:milo-hpr"},
 			RequiredPostingAuths: []string{},
 		},
 		ContractId: contractId,
@@ -134,5 +134,41 @@ func TestRegisterKey(t *testing.T) {
 	}
 	assert.True(t, result.Success)                 // assert contract execution success
 	assert.LessOrEqual(t, gasUsed, uint(10000000)) // assert this call uses no more than 10M WASM gas
+	fmt.Println("Return value:", result.Ret)
+}
+
+const rawBlocks = `000000204286711ef1b295f5393717779e97684f2df7db3637564376ed3a54010000000014833ac94c78dc6f17424a7e3620bcd5c1ea1c282196b2ba8cf4af5ac17c206a9dbbe968ffff001d936e4485000000203a3d51f10d78c09023158cac89d30c45270ce1031620294b457a4d0e00000000043fae4bb9f9729d603552558c0dc9dea27270feda93c014d76bee213f4c5b5752c0e968ffff001d1519a9c0`
+
+func TestAddBlocks(t *testing.T) {
+	ct := test_utils.NewContractTest()
+	contractId := "mapping_contract"
+	ct.RegisterContract(contractId, ContractWasm)
+	ct.StateSet("mapping_contract", "blocklist", `{"block_map":{"4736609":"000000205fe55a9fc06c60fd340c84411363dfd8b574e8bfe6a44ec21f170f0d000000008c84bcca5e78351d0c8f671c7b9f83430e80ad462fa0b808a0be2c3b1c142df4e8b6e968ffff001db2174f36"},"last_height":4736609}`)
+
+	result, gasUsed, _ := ct.Call(stateEngine.TxVscCallContract{
+		Self: stateEngine.TxSelf{
+			TxId:                 "sometxid",
+			BlockId:              "block:add_blocks",
+			Index:                69,
+			OpIndex:              0,
+			Timestamp:            "2025-10-14T00:00:00",
+			RequiredAuths:        []string{"hive:someone"},
+			RequiredPostingAuths: []string{},
+		},
+		ContractId: contractId,
+		Action:     "add_blocks",
+		Payload:    json.RawMessage([]byte(rawBlocks)),
+		RcLimit:    1000,
+		Intents:    []contracts.Intent{},
+	})
+	if result.Err != nil {
+		fmt.Println("error:", *result.Err)
+	}
+
+	assert.True(t, result.Success)                 // assert contract execution success
+	assert.LessOrEqual(t, gasUsed, uint(10000000)) // assert this call uses no more than 10M WASM gas
+
+	fmt.Printf("%s: %s\n\n", "blocklist", ct.StateGet("mapping_contract", "blocklist"))
+
 	fmt.Println("Return value:", result.Ret)
 }

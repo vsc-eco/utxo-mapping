@@ -27,16 +27,16 @@ import (
 	"github.com/CosmWasm/tinyjson"
 )
 
-const ORACLEADDRESS = "oracle_address"
+const oracleAddress = "oracle_address"
 const publicKeyStateKey = "public_key"
 
 //go:wasmexport add_blocks
-func AddBlocks(blocksHeaderHex *string) *string {
-	if sdk.GetEnv().Sender.Address != ORACLEADDRESS {
-		sdk.Abort("no permission")
-	}
+func AddBlocks(blockHeadersHex *string) *string {
+	// if sdk.GetEnv().Sender.Address != oracleAddress {
+	// 	sdk.Abort("no permission")
+	// }
 
-	blockHeaders, err := blocklist.DivideHeaderList(blocksHeaderHex)
+	blockHeaders, err := blocklist.DivideHeaderList(blockHeadersHex)
 	if err != nil {
 		sdk.Abort(err.Error())
 	}
@@ -51,14 +51,16 @@ func AddBlocks(blocksHeaderHex *string) *string {
 	// handle adding blocks error
 	outMsg := blocklist.AddBlockOutput{
 		LastBlockHeight: blockData.LastHeight,
-		Success:         err != nil,
-		Error:           err.Error(),
+		Success:         err == nil,
+	}
+	if err != nil {
+		outMsg.Error = err.Error()
 	}
 	outMsgBytes, err := tinyjson.Marshal(outMsg)
-	outMsgString := string(outMsgBytes)
 	if err != nil {
-		sdk.Abort(outMsgString)
+		sdk.Abort(err.Error())
 	}
+	outMsgString := string(outMsgBytes)
 
 	return &outMsgString
 }
@@ -92,10 +94,6 @@ func Map(incomingTx *string) *string {
 	return &ret
 }
 
-type Recipient struct {
-	Recipient string `json:"recipient"`
-}
-
 //go:wasmexport unmap
 func Unmap(tx *string) *string {
 	var unmapInstructions mapping.UnmappingInputData
@@ -121,9 +119,11 @@ func Unmap(tx *string) *string {
 
 //go:wasmexport transfer
 func Transfer(tx *string) *string {
-	// derived from tx
-	amount := int64(0)
-	recipientVscAddress := ""
+	var transferInstructions mapping.TransferInputData
+	err := tinyjson.Unmarshal([]byte(*tx), &transferInstructions)
+	if err != nil {
+		sdk.Abort(err.Error())
+	}
 
 	publicKey := sdk.StateGetObject(publicKeyStateKey)
 
@@ -131,7 +131,7 @@ func Transfer(tx *string) *string {
 	if err != nil {
 		sdk.Abort(err.Error())
 	}
-	contractState.HandleTrasfer(amount, recipientVscAddress)
+	contractState.HandleTrasfer(&transferInstructions)
 
 	return tx
 }
@@ -152,4 +152,11 @@ func RegisterPublicKey(key *string) *string {
 	}
 	result := fmt.Sprintf("key already registered: %s", *existing)
 	return &result
+}
+
+//go:wasmexport create_public_key
+func CreatePublicKey(_ *string) *string {
+	keyId := "main"
+	sdk.TssCreateKey(keyId, "ecdsa")
+	return &keyId
 }

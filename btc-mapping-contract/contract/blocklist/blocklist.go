@@ -14,7 +14,7 @@ type BlockHeaderBytes [80]byte
 
 //tinyjson:json
 type BlockData struct {
-	BlockMap   map[uint32]string // maps block heights to raw 80 byte block headers
+	BlockMap   map[uint32]string // maps block heights to hex representation of 80-byte block headers
 	LastHeight uint32
 }
 
@@ -45,7 +45,7 @@ func DivideHeaderList(blocksHex *string) ([]BlockHeaderBytes, error) {
 
 	blockHeaders := make([]BlockHeaderBytes, len(blockBytes)/80)
 	for i := 0; i < len(blockBytes); i += 80 {
-		blockHeaders[i%80] = BlockHeaderBytes(blockBytes[i : i+80])
+		blockHeaders[i/80] = [80]byte(blockBytes[i : i+80])
 	}
 	return blockHeaders, nil
 }
@@ -63,15 +63,15 @@ func (bd *BlockData) HandleAddBlocks(rawHeaders []BlockHeaderBytes) error {
 	lastBlockHex := bd.BlockMap[bd.LastHeight]
 	lastBlockBytes, err := hex.DecodeString(lastBlockHex)
 	if err != nil {
-		return err
+		sdk.Abort(err.Error())
 	}
 	var lastBlockHeader wire.BlockHeader
 	lastBlockHeader.BtcDecode(bytes.NewReader(lastBlockBytes[:]), wire.ProtocolVersion, wire.LatestEncoding)
-	lastBlockHash := lastBlockHeader.BlockHash()
 	for _, headerBytes := range rawHeaders {
 		var blockHeader wire.BlockHeader
 		blockHeader.BtcDecode(bytes.NewReader(headerBytes[:]), wire.ProtocolVersion, wire.LatestEncoding)
-		// TODO: how to handle these errors
+
+		lastBlockHash := lastBlockHeader.BlockHash()
 		if !blockHeader.PrevBlock.IsEqual(&lastBlockHash) {
 			return errors.New("block sequence incorrect")
 		}
@@ -81,6 +81,7 @@ func (bd *BlockData) HandleAddBlocks(rawHeaders []BlockHeaderBytes) error {
 		}
 		bd.BlockMap[blockHeight] = hex.EncodeToString(headerBytes[:])
 		bd.LastHeight = blockHeight
+		lastBlockHeader = blockHeader
 	}
 	return nil
 }
