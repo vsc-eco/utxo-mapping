@@ -31,8 +31,8 @@ type AccountInfo struct {
 
 //tinyjson:json
 type UnmappingInputData struct {
-	amount              int64
-	recipientBtcAddress string
+	Amount              int64
+	RecipientBtcAddress string
 }
 
 //tinyjson:json

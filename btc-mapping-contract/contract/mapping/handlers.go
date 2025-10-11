@@ -76,7 +76,12 @@ func (cs *ContractState) HandleMap(txData *VerificationRequest) error {
 
 // Returns: raw tx hex to be broadcast
 func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) string {
-	amount := instructions.amount
+	amount := instructions.Amount
+	senderVscAddr := sdk.GetEnv().Sender.Address.String()
+	senderBalance := cs.Balances[senderVscAddr]
+	if senderBalance < amount {
+		sdk.Abort("sender balacne insufficient")
+	}
 	vscFee, err := deductVscFee(amount)
 	if err != nil {
 		sdk.Abort(err.Error())
@@ -84,13 +89,13 @@ func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) string {
 	postFeeAmount := amount - vscFee
 	inputUtxos, totalInputAmt, err := cs.getInputUtxos(postFeeAmount)
 	if err != nil {
-		sdk.Abort(err.Error())
+		sdk.Abort(fmt.Sprintf("error getting input utxos: %w", err))
 	}
 	changeAddress, _, err := createP2WSHAddress(cs.PublicKey, nil, &chaincfg.TestNet3Params)
 	signingData, tx, err := cs.createSpendTransaction(
 		inputUtxos,
 		totalInputAmt,
-		instructions.recipientBtcAddress,
+		instructions.RecipientBtcAddress,
 		changeAddress,
 		postFeeAmount,
 	)
@@ -126,7 +131,7 @@ func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) string {
 		cs.Utxos[utxoKey] = &utxo
 	}
 
-	cs.Balances[sdk.GetEnv().Sender.Address.String()] -= amount
+	cs.Balances[senderVscAddr] -= amount
 	cs.Supply.ActiveSupply -= postFeeAmount
 	cs.Supply.UserSupply -= amount
 	cs.Supply.FeeSupply += vscFee

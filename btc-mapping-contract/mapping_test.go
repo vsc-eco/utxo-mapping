@@ -87,7 +87,7 @@ func TestUnmapping(t *testing.T) {
 		},
 		ContractId: contractId,
 		Action:     "unmap",
-		Payload:    json.RawMessage([]byte("1000")),
+		Payload:    json.RawMessage([]byte(`{"amount":8000,"recipient_btc_address":"tb1qd4erjn4tvt52c92yv66lwju9pzsd2ltph0xe5s"}`)),
 		RcLimit:    1000,
 		Intents:    []contracts.Intent{},
 	})

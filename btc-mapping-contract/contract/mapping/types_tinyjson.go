@@ -254,6 +254,10 @@ func tinyjsonA17a9c65DecodeExampleComBuildingTinyjsonMapping3(in *jlexer.Lexer, 
 			continue
 		}
 		switch key {
+		case "amount":
+			out.Amount = int64(in.Int64())
+		case "recipient_btc_address":
+			out.RecipientBtcAddress = string(in.String())
 		default:
 			in.SkipRecursive()
 		}
@@ -268,6 +272,16 @@ func tinyjsonA17a9c65EncodeExampleComBuildingTinyjsonMapping3(out *jwriter.Write
 	out.RawByte('{')
 	first := true
 	_ = first
+	{
+		const prefix string = ",\"amount\":"
+		out.RawString(prefix[1:])
+		out.Int64(int64(in.Amount))
+	}
+	{
+		const prefix string = ",\"recipient_btc_address\":"
+		out.RawString(prefix)
+		out.String(string(in.RecipientBtcAddress))
+	}
 	out.RawByte('}')
 }
 
