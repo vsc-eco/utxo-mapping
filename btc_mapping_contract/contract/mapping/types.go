@@ -9,7 +9,7 @@ const txSpendsKey = "tx_spends"
 type MappingInputData struct {
 	TxData *VerificationRequest
 	// strings should be valid URL search params, to be decoded later
-	RawInstructions []string
+	Instructions []string
 }
 
 //tinyjson:json

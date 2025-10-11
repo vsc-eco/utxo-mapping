@@ -70,7 +70,7 @@ func Map(incomingTx *string) *string {
 		sdk.Abort(err.Error())
 	}
 
-	contractState, err := mapping.IntializeContractState(PUBLICKEY, mapInstructions.RawInstructions...)
+	contractState, err := mapping.IntializeContractState(PUBLICKEY, mapInstructions.Instructions...)
 	if err != nil {
 		sdk.Abort(err.Error())
 	}

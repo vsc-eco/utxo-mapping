@@ -571,22 +571,22 @@ func tinyjsonA17a9c65DecodeExampleComBuildingTinyjsonMapping8(in *jlexer.Lexer, 
 		case "raw_instructions":
 			if in.IsNull() {
 				in.Skip()
-				out.RawInstructions = nil
+				out.Instructions = nil
 			} else {
 				in.Delim('[')
-				if out.RawInstructions == nil {
+				if out.Instructions == nil {
 					if !in.IsDelim(']') {
-						out.RawInstructions = make([]string, 0, 4)
+						out.Instructions = make([]string, 0, 4)
 					} else {
-						out.RawInstructions = []string{}
+						out.Instructions = []string{}
 					}
 				} else {
-					out.RawInstructions = (out.RawInstructions)[:0]
+					out.Instructions = (out.Instructions)[:0]
 				}
 				for !in.IsDelim(']') {
 					var v19 string
 					v19 = string(in.String())
-					out.RawInstructions = append(out.RawInstructions, v19)
+					out.Instructions = append(out.Instructions, v19)
 					in.WantComma()
 				}
 				in.Delim(']')
@@ -617,11 +617,11 @@ func tinyjsonA17a9c65EncodeExampleComBuildingTinyjsonMapping8(out *jwriter.Write
 	{
 		const prefix string = ",\"raw_instructions\":"
 		out.RawString(prefix)
-		if in.RawInstructions == nil && (out.Flags&jwriter.NilSliceAsEmpty) == 0 {
+		if in.Instructions == nil && (out.Flags&jwriter.NilSliceAsEmpty) == 0 {
 			out.RawString("null")
 		} else {
 			out.RawByte('[')
-			for v20, v21 := range in.RawInstructions {
+			for v20, v21 := range in.Instructions {
 				if v20 > 0 {
 					out.RawByte(',')
 				}
