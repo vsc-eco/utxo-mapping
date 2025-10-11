@@ -83,8 +83,9 @@ func parseInstructions(publicKey string, instrs []string) (map[string]*AddressMe
 				return nil, err
 			}
 			registry[address] = &AddressMetadata{
-				VscAddress: params.Get(depositKey),
-				Tag:        instr,
+				VscAddress:  params.Get(depositKey),
+				Instruction: instr,
+				Tag:         hashBytes,
 			}
 		}
 	}

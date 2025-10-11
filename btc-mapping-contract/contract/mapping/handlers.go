@@ -80,7 +80,7 @@ func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) string {
 	senderVscAddr := sdk.GetEnv().Sender.Address.String()
 	senderBalance := cs.Balances[senderVscAddr]
 	if senderBalance < amount {
-		sdk.Abort("sender balacne insufficient")
+		sdk.Abort(fmt.Sprintf("sender balance insufficient. has %d, needs %d", senderBalance, amount))
 	}
 	vscFee, err := deductVscFee(amount)
 	if err != nil {
@@ -103,43 +103,32 @@ func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) string {
 		sdk.Abort(err.Error())
 	}
 
-	// REMOVE FOR PROD
-
-	signatures := make(map[uint32][]byte, len(signingData.UnsignedSigHashes))
-	for _, unsignedData := range signingData.UnsignedSigHashes {
-		signature, err := signInput(unsignedData.SigHash)
-		if err != nil {
-			sdk.Abort(err.Error())
-		}
-		signatures[unsignedData.Index] = signature
-	}
-	attachSignatures(tx, signingData, signatures)
-
-	var buf bytes.Buffer
-	// serialize is almost the same but with a different protocol version. Not sure if that
-	// actually changes the result
-	if err := tx.BtcEncode(&buf, wire.ProtocolVersion, wire.WitnessEncoding); err != nil {
+	unconfirmedUtxos, err := indexUnconfimedOutputs(tx, changeAddress)
+	if err != nil {
 		sdk.Abort(err.Error())
 	}
-
-	// END REMOVE FOR PROD
-
-	unconfirmedUtxos := indexUnconfimedOutputs(tx)
 	for _, utxo := range unconfirmedUtxos {
 		// create utxo entry
 		utxoKey := fmt.Sprintf("%s:%d", utxo.TxId, utxo.Vout)
 		cs.Utxos[utxoKey] = &utxo
 	}
 
+	cs.TxSpends[tx.TxID()] = signingData
 	cs.Balances[senderVscAddr] -= amount
 	cs.Supply.ActiveSupply -= postFeeAmount
 	cs.Supply.UserSupply -= amount
 	cs.Supply.FeeSupply += vscFee
 
-	return hex.EncodeToString(buf.Bytes())
+	return "success"
 }
 
-func (cs *ContractState) HandleTrasfer(amount int64, destVscAddress string) {
+func (cs *ContractState) HandleTrasfer(instructions *TransferInputData) {
+	amount := instructions.Amount
+	senderVscAddr := sdk.GetEnv().Sender.Address.String()
+	senderBalance := cs.Balances[senderVscAddr]
+	if senderBalance < amount {
+		sdk.Abort(fmt.Sprintf("sender balance insufficient. has %d, needs %d", senderBalance, amount))
+	}
 	cs.Balances[sdk.GetEnv().Sender.Address.String()] -= amount
-	cs.Balances[destVscAddress] += amount
+	cs.Balances[instructions.RecipientVscAddress] += amount
 }

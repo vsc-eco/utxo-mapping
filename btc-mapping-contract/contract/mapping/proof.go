@@ -19,8 +19,6 @@ func verifyTransaction(req *VerificationRequest, rawTxBytes []byte) error {
 	var blockHeader wire.BlockHeader
 	blockHeader.BtcDecode(bytes.NewReader(rawHeaderBytes), wire.ProtocolVersion, wire.LatestEncoding)
 
-	// sdk.Log(fmt.Sprintf("block hash: %s", blockHeader.BlockHash().String()))
-
 	tx := wire.NewMsgTx(wire.TxVersion)
 	if err := tx.Deserialize(bytes.NewReader(rawTxBytes)); err != nil {
 		return err

@@ -36,11 +36,18 @@ type UnmappingInputData struct {
 }
 
 //tinyjson:json
+type TransferInputData struct {
+	Amount              int64
+	RecipientVscAddress string
+}
+
+//tinyjson:json
 type Utxo struct {
 	TxId      string // tx containing the output
 	Vout      uint32 // defined as uint32 in btcd library
 	Amount    int64
 	PkScript  []byte
+	Tag       string // tag used to create the address
 	Confirmed bool
 }
 
@@ -54,13 +61,14 @@ type SigningData struct {
 
 type UnsignedSigHash struct {
 	Index         uint32
-	SigHash       []byte
-	WitnessScript []byte
+	SigHash       string
+	WitnessScript string
 }
 
 type AddressMetadata struct {
-	Tag        string
-	VscAddress string
+	Instruction string // instruction that is hashed to the tag used to create the address
+	VscAddress  string
+	Tag         []byte // tag (hashed instruction) used to create the address
 }
 
 //tinyjson:json

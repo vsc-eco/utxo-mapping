@@ -5,7 +5,6 @@ import (
 	"contract-template/sdk"
 	"encoding/hex"
 	"errors"
-	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -22,7 +21,6 @@ func deductVscFee(amount int64) (int64, error) {
 	if percentageFee > minFee {
 		finalFee = percentageFee
 	}
-	sdk.Log(fmt.Sprintf("amount: %d, finalFee: %d", amount, finalFee))
 	if finalFee >= amount {
 		return 0, errors.New("transaction too small to cover fee.")
 	}
@@ -36,13 +34,6 @@ func (cs *ContractState) getInputUtxos(amount int64) ([]*Utxo, int64, error) {
 
 	inputs := []*Utxo{}
 
-	// base size (10 bytes) + size of 1 output (34 bytes)
-	initialSize := int64(10 + 34)
-
-	// amount + basic fee
-	requiredAmount := amount + initialSize*int64(cs.Supply.BaseFeeRate)
-	// assume the larger for first tx since this is just estimation
-
 	// accumulates amount of all inputs
 	accAmount := int64(0)
 
@@ -52,8 +43,7 @@ func (cs *ContractState) getInputUtxos(amount int64) ([]*Utxo, int64, error) {
 			continue
 		}
 		// calculates amount required to cover initial tx plus the addition of itself as an input
-		wouldBeRequired := requiredAmount + (P2WSHAPPROXINPUTSIZE * cs.Supply.BaseFeeRate)
-		if utxo.Amount >= wouldBeRequired {
+		if utxo.Amount >= amount {
 			return []*Utxo{utxo}, utxo.Amount, nil
 		}
 	}
@@ -65,9 +55,8 @@ func (cs *ContractState) getInputUtxos(amount int64) ([]*Utxo, int64, error) {
 		if utxo.Confirmed {
 			inputs = append(inputs, utxo)
 			accAmount += utxo.Amount
-			requiredAmount += (P2WSHAPPROXINPUTSIZE * cs.Supply.BaseFeeRate)
 			// greater than or equal
-			if accAmount >= requiredAmount {
+			if accAmount >= amount {
 				return inputs, accAmount, nil
 			}
 		} else {
@@ -79,8 +68,7 @@ func (cs *ContractState) getInputUtxos(amount int64) ([]*Utxo, int64, error) {
 	for _, utxo := range unconfirmedTxs {
 		inputs = append(inputs, utxo)
 		accAmount += utxo.Amount
-		requiredAmount += (P2WSHAPPROXINPUTSIZE * cs.Supply.BaseFeeRate)
-		if accAmount >= requiredAmount {
+		if accAmount >= amount {
 			return inputs, accAmount, nil
 		}
 	}
@@ -122,17 +110,14 @@ func (cs *ContractState) createSpendTransaction(
 		txIn := wire.NewTxIn(outPoint, nil, nil)
 		tx.AddTxIn(txIn)
 
-		_, addrs, _, err := txscript.ExtractPkScriptAddrs(utxo.PkScript, &chaincfg.TestNet3Params)
+		tag, err := hex.DecodeString(utxo.Tag)
+
 		if err != nil {
 			return nil, nil, err
 		}
-		address := addrs[0].EncodeAddress()
-		tag := cs.AddressRegistry[address].Tag
-		tagBytes, err := hex.DecodeString(tag)
-		if err != nil {
-			return nil, nil, err
-		}
-		_, witnessScript, err := createP2WSHAddress(cs.PublicKey, tagBytes, &chaincfg.TestNet3Params)
+
+		_, witnessScript, err := createP2WSHAddress(cs.PublicKey, tag, &chaincfg.TestNet3Params)
+
 		if err != nil {
 			return nil, nil, err
 		}
@@ -221,10 +206,12 @@ func (cs *ContractState) createSpendTransaction(
 			return nil, nil, err
 		}
 
+		sdk.TssSignKey("main", sigHash)
+
 		unsignedSigHashes[i] = UnsignedSigHash{
 			Index:         uint32(i),
-			SigHash:       sigHash,
-			WitnessScript: witnessScript,
+			SigHash:       hex.EncodeToString(sigHash),
+			WitnessScript: hex.EncodeToString(witnessScript),
 		}
 	}
 
@@ -241,30 +228,25 @@ func (cs *ContractState) createSpendTransaction(
 	}, tx, nil
 }
 
-func attachSignatures(tx *wire.MsgTx, signingData *SigningData, signatures map[uint32][]byte) {
-	for _, inputData := range signingData.UnsignedSigHashes {
-		signature := signatures[inputData.Index]
-
-		witness := wire.TxWitness{
-			signature,
-			inputData.WitnessScript,
-		}
-
-		tx.TxIn[inputData.Index].Witness = witness
-	}
-}
-
-func indexUnconfimedOutputs(tx *wire.MsgTx) []Utxo {
+func indexUnconfimedOutputs(tx *wire.MsgTx, changeAddress string) ([]Utxo, error) {
 	utxos := make([]Utxo, len(tx.TxOut))
+
 	for index, txOut := range tx.TxOut {
-		utxo := Utxo{
-			TxId:      tx.TxID(),
-			Vout:      uint32(index),
-			Amount:    txOut.Value,
-			PkScript:  txOut.PkScript,
-			Confirmed: false,
+		_, addrs, _, err := txscript.ExtractPkScriptAddrs(txOut.PkScript, &chaincfg.TestNet3Params)
+		if err != nil {
+			return nil, err
 		}
-		utxos = append(utxos, utxo)
+		if addrs[0].EncodeAddress() == changeAddress {
+			utxo := Utxo{
+				TxId:      tx.TxID(),
+				Vout:      uint32(index),
+				Amount:    txOut.Value,
+				PkScript:  txOut.PkScript,
+				Tag:       "",
+				Confirmed: false,
+			}
+			utxos = append(utxos, utxo)
+		}
 	}
-	return utxos
+	return utxos, nil
 }

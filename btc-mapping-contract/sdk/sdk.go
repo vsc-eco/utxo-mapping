@@ -2,6 +2,7 @@ package sdk
 
 import (
 	_ "contract-template/runtime"
+	"encoding/hex"
 	"encoding/json"
 	"strconv"
 
@@ -47,6 +48,15 @@ func contractRead(contractId *string, key *string) *string
 
 //go:wasmimport sdk contracts.call
 func contractCall(contractId *string, method *string, payload *string, options *string) *string
+
+//go:wasmimport sdk tss.create_key
+func tssCreateKey(keyId *string, algo *string) *string
+
+//go:wasmimport sdk tss.sign_key
+func tssSignKey(keyId *string, msgId *string) *string
+
+//go:wasmimport sdk tss.get_key
+func tssGetKey(keyId *string) *string
 
 // var envMap = []string{
 // 	"contract.id",
@@ -224,4 +234,22 @@ func ContractCall(contractId string, method string, payload string, options *Con
 		optStr = string(optByte)
 	}
 	return contractCall(&contractId, &method, &payload, &optStr)
+}
+
+func TssCreateKey(keyId string, algo string) string {
+	if algo != "ecdsa" && algo != "eddsa" {
+		Abort("algo must be ecdsa or eddsa")
+	}
+
+	return *tssCreateKey(&keyId, &algo)
+}
+
+func TssGetKey(keyId string) string {
+	return *tssGetKey(&keyId)
+}
+
+func TssSignKey(keyId string, bytes []byte) {
+	byteStr := hex.EncodeToString(bytes)
+
+	tssSignKey(&keyId, &byteStr)
 }
