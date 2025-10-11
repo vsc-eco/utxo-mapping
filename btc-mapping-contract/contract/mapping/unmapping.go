@@ -2,8 +2,10 @@ package mapping
 
 import (
 	"bytes"
+	"contract-template/sdk"
 	"encoding/hex"
 	"errors"
+	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -13,15 +15,16 @@ import (
 )
 
 func deductVscFee(amount int64) (int64, error) {
-	const MINFEE int64 = 1000
-	const FEERATE float64 = 0.01
-	percentageFee := int64(float64(amount) * FEERATE)
-	finalFee := MINFEE
-	if percentageFee > MINFEE {
+	const minFee int64 = 1000
+	const feeRate float64 = 0.01
+	percentageFee := int64(float64(amount) * feeRate)
+	finalFee := minFee
+	if percentageFee > minFee {
 		finalFee = percentageFee
 	}
+	sdk.Log(fmt.Sprintf("amount: %d, finalFee: %d", amount, finalFee))
 	if finalFee >= amount {
-		return 0, errors.New("Transaction too small to cover fee.")
+		return 0, errors.New("transaction too small to cover fee.")
 	}
 	return finalFee, nil
 }
