@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"contract-template/sdk"
 	"encoding/hex"
-	"errors"
 	"fmt"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -12,7 +11,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 )
 
-func (cs *ContractState) HandleMap(txData *VerificationRequest) error {
+func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 	var totalMapped int64
 
 	rawTx, err := hex.DecodeString(txData.RawTxHex)
@@ -24,7 +23,7 @@ func (cs *ContractState) HandleMap(txData *VerificationRequest) error {
 		return err
 	}
 	if len(proofBytes)%32 != 0 {
-		return errors.New("Invalid proof strcuture")
+		return fmt.Errorf("Invalid proof strcuture")
 	}
 	merkleProof := make([]chainhash.Hash, len(proofBytes)/32)
 	for i := 0; i < len(proofBytes); i += 32 {
@@ -41,33 +40,33 @@ func (cs *ContractState) HandleMap(txData *VerificationRequest) error {
 	}
 
 	// removes this tx from utxo spends if present
-	cs.updateUtxoSpends(msgTx.TxID())
+	ms.updateUtxoSpends(msgTx.TxID())
 
 	// gets all outputs the address of which is specified in the instructions
-	relevantOutputs := *cs.indexOutputs(&msgTx)
+	relevantOutputs := *ms.indexOutputs(&msgTx)
 
 	// create new utxos entries for all of the relevant outputs in the incoming transaction
 	for _, utxo := range relevantOutputs {
-		_, addrs, _, err := txscript.ExtractPkScriptAddrs(utxo.PkScript, cs.NetworkParams)
+		_, addrs, _, err := txscript.ExtractPkScriptAddrs(utxo.PkScript, ms.NetworkParams)
 		if err != nil {
 			sdk.Abort(err.Error())
 		}
-		if metadata, ok := cs.AddressRegistry[addrs[0].EncodeAddress()]; ok {
+		if metadata, ok := ms.AddressRegistry[addrs[0].EncodeAddress()]; ok {
 			// Create UTXO entry
 			utxoKey := fmt.Sprintf("%s:%d", utxo.TxId, utxo.Vout)
-			cs.Utxos[utxoKey] = &utxo
-			cs.ObservedTxs[utxoKey] = true
+			ms.Utxos[utxoKey] = &utxo
+			ms.ObservedTxs[utxoKey] = true
 
 			// increment balance for recipient account (vsc account not btc account)
-			cs.Balances[metadata.VscAddress] += utxo.Amount
+			ms.Balances[metadata.VscAddress] += utxo.Amount
 
 			totalMapped += utxo.Amount
 		}
 	}
 
 	if totalMapped != 0 {
-		cs.Supply.ActiveSupply += totalMapped
-		cs.Supply.UserSupply += totalMapped
+		ms.Supply.ActiveSupply += totalMapped
+		ms.Supply.UserSupply += totalMapped
 	}
 
 	return nil
@@ -76,11 +75,13 @@ func (cs *ContractState) HandleMap(txData *VerificationRequest) error {
 // Returns: raw tx hex to be broadcast
 func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) string {
 	amount := instructions.Amount
-	senderVscAddr := sdk.GetEnv().Sender.Address.String()
-	senderBalance := cs.Balances[senderVscAddr]
-	if senderBalance < amount {
-		sdk.Abort(fmt.Sprintf("sender balance insufficient. has %d, needs %d", senderBalance, amount))
+	env := sdk.GetEnv()
+
+	err := checkSender(env, amount, cs.Balances)
+	if err != nil {
+		sdk.Abort(err.Error())
 	}
+
 	vscFee, err := deductVscFee(amount)
 	if err != nil {
 		sdk.Abort(err.Error())
@@ -113,7 +114,7 @@ func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) string {
 	}
 
 	cs.TxSpends[tx.TxID()] = signingData
-	cs.Balances[senderVscAddr] -= amount
+	cs.Balances[env.Sender.Address.String()] -= amount
 	cs.Supply.ActiveSupply -= postFeeAmount
 	cs.Supply.UserSupply -= amount
 	cs.Supply.FeeSupply += vscFee
@@ -121,13 +122,14 @@ func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) string {
 	return "success"
 }
 
-func (cs *ContractState) HandleTrasfer(instructions *TransferInputData) {
+func HandleTrasfer(instructions *TransferInputData, balances AccountBalanceMap) {
 	amount := instructions.Amount
-	senderVscAddr := sdk.GetEnv().Sender.Address.String()
-	senderBalance := cs.Balances[senderVscAddr]
-	if senderBalance < amount {
-		sdk.Abort(fmt.Sprintf("sender balance insufficient. has %d, needs %d", senderBalance, amount))
+	env := sdk.GetEnv()
+	err := checkSender(env, amount, balances)
+	if err != nil {
+		sdk.Abort(err.Error())
 	}
-	cs.Balances[sdk.GetEnv().Sender.Address.String()] -= amount
-	cs.Balances[instructions.RecipientVscAddress] += amount
+	balances[env.Sender.Address.String()] -= amount
+	balances[instructions.RecipientVscAddress] += amount
+	// cs.Balances[instructions.RecipientVscAddress] = bal + amount
 }

@@ -25,18 +25,18 @@ func isForVscAcc(txOut *wire.TxOut, addresses map[string]*AddressMetadata, netwo
 	return "", false
 }
 
-func (cs *ContractState) indexOutputs(msgTx *wire.MsgTx) *[]Utxo {
+func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) *[]Utxo {
 	outputsForVsc := []Utxo{}
 
 	for index, txOut := range msgTx.TxOut {
-		if addr, ok := isForVscAcc(txOut, cs.AddressRegistry, cs.NetworkParams); ok {
+		if addr, ok := isForVscAcc(txOut, ms.AddressRegistry, ms.NetworkParams); ok {
 
 			utxo := Utxo{
 				TxId:      msgTx.TxID(),
 				Vout:      uint32(index),
 				Amount:    txOut.Value,
 				PkScript:  txOut.PkScript,
-				Tag:       hex.EncodeToString(cs.AddressRegistry[addr].Tag),
+				Tag:       hex.EncodeToString(ms.AddressRegistry[addr].Tag),
 				Confirmed: true,
 			}
 			outputsForVsc = append(outputsForVsc, utxo)

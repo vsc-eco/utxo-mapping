@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"contract-template/sdk"
 	"encoding/hex"
-	"errors"
+	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -22,7 +22,7 @@ func deductVscFee(amount int64) (int64, error) {
 		finalFee = percentageFee
 	}
 	if finalFee >= amount {
-		return 0, errors.New("transaction too small to cover fee.")
+		return 0, fmt.Errorf("transaction too small to cover fee.")
 	}
 	return finalFee, nil
 }
@@ -73,7 +73,7 @@ func (cs *ContractState) getInputUtxos(amount int64) ([]*Utxo, int64, error) {
 		}
 	}
 	// this really should never happen
-	return nil, 0, errors.New("Total available balance insufficient to complete transaction.")
+	return nil, 0, fmt.Errorf("Total available balance insufficient to complete transaction.")
 }
 
 func (cs *ContractState) calculatSegwitFee(baseSize int64, witnessScripts map[int][]byte) int64 {

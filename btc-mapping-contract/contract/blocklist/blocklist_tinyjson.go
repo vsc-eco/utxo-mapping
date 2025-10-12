@@ -15,7 +15,66 @@ var (
 	_ tinyjson.Marshaler
 )
 
-func tinyjson2d7d9c89DecodeExampleComBuildingTinyjsonBlocklist(in *jlexer.Lexer, out *BlockData) {
+func tinyjson2d7d9c89DecodeExampleComBuildingTinyjsonBlocklist(in *jlexer.Lexer, out *BlockSeedInput) {
+	isTopLevel := in.IsStart()
+	if in.IsNull() {
+		if isTopLevel {
+			in.Consumed()
+		}
+		in.Skip()
+		return
+	}
+	in.Delim('{')
+	for !in.IsDelim('}') {
+		key := in.UnsafeFieldName(false)
+		in.WantColon()
+		if in.IsNull() {
+			in.Skip()
+			in.WantComma()
+			continue
+		}
+		switch key {
+		case "block_header":
+			out.BlockHeader = string(in.String())
+		case "block_height":
+			out.BlockHeight = uint32(in.Uint32())
+		default:
+			in.SkipRecursive()
+		}
+		in.WantComma()
+	}
+	in.Delim('}')
+	if isTopLevel {
+		in.Consumed()
+	}
+}
+func tinyjson2d7d9c89EncodeExampleComBuildingTinyjsonBlocklist(out *jwriter.Writer, in BlockSeedInput) {
+	out.RawByte('{')
+	first := true
+	_ = first
+	{
+		const prefix string = ",\"block_header\":"
+		out.RawString(prefix[1:])
+		out.String(string(in.BlockHeader))
+	}
+	{
+		const prefix string = ",\"block_height\":"
+		out.RawString(prefix)
+		out.Uint32(uint32(in.BlockHeight))
+	}
+	out.RawByte('}')
+}
+
+// MarshalTinyJSON supports tinyjson.Marshaler interface
+func (v BlockSeedInput) MarshalTinyJSON(w *jwriter.Writer) {
+	tinyjson2d7d9c89EncodeExampleComBuildingTinyjsonBlocklist(w, v)
+}
+
+// UnmarshalTinyJSON supports tinyjson.Unmarshaler interface
+func (v *BlockSeedInput) UnmarshalTinyJSON(l *jlexer.Lexer) {
+	tinyjson2d7d9c89DecodeExampleComBuildingTinyjsonBlocklist(l, v)
+}
+func tinyjson2d7d9c89DecodeExampleComBuildingTinyjsonBlocklist1(in *jlexer.Lexer, out *BlockData) {
 	isTopLevel := in.IsStart()
 	if in.IsNull() {
 		if isTopLevel {
@@ -62,7 +121,7 @@ func tinyjson2d7d9c89DecodeExampleComBuildingTinyjsonBlocklist(in *jlexer.Lexer,
 		in.Consumed()
 	}
 }
-func tinyjson2d7d9c89EncodeExampleComBuildingTinyjsonBlocklist(out *jwriter.Writer, in BlockData) {
+func tinyjson2d7d9c89EncodeExampleComBuildingTinyjsonBlocklist1(out *jwriter.Writer, in BlockData) {
 	out.RawByte('{')
 	first := true
 	_ = first
@@ -97,14 +156,14 @@ func tinyjson2d7d9c89EncodeExampleComBuildingTinyjsonBlocklist(out *jwriter.Writ
 
 // MarshalTinyJSON supports tinyjson.Marshaler interface
 func (v BlockData) MarshalTinyJSON(w *jwriter.Writer) {
-	tinyjson2d7d9c89EncodeExampleComBuildingTinyjsonBlocklist(w, v)
+	tinyjson2d7d9c89EncodeExampleComBuildingTinyjsonBlocklist1(w, v)
 }
 
 // UnmarshalTinyJSON supports tinyjson.Unmarshaler interface
 func (v *BlockData) UnmarshalTinyJSON(l *jlexer.Lexer) {
-	tinyjson2d7d9c89DecodeExampleComBuildingTinyjsonBlocklist(l, v)
+	tinyjson2d7d9c89DecodeExampleComBuildingTinyjsonBlocklist1(l, v)
 }
-func tinyjson2d7d9c89DecodeExampleComBuildingTinyjsonBlocklist1(in *jlexer.Lexer, out *AddBlockOutput) {
+func tinyjson2d7d9c89DecodeExampleComBuildingTinyjsonBlocklist2(in *jlexer.Lexer, out *AddBlockOutput) {
 	isTopLevel := in.IsStart()
 	if in.IsNull() {
 		if isTopLevel {
@@ -139,7 +198,7 @@ func tinyjson2d7d9c89DecodeExampleComBuildingTinyjsonBlocklist1(in *jlexer.Lexer
 		in.Consumed()
 	}
 }
-func tinyjson2d7d9c89EncodeExampleComBuildingTinyjsonBlocklist1(out *jwriter.Writer, in AddBlockOutput) {
+func tinyjson2d7d9c89EncodeExampleComBuildingTinyjsonBlocklist2(out *jwriter.Writer, in AddBlockOutput) {
 	out.RawByte('{')
 	first := true
 	_ = first
@@ -163,10 +222,10 @@ func tinyjson2d7d9c89EncodeExampleComBuildingTinyjsonBlocklist1(out *jwriter.Wri
 
 // MarshalTinyJSON supports tinyjson.Marshaler interface
 func (v AddBlockOutput) MarshalTinyJSON(w *jwriter.Writer) {
-	tinyjson2d7d9c89EncodeExampleComBuildingTinyjsonBlocklist1(w, v)
+	tinyjson2d7d9c89EncodeExampleComBuildingTinyjsonBlocklist2(w, v)
 }
 
 // UnmarshalTinyJSON supports tinyjson.Unmarshaler interface
 func (v *AddBlockOutput) UnmarshalTinyJSON(l *jlexer.Lexer) {
-	tinyjson2d7d9c89DecodeExampleComBuildingTinyjsonBlocklist1(l, v)
+	tinyjson2d7d9c89DecodeExampleComBuildingTinyjsonBlocklist2(l, v)
 }

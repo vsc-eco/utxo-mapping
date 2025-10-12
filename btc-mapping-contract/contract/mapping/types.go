@@ -95,13 +95,21 @@ type SystemSupply struct {
 	BaseFeeRate  int64 // sats per byte
 }
 
+type BasicState struct {
+	Balances AccountBalanceMap // map of vsc addresses to the btc balance they hold
+}
+
 type ContractState struct {
-	AddressRegistry map[string]*AddressMetadata // map of btc addresses to the tags they were created with
-	Balances        AccountBalanceMap           // map of vsc addresses to the btc balance they hold
+	BasicState
+	Utxos         UtxoMap
+	TxSpends      TxSpends
+	Supply        SystemSupply
+	PublicKey     string
+	NetworkParams *chaincfg.Params
+}
+
+type MappingState struct {
+	ContractState
 	ObservedTxs     ObservedTxList
-	Utxos           UtxoMap
-	TxSpends        TxSpends
-	Supply          SystemSupply
-	PublicKey       string
-	NetworkParams   *chaincfg.Params
+	AddressRegistry map[string]*AddressMetadata // map of btc addresses to the tags they were created with
 }

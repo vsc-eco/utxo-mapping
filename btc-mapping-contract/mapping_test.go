@@ -21,7 +21,7 @@ const rawInstruction = `{"tx_data":{"block_height":4736609,"raw_tx_hex":"0200000
 func TestMapping(t *testing.T) {
 	ct := test_utils.NewContractTest()
 	contractId := "mapping_contract"
-	ct.RegisterContract(contractId, ContractWasm)
+	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 	ct.StateSet("mapping_contract", "account_balances", `{"hive:milo-hpr":0}`)
 	ct.StateSet("mapping_contract", "observed_txs", `{}`)
 	ct.StateSet("mapping_contract", "utxos", `{}`)
@@ -51,15 +51,18 @@ func TestMapping(t *testing.T) {
 		ContractId: contractId,
 		Action:     "map",
 		Payload:    json.RawMessage([]byte(rawInstruction)),
-		RcLimit:    1000,
+		RcLimit:    10000,
 		Intents:    []contracts.Intent{},
+		Caller:     "hive:milo-hpr",
 	})
 	if result.Err != nil {
 		fmt.Println("error:", *result.Err)
 	}
-	assert.True(t, result.Success)                 // assert contract execution success
-	assert.LessOrEqual(t, gasUsed, uint(10000000)) // assert this call uses no more than 10M WASM gas
-	assert.GreaterOrEqual(t, len(logs), 0)         // assert at least 1 log emitted
+	assert.True(t, result.Success)                      // assert contract execution success
+	if assert.LessOrEqual(t, gasUsed, uint(10000000)) { // assert this call uses no more than 10M WASM gas
+		fmt.Println("gas used:", gasUsed)
+	}
+	assert.GreaterOrEqual(t, len(logs), 0) // assert at least 1 log emitted
 
 	fmt.Printf("%s: %s\n\n", "account_balance", ct.StateGet("mapping_contract", "account_balances"))
 	fmt.Printf("%s: %s\n\n", "observed_txs", ct.StateGet("mapping_contract", "observed_txs"))
@@ -74,7 +77,7 @@ func TestMapping(t *testing.T) {
 func TestUnmapping(t *testing.T) {
 	ct := test_utils.NewContractTest()
 	contractId := "mapping_contract"
-	ct.RegisterContract(contractId, ContractWasm)
+	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 	ct.StateSet("mapping_contract", "account_balances", `{"hive:milo-hpr":9878}`)
 	ct.StateSet(
 		"mapping_contract",
@@ -114,15 +117,81 @@ func TestUnmapping(t *testing.T) {
 		Payload: json.RawMessage(
 			[]byte(`{"amount":8000,"recipient_btc_address":"tb1qd4erjn4tvt52c92yv66lwju9pzsd2ltph0xe5s"}`),
 		),
-		RcLimit: 1000,
+		RcLimit: 10000,
 		Intents: []contracts.Intent{},
 	})
 	if result.Err != nil {
 		fmt.Println("error:", *result.Err)
 	}
-	assert.True(t, result.Success)                 // assert contract execution success
-	assert.LessOrEqual(t, gasUsed, uint(10000000)) // assert this call uses no more than 10M WASM gas
-	assert.GreaterOrEqual(t, len(logs), 1)         // assert at least 1 log emitted
+	assert.True(t, result.Success)                      // assert contract execution success
+	if assert.LessOrEqual(t, gasUsed, uint(10000000)) { // assert this call uses no more than 10M WASM gas
+		fmt.Println("gas used:", gasUsed)
+	}
+	assert.GreaterOrEqual(t, len(logs), 1) // assert at least 1 log emitted
+
+	fmt.Printf("%s: %s\n\n", "account_balance", ct.StateGet("mapping_contract", "account_balances"))
+	fmt.Printf("%s: %s\n\n", "observed_txs", ct.StateGet("mapping_contract", "observed_txs"))
+	fmt.Printf("%s: %s\n\n", "utxos", ct.StateGet("mapping_contract", "utxos"))
+	fmt.Printf("%s: %s\n\n", "tx_spends", ct.StateGet("mapping_contract", "tx_spends"))
+	fmt.Printf("%s: %s\n\n", "system_supply", ct.StateGet("mapping_contract", "system_supply"))
+	fmt.Printf("%s: %s\n\n", "blocklist", ct.StateGet("mapping_contract", "blocklist"))
+
+	fmt.Println("Return value:", result.Ret)
+}
+
+func TestTransfer(t *testing.T) {
+	ct := test_utils.NewContractTest()
+	contractId := "mapping_contract"
+	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
+	ct.StateSet("mapping_contract", "account_balances", `{"hive:milo-hpr":9878}`)
+	ct.StateSet(
+		"mapping_contract",
+		"observed_txs",
+		`{"64240d2b706020087463530cd13304907033dd50b7938817e1016416376876bf:0":true}`,
+	)
+	ct.StateSet(
+		"mapping_contract",
+		"utxos",
+		`{"64240d2b706020087463530cd13304907033dd50b7938817e1016416376876bf:0":{"tx_id":"64240d2b706020087463530cd13304907033dd50b7938817e1016416376876bf","vout":0,"amount":9878,"pk_script":"ACAqDOQIRoebQvp3OesVzat3ygG3gXqXh5sfWP61LkRHjA==","tag":"6ad59da3ece6b8fcfd0cd8c615ed5ec82504fbd81808b2aea5fb750adb01f20c","confirmed":true}}`,
+	)
+	ct.StateSet("mapping_contract", "tx_spends", `{}`)
+	ct.StateSet(
+		"mapping_contract",
+		"system_supply",
+		`{"active_supply":9878,"user_supply":9878,"fee_supply":0,"base_fee_rate":1}`,
+	)
+	ct.StateSet(
+		"mapping_contract",
+		"blocklist",
+		`{"block_map":{"4736609":"000000205fe55a9fc06c60fd340c84411363dfd8b574e8bfe6a44ec21f170f0d000000008c84bcca5e78351d0c8f671c7b9f83430e80ad462fa0b808a0be2c3b1c142df4e8b6e968ffff001db2174f36"},"last_height":4736609}`,
+	)
+	ct.StateSet("mapping_contract", "public_key", `0242f9da15eae56fe6aca65136738905c0afdb2c4edf379e107b3b00b98c7fc9f0`)
+
+	result, gasUsed, _ := ct.Call(stateEngine.TxVscCallContract{
+		Self: stateEngine.TxSelf{
+			TxId:                 "sometxid",
+			BlockId:              "block:transfer",
+			Index:                69,
+			OpIndex:              0,
+			Timestamp:            "2025-10-14T00:00:00",
+			RequiredAuths:        []string{"hive:milo-hpr"},
+			RequiredPostingAuths: []string{},
+		},
+		ContractId: contractId,
+		Action:     "transfer",
+		Payload: json.RawMessage(
+			[]byte(`{"amount":8000,"recipient_vsc_address":"hive:vaultec"}`),
+		),
+		RcLimit: 10000,
+		Intents: []contracts.Intent{},
+	})
+	if result.Err != nil {
+		fmt.Println("error:", *result.Err)
+	}
+	assert.True(t, result.Success)                      // assert contract execution success
+	if assert.LessOrEqual(t, gasUsed, uint(10000000)) { // assert this call uses no more than 10M WASM gas
+		fmt.Println("gas used:", gasUsed)
+	}
 
 	fmt.Printf("%s: %s\n\n", "account_balance", ct.StateGet("mapping_contract", "account_balances"))
 	fmt.Printf("%s: %s\n\n", "observed_txs", ct.StateGet("mapping_contract", "observed_txs"))
@@ -137,7 +206,7 @@ func TestUnmapping(t *testing.T) {
 func TestRegisterKey(t *testing.T) {
 	ct := test_utils.NewContractTest()
 	contractId := "mapping_contract"
-	ct.RegisterContract(contractId, ContractWasm)
+	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 
 	result, gasUsed, _ := ct.Call(stateEngine.TxVscCallContract{
 		Self: stateEngine.TxSelf{
@@ -146,7 +215,7 @@ func TestRegisterKey(t *testing.T) {
 			Index:                69,
 			OpIndex:              0,
 			Timestamp:            "2025-10-14T00:00:00",
-			RequiredAuths:        []string{"hive:someone"},
+			RequiredAuths:        []string{"hive:milo-hpr"},
 			RequiredPostingAuths: []string{},
 		},
 		ContractId: contractId,
@@ -168,7 +237,7 @@ const rawBlocks = `000000204286711ef1b295f5393717779e97684f2df7db3637564376ed3a5
 func TestAddBlocks(t *testing.T) {
 	ct := test_utils.NewContractTest()
 	contractId := "mapping_contract"
-	ct.RegisterContract(contractId, ContractWasm)
+	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 	ct.StateSet(
 		"mapping_contract",
 		"blocklist",
@@ -182,12 +251,52 @@ func TestAddBlocks(t *testing.T) {
 			Index:                69,
 			OpIndex:              0,
 			Timestamp:            "2025-10-14T00:00:00",
-			RequiredAuths:        []string{"hive:someone"},
+			RequiredAuths:        []string{"hive:milo-hpr"},
 			RequiredPostingAuths: []string{},
 		},
 		ContractId: contractId,
 		Action:     "add_blocks",
 		Payload:    json.RawMessage([]byte(rawBlocks)),
+		RcLimit:    1000,
+		Intents:    []contracts.Intent{},
+	})
+	if result.Err != nil {
+		fmt.Println("error:", *result.Err)
+	}
+
+	assert.True(t, result.Success)                 // assert contract execution success
+	assert.LessOrEqual(t, gasUsed, uint(10000000)) // assert this call uses no more than 10M WASM gas
+
+	fmt.Printf("%s: %s\n\n", "blocklist", ct.StateGet("mapping_contract", "blocklist"))
+
+	fmt.Println("Return value:", result.Ret)
+}
+
+const seedBlockInput = `{"block_header":"000000204286711ef1b295f5393717779e97684f2df7db3637564376ed3a54010000000014833ac94c78dc6f17424a7e3620bcd5c1ea1c282196b2ba8cf4af5ac17c206a9dbbe968ffff001d936e4485000000203a3d51f10d78c09023158cac89d30c45270ce1031620294b457a4d0e00000000043fae4bb9f9729d603552558c0dc9dea27270feda93c014d76bee213f4c5b5752c0e968ffff001d1519a9c0","block_height":4736609}`
+
+func TestSeedBlocks(t *testing.T) {
+	ct := test_utils.NewContractTest()
+	contractId := "mapping_contract"
+	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
+	ct.StateSet(
+		"mapping_contract",
+		"blocklist",
+		`{"block_map":{"4736609":"000000205fe55a9fc06c60fd340c84411363dfd8b574e8bfe6a44ec21f170f0d000000008c84bcca5e78351d0c8f671c7b9f83430e80ad462fa0b808a0be2c3b1c142df4e8b6e968ffff001db2174f36"},"last_height":4736609}`,
+	)
+
+	result, gasUsed, _ := ct.Call(stateEngine.TxVscCallContract{
+		Self: stateEngine.TxSelf{
+			TxId:                 "sometxid",
+			BlockId:              "block:seed_blocks",
+			Index:                69,
+			OpIndex:              0,
+			Timestamp:            "2025-10-14T00:00:00",
+			RequiredAuths:        []string{"hive:milo-hpr"},
+			RequiredPostingAuths: []string{},
+		},
+		ContractId: contractId,
+		Action:     "seed_blocks",
+		Payload:    json.RawMessage([]byte(seedBlockInput)),
 		RcLimit:    1000,
 		Intents:    []contracts.Intent{},
 	})

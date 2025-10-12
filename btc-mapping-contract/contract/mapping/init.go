@@ -9,28 +9,12 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 )
 
-func IntializeContractState(publicKey string, instructions ...string) (*ContractState, error) {
+func IntializeContractState(publicKey string) (*ContractState, error) {
 	networkParams := &chaincfg.MainNetParams
-
-	var registry map[string]*AddressMetadata
-	if len(instructions) > 0 {
-		var err error
-		registry, err = parseInstructions(publicKey, instructions, networkParams)
-		if err != nil {
-			return nil, err
-		}
-	}
 
 	var balances AccountBalanceMap
 	balanceState := sdk.StateGetObject(balanceKey)
 	err := tinyjson.Unmarshal([]byte(*balanceState), &balances)
-	if err != nil {
-		return nil, err
-	}
-
-	var observedTxs ObservedTxList
-	obserbedTxsState := sdk.StateGetObject(obserbedKey)
-	err = tinyjson.Unmarshal([]byte(*obserbedTxsState), &observedTxs)
 	if err != nil {
 		return nil, err
 	}
@@ -57,15 +41,63 @@ func IntializeContractState(publicKey string, instructions ...string) (*Contract
 	}
 
 	return &ContractState{
-		AddressRegistry: registry,
-		Balances:        balances,
-		ObservedTxs:     observedTxs,
-		Utxos:           utxos,
-		TxSpends:        utxoSpends,
-		Supply:          supply,
-		PublicKey:       publicKey,
-		NetworkParams:   networkParams,
+		BasicState: BasicState{
+			Balances: balances,
+		},
+		Utxos:         utxos,
+		TxSpends:      utxoSpends,
+		Supply:        supply,
+		PublicKey:     publicKey,
+		NetworkParams: networkParams,
 	}, nil
+}
+
+func InitializeMappingState(publicKey string, instructions ...string) (*MappingState, error) {
+	contractState, err := IntializeContractState(publicKey)
+	if err != nil {
+		return nil, err
+	}
+
+	var registry map[string]*AddressMetadata
+	if len(instructions) > 0 {
+		var err error
+		registry, err = parseInstructions(publicKey, instructions, contractState.NetworkParams)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	var observedTxs ObservedTxList
+	obserbedTxsState := sdk.StateGetObject(obserbedKey)
+	err = tinyjson.Unmarshal([]byte(*obserbedTxsState), &observedTxs)
+	if err != nil {
+		return nil, err
+	}
+
+	return &MappingState{
+		ContractState:   *contractState,
+		ObservedTxs:     observedTxs,
+		AddressRegistry: registry,
+	}, err
+}
+
+func GetBalanceMap() (AccountBalanceMap, error) {
+	var balances AccountBalanceMap
+	balanceState := sdk.StateGetObject(balanceKey)
+	err := tinyjson.Unmarshal([]byte(*balanceState), &balances)
+	if err != nil {
+		return nil, err
+	}
+	return balances, nil
+}
+
+func SaveBalanceMap(balances AccountBalanceMap) error {
+	balancesJson, err := tinyjson.Marshal(balances)
+	if err != nil {
+		return err
+	}
+	sdk.StateSetObject(balanceKey, string(balancesJson))
+	return nil
 }
 
 func parseInstructions(
@@ -106,12 +138,6 @@ func (cs *ContractState) SaveToState() error {
 	}
 	sdk.StateSetObject(balanceKey, string(balancesJson))
 
-	obseredTxsJson, err := tinyjson.Marshal(cs.ObservedTxs)
-	if err != nil {
-		return err
-	}
-	sdk.StateSetObject(obserbedKey, string(obseredTxsJson))
-
 	utxosJson, err := tinyjson.Marshal(cs.Utxos)
 	if err != nil {
 		return err
@@ -130,5 +156,19 @@ func (cs *ContractState) SaveToState() error {
 	}
 	sdk.StateSetObject(supplyKey, string(supplyJson))
 
+	return nil
+}
+
+func (ms *MappingState) SaveToState() error {
+	obseredTxsJson, err := tinyjson.Marshal(ms.ObservedTxs)
+	if err != nil {
+		return err
+	}
+	sdk.StateSetObject(obserbedKey, string(obseredTxsJson))
+
+	err = ms.ContractState.SaveToState()
+	if err != nil {
+		return err
+	}
 	return nil
 }

@@ -1,3 +1,4 @@
 .DS_Store
 main.wasm
 .env
+btc-mapping-contract/data/

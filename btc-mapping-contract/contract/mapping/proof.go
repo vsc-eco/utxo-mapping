@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"contract-template/contract/blocklist"
 	"encoding/hex"
-	"errors"
+	"fmt"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -32,7 +32,7 @@ func verifyTransaction(req *VerificationRequest, rawTxBytes []byte) error {
 	calculatedHash := tx.TxHash()
 
 	if !verifyMerkleProof(calculatedHash, req.TxIndex, merkleProof, blockHeader.MerkleRoot) {
-		return errors.New("transaction cannot be validated, failed to reconstruct proof")
+		return fmt.Errorf("transaction cannot be validated, failed to reconstruct proof")
 	}
 	return nil
 }
@@ -43,7 +43,7 @@ func merkleProofFromHex(proofHex string) ([]chainhash.Hash, error) {
 		return nil, err
 	}
 	if len(proofBytes)%32 != 0 {
-		return nil, errors.New("invalid proof format")
+		return nil, fmt.Errorf("invalid proof format")
 	}
 	proof := make([]chainhash.Hash, len(proofBytes)/32)
 	for i := 0; i < len(proofBytes); i += 32 {

@@ -30,9 +30,28 @@ import (
 const oracleAddress = "did:vsc:oracle:vsc"
 const publicKeyStateKey = "public_key"
 
+//go:wasmexport seed_blocks
+func SeedBlocks(blockSeedInput *string) *string {
+	blockData := blocklist.BlockDataFromState()
+
+	sdk.Log(fmt.Sprintln("checkpoint 1", blockData))
+
+	if len(blockData.BlockMap) > 0 {
+		sdk.Abort(fmt.Sprintf("block data already seeded, last height: %d", blockData.LastHeight))
+	}
+
+	sdk.Log("checkpoint 2")
+
+	blockData.HandleSeedBlocks(blockSeedInput)
+	blockData.SaveToState()
+
+	outMsg := fmt.Sprintf("last height: %d", blockData.LastHeight)
+	return &outMsg
+}
+
 //go:wasmexport add_blocks
 func AddBlocks(blockHeadersHex *string) *string {
-	if sdk.GetEnv().Sender.Address != oracleAddress {
+	if sdk.GetEnv().Sender.Address.String() != *sdk.GetEnvKey("contract.owner") {
 		sdk.Abort("no permission")
 	}
 
@@ -75,7 +94,7 @@ func Map(incomingTx *string) *string {
 
 	publicKey := sdk.StateGetObject(publicKeyStateKey)
 
-	contractState, err := mapping.IntializeContractState(*publicKey, mapInstructions.Instructions...)
+	contractState, err := mapping.InitializeMappingState(*publicKey, mapInstructions.Instructions...)
 	if err != nil {
 		sdk.Abort(err.Error())
 	}
@@ -125,25 +144,26 @@ func Transfer(tx *string) *string {
 		sdk.Abort(err.Error())
 	}
 
-	publicKey := sdk.StateGetObject(publicKeyStateKey)
-
-	contractState, err := mapping.IntializeContractState(*publicKey)
+	balances, err := mapping.GetBalanceMap()
 	if err != nil {
 		sdk.Abort(err.Error())
 	}
-	contractState.HandleTrasfer(&transferInstructions)
+	mapping.HandleTrasfer(&transferInstructions, balances)
+	err = mapping.SaveBalanceMap(balances)
+	if err != nil {
+		sdk.Abort(err.Error())
+	}
 
 	return tx
 }
 
-//go:wasmexport create_key_pair
-func CreateKeyPair(_ *string) *string {
-	success := "success"
-	return &success
-}
-
 //go:wasmexport register_public_key
 func RegisterPublicKey(key *string) *string {
+	env := sdk.GetEnv()
+	if env.Sender.Address.String() != *sdk.GetEnvKey("contract.owner") {
+		sdk.Abort("no permission")
+	}
+
 	existing := sdk.StateGetObject(publicKeyStateKey)
 	if *existing == "" {
 		sdk.StateSetObject(publicKeyStateKey, *key)
@@ -154,9 +174,19 @@ func RegisterPublicKey(key *string) *string {
 	return &result
 }
 
-//go:wasmexport create_public_key
-func CreatePublicKey(_ *string) *string {
+//go:wasmexport create_key_pair
+func CreateKeyPair(_ *string) *string {
+	if sdk.GetEnv().Sender.Address.String() != *sdk.GetEnvKey("contract.owner") {
+		sdk.Abort("no permission")
+	}
+
 	keyId := "main"
-	sdk.TssCreateKey(keyId, "ecdsa")
-	return &keyId
+	status := sdk.TssGetKey(keyId)
+	if status == "null" {
+		sdk.TssCreateKey(keyId, "ecdsa")
+		return &keyId
+	} else {
+		errMsg := fmt.Sprintf("key already created. status: %s", status)
+		return &errMsg
+	}
 }
