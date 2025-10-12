@@ -10,8 +10,8 @@ import (
 	"github.com/btcsuite/btcd/wire"
 )
 
-func isForVscAcc(txOut *wire.TxOut, addresses map[string]*AddressMetadata) (string, bool) {
-	_, addrs, _, err := txscript.ExtractPkScriptAddrs(txOut.PkScript, &chaincfg.TestNet3Params)
+func isForVscAcc(txOut *wire.TxOut, addresses map[string]*AddressMetadata, network *chaincfg.Params) (string, bool) {
+	_, addrs, _, err := txscript.ExtractPkScriptAddrs(txOut.PkScript, network)
 	if err != nil {
 		sdk.Abort(err.Error())
 	}
@@ -29,7 +29,7 @@ func (cs *ContractState) indexOutputs(msgTx *wire.MsgTx) *[]Utxo {
 	outputsForVsc := []Utxo{}
 
 	for index, txOut := range msgTx.TxOut {
-		if addr, ok := isForVscAcc(txOut, cs.AddressRegistry); ok {
+		if addr, ok := isForVscAcc(txOut, cs.AddressRegistry, cs.NetworkParams); ok {
 
 			utxo := Utxo{
 				TxId:      msgTx.TxID(),

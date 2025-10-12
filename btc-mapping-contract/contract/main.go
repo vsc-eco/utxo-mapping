@@ -27,14 +27,14 @@ import (
 	"github.com/CosmWasm/tinyjson"
 )
 
-const oracleAddress = "oracle_address"
+const oracleAddress = "did:vsc:oracle:vsc"
 const publicKeyStateKey = "public_key"
 
 //go:wasmexport add_blocks
 func AddBlocks(blockHeadersHex *string) *string {
-	// if sdk.GetEnv().Sender.Address != oracleAddress {
-	// 	sdk.Abort("no permission")
-	// }
+	if sdk.GetEnv().Sender.Address != oracleAddress {
+		sdk.Abort("no permission")
+	}
 
 	blockHeaders, err := blocklist.DivideHeaderList(blockHeadersHex)
 	if err != nil {

@@ -10,10 +10,12 @@ import (
 )
 
 func IntializeContractState(publicKey string, instructions ...string) (*ContractState, error) {
+	networkParams := &chaincfg.MainNetParams
+
 	var registry map[string]*AddressMetadata
 	if len(instructions) > 0 {
 		var err error
-		registry, err = parseInstructions(publicKey, instructions)
+		registry, err = parseInstructions(publicKey, instructions, networkParams)
 		if err != nil {
 			return nil, err
 		}
@@ -62,10 +64,15 @@ func IntializeContractState(publicKey string, instructions ...string) (*Contract
 		TxSpends:        utxoSpends,
 		Supply:          supply,
 		PublicKey:       publicKey,
+		NetworkParams:   networkParams,
 	}, nil
 }
 
-func parseInstructions(publicKey string, instrs []string) (map[string]*AddressMetadata, error) {
+func parseInstructions(
+	publicKey string,
+	instrs []string,
+	networkParams *chaincfg.Params,
+) (map[string]*AddressMetadata, error) {
 	parsedInstructions := make([]url.Values, len(instrs))
 	registry := make(map[string]*AddressMetadata, len(instrs))
 	for i, instr := range instrs {
@@ -78,7 +85,7 @@ func parseInstructions(publicKey string, instrs []string) (map[string]*AddressMe
 			hasher := sha256.New()
 			hasher.Write([]byte(instr))
 			hashBytes := hasher.Sum(nil)
-			address, _, err := createP2WSHAddress(publicKey, hashBytes, &chaincfg.TestNet3Params)
+			address, _, err := createP2WSHAddress(publicKey, hashBytes, networkParams)
 			if err != nil {
 				return nil, err
 			}

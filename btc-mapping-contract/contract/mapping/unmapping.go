@@ -116,7 +116,7 @@ func (cs *ContractState) createSpendTransaction(
 			return nil, nil, err
 		}
 
-		_, witnessScript, err := createP2WSHAddress(cs.PublicKey, tag, &chaincfg.TestNet3Params)
+		_, witnessScript, err := createP2WSHAddress(cs.PublicKey, tag, cs.NetworkParams)
 
 		if err != nil {
 			return nil, nil, err
@@ -124,7 +124,7 @@ func (cs *ContractState) createSpendTransaction(
 		witnessScripts[index] = witnessScript
 	}
 
-	destAddr, err := btcutil.DecodeAddress(destAddress, &chaincfg.TestNet3Params)
+	destAddr, err := btcutil.DecodeAddress(destAddress, cs.NetworkParams)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -153,7 +153,7 @@ func (cs *ContractState) createSpendTransaction(
 	if totalChange > DUSTTHRESHOLD {
 		// split if above SPLITTHRESHOLD, taking into account the added fee
 		// for each split (about 34 bytes per output)
-		changeAddressObj, err := btcutil.DecodeAddress(changeAddress, &chaincfg.TestNet3Params)
+		changeAddressObj, err := btcutil.DecodeAddress(changeAddress, cs.NetworkParams)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -228,11 +228,11 @@ func (cs *ContractState) createSpendTransaction(
 	}, tx, nil
 }
 
-func indexUnconfimedOutputs(tx *wire.MsgTx, changeAddress string) ([]Utxo, error) {
+func indexUnconfimedOutputs(tx *wire.MsgTx, changeAddress string, network *chaincfg.Params) ([]Utxo, error) {
 	utxos := make([]Utxo, len(tx.TxOut))
 
 	for index, txOut := range tx.TxOut {
-		_, addrs, _, err := txscript.ExtractPkScriptAddrs(txOut.PkScript, &chaincfg.TestNet3Params)
+		_, addrs, _, err := txscript.ExtractPkScriptAddrs(txOut.PkScript, network)
 		if err != nil {
 			return nil, err
 		}

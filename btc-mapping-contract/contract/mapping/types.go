@@ -1,5 +1,7 @@
 package mapping
 
+import "github.com/btcsuite/btcd/chaincfg"
+
 const balanceKey = "account_balances"
 const obserbedKey = "observed_txs"
 const utxoKey = "utxos"
@@ -101,4 +103,5 @@ type ContractState struct {
 	TxSpends        TxSpends
 	Supply          SystemSupply
 	PublicKey       string
+	NetworkParams   *chaincfg.Params
 }

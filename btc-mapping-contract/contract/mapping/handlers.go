@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -49,7 +48,7 @@ func (cs *ContractState) HandleMap(txData *VerificationRequest) error {
 
 	// create new utxos entries for all of the relevant outputs in the incoming transaction
 	for _, utxo := range relevantOutputs {
-		_, addrs, _, err := txscript.ExtractPkScriptAddrs(utxo.PkScript, &chaincfg.TestNet3Params)
+		_, addrs, _, err := txscript.ExtractPkScriptAddrs(utxo.PkScript, cs.NetworkParams)
 		if err != nil {
 			sdk.Abort(err.Error())
 		}
@@ -91,7 +90,7 @@ func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) string {
 	if err != nil {
 		sdk.Abort(fmt.Sprintf("error getting input utxos: %w", err))
 	}
-	changeAddress, _, err := createP2WSHAddress(cs.PublicKey, nil, &chaincfg.TestNet3Params)
+	changeAddress, _, err := createP2WSHAddress(cs.PublicKey, nil, cs.NetworkParams)
 	signingData, tx, err := cs.createSpendTransaction(
 		inputUtxos,
 		totalInputAmt,
@@ -103,7 +102,7 @@ func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) string {
 		sdk.Abort(err.Error())
 	}
 
-	unconfirmedUtxos, err := indexUnconfimedOutputs(tx, changeAddress)
+	unconfirmedUtxos, err := indexUnconfimedOutputs(tx, changeAddress, cs.NetworkParams)
 	if err != nil {
 		sdk.Abort(err.Error())
 	}
