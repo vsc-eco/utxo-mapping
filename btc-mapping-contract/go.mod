@@ -2,7 +2,11 @@ module contract-template
 
 go 1.24.0
 
-replace vsc-node => github.com/vsc-eco/go-vsc-node v0.0.0-20251011064142-414e0aae20a3
+// replace vsc-node => github.com/vsc-eco/go-vsc-node v0.0.0-20251014124821-e05ffefbab1c
+
+replace vsc-node => ../../go-vsc-node/
+
+replace github.com/agl/ed25519 => github.com/binance-chain/edwards25519 v0.0.0-20200305024217-f36fc4b53d43
 
 require vsc-node v0.0.0
 
@@ -208,10 +212,16 @@ require (
 )
 
 require (
+	github.com/agl/ed25519 v0.0.0-20200225211852-fd4d107ace12 // indirect
+	github.com/bnb-chain/tss-lib/v2 v2.0.2 // indirect
 	github.com/btcsuite/btcd/btcec/v2 v2.3.5 // indirect
 	github.com/btcsuite/btclog v1.0.0 // indirect
 	github.com/decred/dcrd/crypto/blake256 v1.1.0 // indirect
+	github.com/decred/dcrd/dcrec/edwards/v2 v2.0.3 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
+	github.com/eager7/dogd v0.0.0-20200427085516-2caf59f59dbb // indirect
+	github.com/ipfs/go-log v1.0.5 // indirect
+	github.com/opentracing/opentracing-go v1.2.0 // indirect
 	golang.org/x/crypto v0.42.0 // indirect
 	golang.org/x/sys v0.36.0 // indirect
 	golang.org/x/telemetry v0.0.0-20250908211612-aef8a434d053 // indirect

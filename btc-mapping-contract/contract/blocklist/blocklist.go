@@ -19,6 +19,12 @@ type BlockData struct {
 }
 
 //tinyjson:json
+type AddBlocksInput struct {
+	Blocks    string
+	LatestFee int64
+}
+
+//tinyjson:json
 type AddBlockOutput struct {
 	Success         bool
 	Error           string

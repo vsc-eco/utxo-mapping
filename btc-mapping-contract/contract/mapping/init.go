@@ -10,34 +10,42 @@ import (
 )
 
 func IntializeContractState(publicKey string) (*ContractState, error) {
-	networkParams := &chaincfg.MainNetParams
+	networkParams := &chaincfg.TestNet3Params
 
 	var balances AccountBalanceMap
 	balanceState := sdk.StateGetObject(balanceKey)
-	err := tinyjson.Unmarshal([]byte(*balanceState), &balances)
-	if err != nil {
-		return nil, err
+	if len(*balanceState) > 0 {
+		err := tinyjson.Unmarshal([]byte(*balanceState), &balances)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	var utxos UtxoMap
 	utxoState := sdk.StateGetObject(utxoKey)
-	err = tinyjson.Unmarshal([]byte(*utxoState), &utxos)
-	if err != nil {
-		return nil, err
+	if len(*utxoState) > 0 {
+		err := tinyjson.Unmarshal([]byte(*utxoState), &utxos)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	var utxoSpends TxSpends
 	utxoSpendsState := sdk.StateGetObject(txSpendsKey)
-	err = tinyjson.Unmarshal([]byte(*utxoSpendsState), &utxoSpends)
-	if err != nil {
-		return nil, err
+	if len(*utxoSpendsState) > 0 {
+		err := tinyjson.Unmarshal([]byte(*utxoSpendsState), &utxoSpends)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	var supply SystemSupply
 	supplyState := sdk.StateGetObject(supplyKey)
-	err = tinyjson.Unmarshal([]byte(*supplyState), &supply)
-	if err != nil {
-		return nil, err
+	if len(*supplyState) > 0 {
+		err := tinyjson.Unmarshal([]byte(*supplyState), &supply)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return &ContractState{
@@ -69,9 +77,11 @@ func InitializeMappingState(publicKey string, instructions ...string) (*MappingS
 
 	var observedTxs ObservedTxList
 	obserbedTxsState := sdk.StateGetObject(obserbedKey)
-	err = tinyjson.Unmarshal([]byte(*obserbedTxsState), &observedTxs)
-	if err != nil {
-		return nil, err
+	if len(*obserbedTxsState) > 0 {
+		err := tinyjson.Unmarshal([]byte(*obserbedTxsState), &observedTxs)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return &MappingState{
@@ -170,5 +180,28 @@ func (ms *MappingState) SaveToState() error {
 	if err != nil {
 		return err
 	}
+	return nil
+}
+
+func SupplyFromState() (*SystemSupply, error) {
+	var supply SystemSupply
+	supplyState := sdk.StateGetObject(supplyKey)
+	if len(*supplyState) > 0 {
+		err := tinyjson.Unmarshal([]byte(*supplyState), &supply)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return &supply, nil
+}
+
+func SaveSupplyToState(supply *SystemSupply) error {
+	supplyJson, err := tinyjson.Marshal(supply)
+	if err != nil {
+		return err
+	}
+	sdk.StateSetObject(supplyKey, string(supplyJson))
+
 	return nil
 }

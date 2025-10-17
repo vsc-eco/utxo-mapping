@@ -27,20 +27,21 @@ import (
 	"github.com/CosmWasm/tinyjson"
 )
 
-const oracleAddress = "did:vsc:oracle:vsc"
+const oracleAddress = "did:vsc:oracle:btc"
 const publicKeyStateKey = "public_key"
 
 //go:wasmexport seed_blocks
 func SeedBlocks(blockSeedInput *string) *string {
-	blockData := blocklist.BlockDataFromState()
+	// this should be oracle address for mainnet and owner address for testnet
+	if sdk.GetEnv().Sender.Address.String() != *sdk.GetEnvKey("contract.owner") {
+		sdk.Abort("no permission")
+	}
 
-	sdk.Log(fmt.Sprintln("checkpoint 1", blockData))
+	blockData := blocklist.BlockDataFromState()
 
 	if len(blockData.BlockMap) > 0 {
 		sdk.Abort(fmt.Sprintf("block data already seeded, last height: %d", blockData.LastHeight))
 	}
-
-	sdk.Log("checkpoint 2")
 
 	blockData.HandleSeedBlocks(blockSeedInput)
 	blockData.SaveToState()
@@ -50,12 +51,19 @@ func SeedBlocks(blockSeedInput *string) *string {
 }
 
 //go:wasmexport add_blocks
-func AddBlocks(blockHeadersHex *string) *string {
+func AddBlocks(addBlocksInput *string) *string {
+	// this should be oracle address for mainnet and owner address for testnet
 	if sdk.GetEnv().Sender.Address.String() != *sdk.GetEnvKey("contract.owner") {
 		sdk.Abort("no permission")
 	}
 
-	blockHeaders, err := blocklist.DivideHeaderList(blockHeadersHex)
+	var addBlocksObj blocklist.AddBlocksInput
+	err := tinyjson.Unmarshal([]byte(*addBlocksInput), &addBlocksObj)
+	if err != nil {
+		sdk.Abort(err.Error())
+	}
+
+	blockHeaders, err := blocklist.DivideHeaderList(&addBlocksObj.Blocks)
 	if err != nil {
 		sdk.Abort(err.Error())
 	}
@@ -80,6 +88,14 @@ func AddBlocks(blockHeadersHex *string) *string {
 		sdk.Abort(err.Error())
 	}
 	outMsgString := string(outMsgBytes)
+
+	// update base fee rate, do this after blocks because blocks more likely to fail
+	systemSupply, err := mapping.SupplyFromState()
+	if err != nil {
+		sdk.Abort(err.Error())
+	}
+	systemSupply.BaseFeeRate = addBlocksObj.LatestFee
+	mapping.SaveSupplyToState(systemSupply)
 
 	return &outMsgString
 }
@@ -160,6 +176,7 @@ func Transfer(tx *string) *string {
 //go:wasmexport register_public_key
 func RegisterPublicKey(key *string) *string {
 	env := sdk.GetEnv()
+	// leave this as owner always
 	if env.Sender.Address.String() != *sdk.GetEnvKey("contract.owner") {
 		sdk.Abort("no permission")
 	}
@@ -176,17 +193,12 @@ func RegisterPublicKey(key *string) *string {
 
 //go:wasmexport create_key_pair
 func CreateKeyPair(_ *string) *string {
+	// leave this as owner always
 	if sdk.GetEnv().Sender.Address.String() != *sdk.GetEnvKey("contract.owner") {
 		sdk.Abort("no permission")
 	}
 
 	keyId := "main"
-	status := sdk.TssGetKey(keyId)
-	if status == "null" {
-		sdk.TssCreateKey(keyId, "ecdsa")
-		return &keyId
-	} else {
-		errMsg := fmt.Sprintf("key already created. status: %s", status)
-		return &errMsg
-	}
+	sdk.TssCreateKey(keyId, "ecdsa")
+	return &keyId
 }
