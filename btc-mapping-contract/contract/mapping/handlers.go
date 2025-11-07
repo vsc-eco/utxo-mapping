@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
+	"github.com/CosmWasm/tinyjson"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -54,11 +55,32 @@ func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 		if metadata, ok := ms.AddressRegistry[addrs[0].EncodeAddress()]; ok {
 			// Create UTXO entry
 			utxoKey := fmt.Sprintf("%s:%d", utxo.TxId, utxo.Vout)
-			ms.Utxos[utxoKey] = &utxo
-			ms.ObservedTxs[utxoKey] = true
+			// proceed if this output has already been observed
+			alreadyObserved := sdk.StateGetObject(observedPrefix + utxoKey)
+			if *alreadyObserved != "" {
+				continue
+			}
+
+			utxoInternalId := ms.UtxoLastId
+			ms.UtxoLastId++
+			// TODO: change since 'confirmed' was removed
+			ms.UtxoList = append(ms.UtxoList, packUtxo(utxoInternalId, utxo.Amount, 1))
+			utxoJson, err := tinyjson.Marshal(utxo)
+			if err != nil {
+				sdk.Abort(err.Error())
+			}
+
+			sdk.StateSetObject(utxoPrefix+fmt.Sprintf("%d", utxoInternalId), string(utxoJson))
+
+			// set observed
+			sdk.StateSetObject(observedPrefix+utxoKey, "1")
 
 			// increment balance for recipient account (vsc account not btc account)
-			ms.Balances[metadata.VscAddress] += utxo.Amount
+			recipientBal, err := getAccBal(metadata.VscAddress)
+			if err != nil {
+				sdk.Abort(err.Error())
+			}
+			setAccBal(metadata.VscAddress, recipientBal+utxo.Amount)
 
 			totalMapped += utxo.Amount
 		}
@@ -77,20 +99,28 @@ func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) string {
 	amount := instructions.Amount
 	env := sdk.GetEnv()
 
-	err := checkSender(env, amount, cs.Balances)
+	senderBal, err := checkSender(env, amount)
 	if err != nil {
 		sdk.Abort(err.Error())
 	}
+	sdk.Log(fmt.Sprint("sender bal: %d", senderBal))
 
 	vscFee, err := deductVscFee(amount)
 	if err != nil {
 		sdk.Abort(err.Error())
 	}
+
 	postFeeAmount := amount - vscFee
-	inputUtxos, totalInputAmt, err := cs.getInputUtxos(postFeeAmount)
+	inputUtxoIds, totalInputAmt, err := cs.getInputUtxoIds(postFeeAmount)
 	if err != nil {
 		sdk.Abort(fmt.Sprintf("error getting input utxos: %w", err))
 	}
+
+	inputUtxos, err := getInputUtxos(inputUtxoIds)
+	if err != nil {
+		sdk.Abort(fmt.Sprintf("error getting input utxos: %w", err))
+	}
+
 	changeAddress, _, err := createP2WSHAddress(cs.PublicKey, nil, cs.NetworkParams)
 	signingData, tx, err := cs.createSpendTransaction(
 		inputUtxos,
@@ -109,12 +139,18 @@ func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) string {
 	}
 	for _, utxo := range unconfirmedUtxos {
 		// create utxo entry
-		utxoKey := fmt.Sprintf("%s:%d", utxo.TxId, utxo.Vout)
-		cs.Utxos[utxoKey] = &utxo
+		internalId := cs.UtxoLastId
+		cs.UtxoLastId++
+
+		utxoLookup := packUtxo(internalId, utxo.Amount, 0)
+		cs.UtxoList = append(cs.UtxoList, utxoLookup)
+
 	}
 
 	cs.TxSpends[tx.TxID()] = signingData
-	cs.Balances[env.Sender.Address.String()] -= amount
+
+	setAccBal(env.Sender.Address.String(), senderBal-amount)
+
 	cs.Supply.ActiveSupply -= postFeeAmount
 	cs.Supply.UserSupply -= amount
 	cs.Supply.FeeSupply += vscFee
@@ -122,14 +158,19 @@ func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) string {
 	return "success"
 }
 
-func HandleTrasfer(instructions *TransferInputData, balances AccountBalanceMap) {
+func HandleTrasfer(instructions *TransferInputData) {
 	amount := instructions.Amount
 	env := sdk.GetEnv()
-	err := checkSender(env, amount, balances)
+	senderBal, err := checkSender(env, amount)
 	if err != nil {
 		sdk.Abort(err.Error())
 	}
-	balances[env.Sender.Address.String()] -= amount
-	balances[instructions.RecipientVscAddress] += amount
-	// cs.Balances[instructions.RecipientVscAddress] = bal + amount
+
+	recipientBal, err := getAccBal(instructions.RecipientVscAddress)
+	if err != nil {
+		sdk.Abort(err.Error())
+	}
+
+	setAccBal(env.Sender.Address.String(), senderBal-amount)
+	setAccBal(instructions.RecipientVscAddress, recipientBal+amount)
 }

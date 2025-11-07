@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
+	"github.com/CosmWasm/tinyjson"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -32,12 +33,11 @@ func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) *[]Utxo {
 		if addr, ok := isForVscAcc(txOut, ms.AddressRegistry, ms.NetworkParams); ok {
 
 			utxo := Utxo{
-				TxId:      msgTx.TxID(),
-				Vout:      uint32(index),
-				Amount:    txOut.Value,
-				PkScript:  txOut.PkScript,
-				Tag:       hex.EncodeToString(ms.AddressRegistry[addr].Tag),
-				Confirmed: true,
+				TxId:     msgTx.TxID(),
+				Vout:     uint32(index),
+				Amount:   txOut.Value,
+				PkScript: txOut.PkScript,
+				Tag:      hex.EncodeToString(ms.AddressRegistry[addr].Tag),
 			}
 			outputsForVsc = append(outputsForVsc, utxo)
 		}
@@ -46,18 +46,42 @@ func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) *[]Utxo {
 	return &outputsForVsc
 }
 
-func (cs *ContractState) updateUtxoSpends(txId string) {
+func (cs *ContractState) updateUtxoSpends(txId string) error {
 	utxoSpend, ok := cs.TxSpends[txId]
 	if !ok {
-		return
+		return nil
 	}
-	for _, sigHash := range utxoSpend.UnsignedSigHashes {
-		utxoKey := fmt.Sprintf("%s:%d", txId, sigHash.Index)
-		utxo, ok := cs.Utxos[utxoKey]
-		if !ok {
-			continue
+	// not the most efficient but there should never be more than a few of these
+	type unconfirmedUtxo struct {
+		indexInRegistry int
+		utxo            *Utxo
+	}
+
+	unconfirmedUtxos := []unconfirmedUtxo{}
+
+	for i, utxoBytes := range cs.UtxoList {
+		internalId, _, confirmed := unpackUtxo(utxoBytes)
+		if confirmed == 0 {
+			utxo := Utxo{}
+			utxoJson := sdk.StateGetObject(utxoPrefix + fmt.Sprintf("%x", internalId))
+			err := tinyjson.Unmarshal([]byte(*utxoJson), &utxo)
+			if err != nil {
+				return err
+			}
+			unconfirmedUtxos = append(unconfirmedUtxos, unconfirmedUtxo{indexInRegistry: i, utxo: &utxo})
 		}
-		utxo.Confirmed = true
+	}
+
+	for _, sigHash := range utxoSpend.UnsignedSigHashes {
+		// check all unconfirmed utxos
+		for _, unconfirmed := range unconfirmedUtxos {
+			if txId == unconfirmed.utxo.TxId && sigHash.Index == unconfirmed.utxo.Vout {
+				// set the confirmed byte array to 1
+				cs.UtxoList[unconfirmed.indexInRegistry][2] = []byte{1}
+				continue
+			}
+		}
 	}
 	delete(cs.TxSpends, txId)
+	return nil
 }

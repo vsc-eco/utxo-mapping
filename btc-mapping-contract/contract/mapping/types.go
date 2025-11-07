@@ -2,13 +2,17 @@ package mapping
 
 import "github.com/btcsuite/btcd/chaincfg"
 
-const balanceKey = "account_balances"
-const obserbedKey = "observed_txs"
-const utxoKey = "utxos"
+const balancePrefix = "bal"
+const observedPrefix = "observed_txs"
+const utxoPrefix = "utxos"
+const utxoRegistryKey = "utxo_registry"
+const utxoLastIdKey = "utxo_last_id"
 const txSpendsKey = "tx_spends"
-const supplyKey = "system_supply"
+const supplyKey = "supply"
 
 const depositKey = "deposit_to"
+
+const TssKeyName string = "main"
 
 //tinyjson:json
 type MappingInputData struct {
@@ -45,13 +49,15 @@ type TransferInputData struct {
 
 //tinyjson:json
 type Utxo struct {
-	TxId      string // tx containing the output
-	Vout      uint32 // defined as uint32 in btcd library
-	Amount    int64
-	PkScript  []byte
-	Tag       string // tag used to create the address
-	Confirmed bool
+	TxId     string // tx containing the output
+	Vout     uint32 // defined as uint32 in btcd library
+	Amount   int64
+	PkScript []byte
+	Tag      string // tag used to create the address
 }
+
+//tinyjson:json
+type UtxoRegistry [][3][]byte
 
 //tinyjson:json
 type HeaderMap map[uint32][]byte
@@ -76,12 +82,6 @@ type AddressMetadata struct {
 //tinyjson:json
 type AccountBalanceMap map[string]int64
 
-//tinyjson:json
-type ObservedTxList map[string]bool
-
-//tinyjson:json
-type UtxoMap map[string]*Utxo
-
 // txs that have been built and stored (for the mapping bot to see and sign)
 //
 //tinyjson:json
@@ -95,13 +95,9 @@ type SystemSupply struct {
 	BaseFeeRate  int64 // sats per byte
 }
 
-type BasicState struct {
-	Balances AccountBalanceMap // map of vsc addresses to the btc balance they hold
-}
-
 type ContractState struct {
-	BasicState
-	Utxos         UtxoMap
+	UtxoList      UtxoRegistry
+	UtxoLastId    uint32
 	TxSpends      TxSpends
 	Supply        SystemSupply
 	PublicKey     string
@@ -110,6 +106,5 @@ type ContractState struct {
 
 type MappingState struct {
 	ContractState
-	ObservedTxs     ObservedTxList
 	AddressRegistry map[string]*AddressMetadata // map of btc addresses to the tags they were created with
 }

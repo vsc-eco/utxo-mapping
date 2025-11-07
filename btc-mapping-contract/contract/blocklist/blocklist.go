@@ -5,18 +5,13 @@ import (
 	"contract-template/sdk"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 
 	"github.com/CosmWasm/tinyjson"
 	"github.com/btcsuite/btcd/wire"
 )
 
 type BlockHeaderBytes [80]byte
-
-//tinyjson:json
-type BlockData struct {
-	BlockMap   map[uint32]string // maps block heights to hex representation of 80-byte block headers
-	LastHeight uint32
-}
 
 //tinyjson:json
 type AddBlocksInput struct {
@@ -37,13 +32,26 @@ type BlockSeedInput struct {
 	BlockHeight uint32
 }
 
-const blockDataKey = "blocklist"
+const BlockPrefix = "block"
+const lastHeightKey = "last_block_height"
 
-func BlockDataFromState() *BlockData {
-	jsonData := sdk.StateGetObject(blockDataKey)
-	var blockData BlockData
-	tinyjson.Unmarshal([]byte(*jsonData), &blockData)
-	return &blockData
+var ErrorLastHeightDNE = fmt.Errorf("last height does not exist")
+
+func LastHeightFromState() (*uint32, error) {
+	lastHeightString := sdk.StateGetObject(lastHeightKey)
+	if *lastHeightString == "" {
+		return nil, ErrorLastHeightDNE
+	}
+	lastHeight, err := strconv.ParseUint(*lastHeightString, 10, 32)
+	if err != nil {
+		return nil, err
+	}
+	lastHeight32 := uint32(lastHeight)
+	return &lastHeight32, nil
+}
+
+func LastHeightToState(lastHeight *uint32) {
+	sdk.StateSetObject(lastHeightKey, fmt.Sprintf("%d", *lastHeight))
 }
 
 func DivideHeaderList(blocksHex *string) ([]BlockHeaderBytes, error) {
@@ -62,18 +70,9 @@ func DivideHeaderList(blocksHex *string) ([]BlockHeaderBytes, error) {
 	return blockHeaders, nil
 }
 
-func (bd *BlockData) SaveToState() error {
-	jsonBytes, err := tinyjson.Marshal(bd)
-	if err != nil {
-		return err
-	}
-	sdk.StateSetObject(blockDataKey, string(jsonBytes))
-	return nil
-}
-
-func (bd *BlockData) HandleAddBlocks(rawHeaders []BlockHeaderBytes) error {
-	lastBlockHex := bd.BlockMap[bd.LastHeight]
-	lastBlockBytes, err := hex.DecodeString(lastBlockHex)
+func HandleAddBlocks(rawHeaders []BlockHeaderBytes, lastHeight *uint32) error {
+	lastBlockHex := sdk.StateGetObject(BlockPrefix + fmt.Sprintf("%d", *lastHeight))
+	lastBlockBytes, err := hex.DecodeString(*lastBlockHex)
 	if err != nil {
 		sdk.Abort(err.Error())
 	}
@@ -87,28 +86,23 @@ func (bd *BlockData) HandleAddBlocks(rawHeaders []BlockHeaderBytes) error {
 		if !blockHeader.PrevBlock.IsEqual(&lastBlockHash) {
 			return fmt.Errorf("block sequence incorrect")
 		}
-		blockHeight := bd.LastHeight + 1
-		if _, ok := bd.BlockMap[blockHeight]; ok {
-			return fmt.Errorf("block already present")
-		}
-		bd.BlockMap[blockHeight] = hex.EncodeToString(headerBytes[:])
-		bd.LastHeight = blockHeight
+		blockHeight := *lastHeight + 1
+
+		sdk.StateSetObject(BlockPrefix+fmt.Sprintf("%d", blockHeight), hex.EncodeToString(headerBytes[:]))
+		*lastHeight = blockHeight
 		lastBlockHeader = blockHeader
 	}
 	return nil
 }
 
-func (bd *BlockData) HandleSeedBlocks(seedInput *string) error {
+func HandleSeedBlocks(seedInput *string) (uint32, error) {
 	var blockSeedData BlockSeedInput
 	err := tinyjson.Unmarshal([]byte(*seedInput), &blockSeedData)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
-	if bd.BlockMap == nil {
-		bd.BlockMap = make(map[uint32]string, 1)
-	}
-	bd.BlockMap[blockSeedData.BlockHeight] = blockSeedData.BlockHeader
-	bd.LastHeight = blockSeedData.BlockHeight
-	return nil
+	sdk.StateSetObject(BlockPrefix+fmt.Sprintf("%d", blockSeedData.BlockHeight), blockSeedData.BlockHeader)
+	sdk.StateSetObject(lastHeightKey, fmt.Sprintf("%d", blockSeedData.BlockHeight))
+	return blockSeedData.BlockHeight, nil
 }

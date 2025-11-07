@@ -74,7 +74,7 @@ func (v BlockSeedInput) MarshalTinyJSON(w *jwriter.Writer) {
 func (v *BlockSeedInput) UnmarshalTinyJSON(l *jlexer.Lexer) {
 	tinyjson2d7d9c89DecodeExampleComBuildingTinyjsonBlocklist(l, v)
 }
-func tinyjson2d7d9c89DecodeExampleComBuildingTinyjsonBlocklist1(in *jlexer.Lexer, out *BlockData) {
+func tinyjson2d7d9c89DecodeExampleComBuildingTinyjsonBlocklist1(in *jlexer.Lexer, out *AddBlocksInput) {
 	isTopLevel := in.IsStart()
 	if in.IsNull() {
 		if isTopLevel {
@@ -93,24 +93,10 @@ func tinyjson2d7d9c89DecodeExampleComBuildingTinyjsonBlocklist1(in *jlexer.Lexer
 			continue
 		}
 		switch key {
-		case "block_map":
-			if in.IsNull() {
-				in.Skip()
-			} else {
-				in.Delim('{')
-				out.BlockMap = make(map[uint32]string)
-				for !in.IsDelim('}') {
-					key := uint32(in.Uint32Str())
-					in.WantColon()
-					var v1 string
-					v1 = string(in.String())
-					(out.BlockMap)[key] = v1
-					in.WantComma()
-				}
-				in.Delim('}')
-			}
-		case "last_height":
-			out.LastHeight = uint32(in.Uint32())
+		case "blocks":
+			out.Blocks = string(in.String())
+		case "latest_fee":
+			out.LatestFee = int64(in.Int64())
 		default:
 			in.SkipRecursive()
 		}
@@ -121,46 +107,30 @@ func tinyjson2d7d9c89DecodeExampleComBuildingTinyjsonBlocklist1(in *jlexer.Lexer
 		in.Consumed()
 	}
 }
-func tinyjson2d7d9c89EncodeExampleComBuildingTinyjsonBlocklist1(out *jwriter.Writer, in BlockData) {
+func tinyjson2d7d9c89EncodeExampleComBuildingTinyjsonBlocklist1(out *jwriter.Writer, in AddBlocksInput) {
 	out.RawByte('{')
 	first := true
 	_ = first
 	{
-		const prefix string = ",\"block_map\":"
+		const prefix string = ",\"blocks\":"
 		out.RawString(prefix[1:])
-		if in.BlockMap == nil && (out.Flags&jwriter.NilMapAsEmpty) == 0 {
-			out.RawString(`null`)
-		} else {
-			out.RawByte('{')
-			v2First := true
-			for v2Name, v2Value := range in.BlockMap {
-				if v2First {
-					v2First = false
-				} else {
-					out.RawByte(',')
-				}
-				out.Uint32Str(uint32(v2Name))
-				out.RawByte(':')
-				out.String(string(v2Value))
-			}
-			out.RawByte('}')
-		}
+		out.String(string(in.Blocks))
 	}
 	{
-		const prefix string = ",\"last_height\":"
+		const prefix string = ",\"latest_fee\":"
 		out.RawString(prefix)
-		out.Uint32(uint32(in.LastHeight))
+		out.Int64(int64(in.LatestFee))
 	}
 	out.RawByte('}')
 }
 
 // MarshalTinyJSON supports tinyjson.Marshaler interface
-func (v BlockData) MarshalTinyJSON(w *jwriter.Writer) {
+func (v AddBlocksInput) MarshalTinyJSON(w *jwriter.Writer) {
 	tinyjson2d7d9c89EncodeExampleComBuildingTinyjsonBlocklist1(w, v)
 }
 
 // UnmarshalTinyJSON supports tinyjson.Unmarshaler interface
-func (v *BlockData) UnmarshalTinyJSON(l *jlexer.Lexer) {
+func (v *AddBlocksInput) UnmarshalTinyJSON(l *jlexer.Lexer) {
 	tinyjson2d7d9c89DecodeExampleComBuildingTinyjsonBlocklist1(l, v)
 }
 func tinyjson2d7d9c89DecodeExampleComBuildingTinyjsonBlocklist2(in *jlexer.Lexer, out *AddBlockOutput) {
@@ -228,63 +198,4 @@ func (v AddBlockOutput) MarshalTinyJSON(w *jwriter.Writer) {
 // UnmarshalTinyJSON supports tinyjson.Unmarshaler interface
 func (v *AddBlockOutput) UnmarshalTinyJSON(l *jlexer.Lexer) {
 	tinyjson2d7d9c89DecodeExampleComBuildingTinyjsonBlocklist2(l, v)
-}
-func tinyjson2d7d9c89DecodeExampleComBuildingTinyjsonBlocklist3(in *jlexer.Lexer, out *AddBlocksInput) {
-	isTopLevel := in.IsStart()
-	if in.IsNull() {
-		if isTopLevel {
-			in.Consumed()
-		}
-		in.Skip()
-		return
-	}
-	in.Delim('{')
-	for !in.IsDelim('}') {
-		key := in.UnsafeFieldName(false)
-		in.WantColon()
-		if in.IsNull() {
-			in.Skip()
-			in.WantComma()
-			continue
-		}
-		switch key {
-		case "blocks":
-			out.Blocks = string(in.String())
-		case "latest_fee":
-			out.LatestFee = int64(in.Int64())
-		default:
-			in.SkipRecursive()
-		}
-		in.WantComma()
-	}
-	in.Delim('}')
-	if isTopLevel {
-		in.Consumed()
-	}
-}
-func tinyjson2d7d9c89EncodeExampleComBuildingTinyjsonBlocklist3(out *jwriter.Writer, in AddBlocksInput) {
-	out.RawByte('{')
-	first := true
-	_ = first
-	{
-		const prefix string = ",\"blocks\":"
-		out.RawString(prefix[1:])
-		out.String(string(in.Blocks))
-	}
-	{
-		const prefix string = ",\"latest_fee\":"
-		out.RawString(prefix)
-		out.Int64(int64(in.LatestFee))
-	}
-	out.RawByte('}')
-}
-
-// MarshalTinyJSON supports tinyjson.Marshaler interface
-func (v AddBlocksInput) MarshalTinyJSON(w *jwriter.Writer) {
-	tinyjson2d7d9c89EncodeExampleComBuildingTinyjsonBlocklist3(w, v)
-}
-
-// UnmarshalTinyJSON supports tinyjson.Unmarshaler interface
-func (v *AddBlocksInput) UnmarshalTinyJSON(l *jlexer.Lexer) {
-	tinyjson2d7d9c89DecodeExampleComBuildingTinyjsonBlocklist3(l, v)
 }

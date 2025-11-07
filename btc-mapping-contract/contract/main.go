@@ -28,34 +28,48 @@ import (
 )
 
 const oracleAddress = "did:vsc:oracle:btc"
-const publicKeyStateKey = "public_key"
+const publicKeyStateKey = "pubkey"
+
+// passed via ldflags, will compile for testnet when set to "testnet"
+var NetworkMode string
+
+func checkAuth() {
+	var adminAddress string
+	if NetworkMode == "testnet" {
+		adminAddress = *sdk.GetEnvKey("contract.owner")
+	} else {
+		adminAddress = oracleAddress
+	}
+	if sdk.GetEnv().Sender.Address.String() != adminAddress {
+		sdk.Abort("no permission")
+	}
+}
 
 //go:wasmexport seed_blocks
 func SeedBlocks(blockSeedInput *string) *string {
-	// this should be oracle address for mainnet and owner address for testnet
-	if sdk.GetEnv().Sender.Address.String() != *sdk.GetEnvKey("contract.owner") {
-		sdk.Abort("no permission")
+	checkAuth()
+
+	lastHeight, err := blocklist.LastHeightFromState()
+	if err != nil {
+		if err != blocklist.ErrorLastHeightDNE {
+			sdk.Abort(err.Error())
+		}
+	} else {
+		sdk.Abort(fmt.Sprintf("blocks already seeded, last height: %d", *lastHeight))
 	}
 
-	blockData := blocklist.BlockDataFromState()
-
-	if len(blockData.BlockMap) > 0 {
-		sdk.Abort(fmt.Sprintf("block data already seeded, last height: %d", blockData.LastHeight))
+	newLastHeight, err := blocklist.HandleSeedBlocks(blockSeedInput)
+	if err != nil {
+		sdk.Abort(err.Error())
 	}
 
-	blockData.HandleSeedBlocks(blockSeedInput)
-	blockData.SaveToState()
-
-	outMsg := fmt.Sprintf("last height: %d", blockData.LastHeight)
+	outMsg := fmt.Sprintf("last height: %d", newLastHeight)
 	return &outMsg
 }
 
 //go:wasmexport add_blocks
 func AddBlocks(addBlocksInput *string) *string {
-	// this should be oracle address for mainnet and owner address for testnet
-	if sdk.GetEnv().Sender.Address.String() != *sdk.GetEnvKey("contract.owner") {
-		sdk.Abort("no permission")
-	}
+	checkAuth()
 
 	var addBlocksObj blocklist.AddBlocksInput
 	err := tinyjson.Unmarshal([]byte(*addBlocksInput), &addBlocksObj)
@@ -68,16 +82,18 @@ func AddBlocks(addBlocksInput *string) *string {
 		sdk.Abort(err.Error())
 	}
 
-	blockData := blocklist.BlockDataFromState()
-	err = blockData.HandleAddBlocks(blockHeaders)
-	// save it before handling add blocks error, because failure there is a more extreme fail case
-	errCritical := blockData.SaveToState()
-	if errCritical != nil {
-		sdk.Abort(errCritical.Error())
+	lastHeight, err := blocklist.LastHeightFromState()
+	if err != nil {
+		sdk.Abort(err.Error())
 	}
+
+	err = blocklist.HandleAddBlocks(blockHeaders, lastHeight)
+	// save it before handling add blocks error, because failure there is a more extreme fail case
+	blocklist.LastHeightToState(lastHeight)
+
 	// handle adding blocks error
 	outMsg := blocklist.AddBlockOutput{
-		LastBlockHeight: blockData.LastHeight,
+		LastBlockHeight: *lastHeight,
 		Success:         err == nil,
 	}
 	if err != nil {
@@ -110,7 +126,7 @@ func Map(incomingTx *string) *string {
 
 	publicKey := sdk.StateGetObject(publicKeyStateKey)
 
-	contractState, err := mapping.InitializeMappingState(*publicKey, mapInstructions.Instructions...)
+	contractState, err := mapping.InitializeMappingState(*publicKey, NetworkMode, mapInstructions.Instructions...)
 	if err != nil {
 		sdk.Abort(err.Error())
 	}
@@ -131,18 +147,22 @@ func Map(incomingTx *string) *string {
 
 //go:wasmexport unmap
 func Unmap(tx *string) *string {
+	publicKey := sdk.StateGetObject(publicKeyStateKey)
+	if *publicKey == "" {
+		sdk.Abort("No registered public key")
+	}
+
 	var unmapInstructions mapping.UnmappingInputData
 	err := tinyjson.Unmarshal([]byte(*tx), &unmapInstructions)
 	if err != nil {
 		sdk.Abort(err.Error())
 	}
 
-	publicKey := sdk.StateGetObject(publicKeyStateKey)
-
-	contractState, err := mapping.IntializeContractState(*publicKey)
+	contractState, err := mapping.IntializeContractState(*publicKey, NetworkMode)
 	if err != nil {
 		sdk.Abort(err.Error())
 	}
+
 	rawTx := contractState.HandleUnmap(&unmapInstructions)
 	err = contractState.SaveToState()
 	if err != nil {
@@ -150,6 +170,8 @@ func Unmap(tx *string) *string {
 	}
 
 	return &rawTx
+	// tmp := "tmp"
+	// return &tmp
 }
 
 //go:wasmexport transfer
@@ -160,15 +182,7 @@ func Transfer(tx *string) *string {
 		sdk.Abort(err.Error())
 	}
 
-	balances, err := mapping.GetBalanceMap()
-	if err != nil {
-		sdk.Abort(err.Error())
-	}
-	mapping.HandleTrasfer(&transferInstructions, balances)
-	err = mapping.SaveBalanceMap(balances)
-	if err != nil {
-		sdk.Abort(err.Error())
-	}
+	mapping.HandleTrasfer(&transferInstructions)
 
 	return tx
 }
@@ -198,7 +212,7 @@ func CreateKeyPair(_ *string) *string {
 		sdk.Abort("no permission")
 	}
 
-	keyId := "main"
+	keyId := mapping.TssKeyName
 	sdk.TssCreateKey(keyId, "ecdsa")
 	return &keyId
 }

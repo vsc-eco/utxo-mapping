@@ -3,30 +3,38 @@ package mapping
 import (
 	"contract-template/sdk"
 	"crypto/sha256"
+	"fmt"
 	"net/url"
+	"strconv"
 
 	"github.com/CosmWasm/tinyjson"
 	"github.com/btcsuite/btcd/chaincfg"
 )
 
-func IntializeContractState(publicKey string) (*ContractState, error) {
-	networkParams := &chaincfg.TestNet3Params
-
-	var balances AccountBalanceMap
-	balanceState := sdk.StateGetObject(balanceKey)
-	if len(*balanceState) > 0 {
-		err := tinyjson.Unmarshal([]byte(*balanceState), &balances)
-		if err != nil {
-			return nil, err
-		}
+func IntializeContractState(publicKey string, networkMode string) (*ContractState, error) {
+	var networkParams *chaincfg.Params
+	if networkMode == "testnet" {
+		networkParams = &chaincfg.TestNet3Params
+	} else {
+		networkParams = &chaincfg.MainNetParams
 	}
 
-	var utxos UtxoMap
-	utxoState := sdk.StateGetObject(utxoKey)
+	var utxos UtxoRegistry
+	utxoState := sdk.StateGetObject(utxoRegistryKey)
 	if len(*utxoState) > 0 {
 		err := tinyjson.Unmarshal([]byte(*utxoState), &utxos)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("error unmarshaling utxo registry: %w", err)
+		}
+	}
+
+	lastUtxoIdHex := sdk.StateGetObject(utxoLastIdKey)
+	lastUtxoId, err := strconv.ParseInt(*lastUtxoIdHex, 16, 32)
+	if err != nil {
+		if *lastUtxoIdHex == "" {
+			lastUtxoId = 0
+		} else {
+			return nil, fmt.Errorf("error fetching last utxo internal id: %w", err)
 		}
 	}
 
@@ -35,7 +43,7 @@ func IntializeContractState(publicKey string) (*ContractState, error) {
 	if len(*utxoSpendsState) > 0 {
 		err := tinyjson.Unmarshal([]byte(*utxoSpendsState), &utxoSpends)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("error unmarshaling utxo spends: %w", err)
 		}
 	}
 
@@ -44,15 +52,13 @@ func IntializeContractState(publicKey string) (*ContractState, error) {
 	if len(*supplyState) > 0 {
 		err := tinyjson.Unmarshal([]byte(*supplyState), &supply)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("error unmarshaling supply: %w", err)
 		}
 	}
 
 	return &ContractState{
-		BasicState: BasicState{
-			Balances: balances,
-		},
-		Utxos:         utxos,
+		UtxoList:      utxos,
+		UtxoLastId:    uint32(lastUtxoId),
 		TxSpends:      utxoSpends,
 		Supply:        supply,
 		PublicKey:     publicKey,
@@ -60,8 +66,8 @@ func IntializeContractState(publicKey string) (*ContractState, error) {
 	}, nil
 }
 
-func InitializeMappingState(publicKey string, instructions ...string) (*MappingState, error) {
-	contractState, err := IntializeContractState(publicKey)
+func InitializeMappingState(publicKey string, networkMode string, instructions ...string) (*MappingState, error) {
+	contractState, err := IntializeContractState(publicKey, networkMode)
 	if err != nil {
 		return nil, err
 	}
@@ -71,43 +77,14 @@ func InitializeMappingState(publicKey string, instructions ...string) (*MappingS
 		var err error
 		registry, err = parseInstructions(publicKey, instructions, contractState.NetworkParams)
 		if err != nil {
-			return nil, err
-		}
-	}
-
-	var observedTxs ObservedTxList
-	obserbedTxsState := sdk.StateGetObject(obserbedKey)
-	if len(*obserbedTxsState) > 0 {
-		err := tinyjson.Unmarshal([]byte(*obserbedTxsState), &observedTxs)
-		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("error unmarshaling address registry: %w", err)
 		}
 	}
 
 	return &MappingState{
 		ContractState:   *contractState,
-		ObservedTxs:     observedTxs,
 		AddressRegistry: registry,
 	}, err
-}
-
-func GetBalanceMap() (AccountBalanceMap, error) {
-	var balances AccountBalanceMap
-	balanceState := sdk.StateGetObject(balanceKey)
-	err := tinyjson.Unmarshal([]byte(*balanceState), &balances)
-	if err != nil {
-		return nil, err
-	}
-	return balances, nil
-}
-
-func SaveBalanceMap(balances AccountBalanceMap) error {
-	balancesJson, err := tinyjson.Marshal(balances)
-	if err != nil {
-		return err
-	}
-	sdk.StateSetObject(balanceKey, string(balancesJson))
-	return nil
 }
 
 func parseInstructions(
@@ -142,17 +119,13 @@ func parseInstructions(
 }
 
 func (cs *ContractState) SaveToState() error {
-	balancesJson, err := tinyjson.Marshal(cs.Balances)
+	utxosJson, err := tinyjson.Marshal(cs.UtxoList)
 	if err != nil {
 		return err
 	}
-	sdk.StateSetObject(balanceKey, string(balancesJson))
+	sdk.StateSetObject(utxoRegistryKey, string(utxosJson))
 
-	utxosJson, err := tinyjson.Marshal(cs.Utxos)
-	if err != nil {
-		return err
-	}
-	sdk.StateSetObject(utxoKey, string(utxosJson))
+	sdk.StateSetObject(utxoLastIdKey, fmt.Sprintf("%x", cs.UtxoLastId))
 
 	utxoSpendsJson, err := tinyjson.Marshal(cs.TxSpends)
 	if err != nil {
@@ -170,13 +143,7 @@ func (cs *ContractState) SaveToState() error {
 }
 
 func (ms *MappingState) SaveToState() error {
-	obseredTxsJson, err := tinyjson.Marshal(ms.ObservedTxs)
-	if err != nil {
-		return err
-	}
-	sdk.StateSetObject(obserbedKey, string(obseredTxsJson))
-
-	err = ms.ContractState.SaveToState()
+	err := ms.ContractState.SaveToState()
 	if err != nil {
 		return err
 	}

@@ -2,9 +2,9 @@ module contract-template
 
 go 1.24.0
 
-// replace vsc-node => github.com/vsc-eco/go-vsc-node v0.0.0-20251014124821-e05ffefbab1c
+replace vsc-node => github.com/vsc-eco/go-vsc-node v0.0.0-20251105170547-29038f81f500
 
-replace vsc-node => ../../go-vsc-node/
+// replace vsc-node => ../../go-vsc-node/
 
 replace github.com/agl/ed25519 => github.com/binance-chain/edwards25519 v0.0.0-20200305024217-f36fc4b53d43
 

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
+	"github.com/CosmWasm/tinyjson"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -27,47 +28,71 @@ func deductVscFee(amount int64) (int64, error) {
 	return finalFee, nil
 }
 
-func (cs *ContractState) getInputUtxos(amount int64) ([]*Utxo, int64, error) {
+func getInputUtxos(registryEntries []uint32) ([]*Utxo, error) {
+	result := make([]*Utxo, len(registryEntries))
+	for i, internalId := range registryEntries {
+		utxo := Utxo{}
+		utxoJson := sdk.StateGetObject(utxoPrefix + fmt.Sprintf("%x", internalId))
+		err := tinyjson.Unmarshal([]byte(*utxoJson), &utxo)
+		if err != nil {
+			return nil, err
+		}
+		result[i] = &utxo
+	}
+	return result, nil
+}
+
+func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint32, int64, error) {
 	// approximate size of including a new PSWSH input (base tx size plus signature)
 	// slight overestimate (+1 at the end) to make sure there's enough balance
 	const P2WSHAPPROXINPUTSIZE = 40 + 1 + (72+68+3)/4 + 1
 
-	inputs := []*Utxo{}
+	inputs := []uint32{}
 
 	// accumulates amount of all inputs
 	accAmount := int64(0)
 
 	// first loops, find first tx sufficient to cover spend
-	for _, utxo := range cs.Utxos {
-		if !utxo.Confirmed {
+	for _, utxo := range cs.UtxoList {
+		internalId, utxoAmount, confirmed := unpackUtxo(utxo)
+		if confirmed == 0 {
 			continue
 		}
 		// calculates amount required to cover initial tx plus the addition of itself as an input
-		if utxo.Amount >= amount {
-			return []*Utxo{utxo}, utxo.Amount, nil
+		if utxoAmount >= amount {
+			return []uint32{internalId}, utxoAmount, nil
 		}
 	}
 	// second loop, only if first did not find anything
 	// accumulate utxos until enough combined balance to cover spend
 	// avoids unconfirmed txs
-	unconfirmedTxs := []*Utxo{}
-	for _, utxo := range cs.Utxos {
-		if utxo.Confirmed {
-			inputs = append(inputs, utxo)
-			accAmount += utxo.Amount
+	type unconfirmedUtxo struct {
+		internalId uint32
+		amount     int64
+	}
+
+	unconfirmedTxs := []unconfirmedUtxo{}
+	for _, utxo := range cs.UtxoList {
+		internalId, utxoAmount, confirmed := unpackUtxo(utxo)
+		if confirmed != 0 {
+			inputs = append(inputs, internalId)
+			accAmount += utxoAmount
 			// greater than or equal
 			if accAmount >= amount {
 				return inputs, accAmount, nil
 			}
 		} else {
-			unconfirmedTxs = append(unconfirmedTxs, utxo)
+			unconfirmedTxs = append(unconfirmedTxs, unconfirmedUtxo{
+				internalId: internalId,
+				amount:     utxoAmount,
+			})
 		}
 
 	}
 	// uses unconfirmed txs only if all confirmed txs are insufficient
 	for _, utxo := range unconfirmedTxs {
-		inputs = append(inputs, utxo)
-		accAmount += utxo.Amount
+		inputs = append(inputs, utxo.internalId)
+		accAmount += utxo.amount
 		if accAmount >= amount {
 			return inputs, accAmount, nil
 		}
@@ -123,6 +148,8 @@ func (cs *ContractState) createSpendTransaction(
 		}
 		witnessScripts[index] = witnessScript
 	}
+
+	sdk.Log(fmt.Sprintf("witness scripts created %v", witnessScripts))
 
 	destAddr, err := btcutil.DecodeAddress(destAddress, cs.NetworkParams)
 	if err != nil {
@@ -206,7 +233,7 @@ func (cs *ContractState) createSpendTransaction(
 			return nil, nil, err
 		}
 
-		sdk.TssSignKey("main", sigHash)
+		// sdk.TssSignKey(TssKeyName, sigHash)
 
 		unsignedSigHashes[i] = UnsignedSigHash{
 			Index:         uint32(i),
@@ -214,6 +241,8 @@ func (cs *ContractState) createSpendTransaction(
 			WitnessScript: hex.EncodeToString(witnessScript),
 		}
 	}
+
+	sdk.Log(fmt.Sprintf("created sig hashes: %v", unsignedSigHashes))
 
 	var buf bytes.Buffer
 	err = tx.Serialize(&buf)
@@ -238,12 +267,11 @@ func indexUnconfimedOutputs(tx *wire.MsgTx, changeAddress string, network *chain
 		}
 		if addrs[0].EncodeAddress() == changeAddress {
 			utxo := Utxo{
-				TxId:      tx.TxID(),
-				Vout:      uint32(index),
-				Amount:    txOut.Value,
-				PkScript:  txOut.PkScript,
-				Tag:       "",
-				Confirmed: false,
+				TxId:     tx.TxID(),
+				Vout:     uint32(index),
+				Amount:   txOut.Value,
+				PkScript: txOut.PkScript,
+				Tag:      "",
 			}
 			utxos = append(utxos, utxo)
 		}

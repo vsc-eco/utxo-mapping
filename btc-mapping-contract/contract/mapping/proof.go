@@ -3,6 +3,7 @@ package mapping
 import (
 	"bytes"
 	"contract-template/contract/blocklist"
+	"contract-template/sdk"
 	"encoding/hex"
 	"fmt"
 
@@ -11,11 +12,12 @@ import (
 )
 
 func verifyTransaction(req *VerificationRequest, rawTxBytes []byte) error {
-	blockMap := blocklist.BlockDataFromState().BlockMap
-
 	// block header from contract state (input by chain oracle)
-	rawHeaderHex := blockMap[req.BlockHeight]
-	rawHeaderBytes, err := hex.DecodeString(rawHeaderHex)
+	rawHeaderHex := sdk.StateGetObject(blocklist.BlockPrefix + fmt.Sprintf("%d", req.BlockHeight))
+	rawHeaderBytes, err := hex.DecodeString(*rawHeaderHex)
+	if err != nil {
+		return err
+	}
 	var blockHeader wire.BlockHeader
 	blockHeader.BtcDecode(bytes.NewReader(rawHeaderBytes), wire.ProtocolVersion, wire.LatestEncoding)
 
