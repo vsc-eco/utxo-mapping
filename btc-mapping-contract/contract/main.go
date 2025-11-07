@@ -49,16 +49,7 @@ func checkAuth() {
 func SeedBlocks(blockSeedInput *string) *string {
 	checkAuth()
 
-	lastHeight, err := blocklist.LastHeightFromState()
-	if err != nil {
-		if err != blocklist.ErrorLastHeightDNE {
-			sdk.Abort(err.Error())
-		}
-	} else {
-		sdk.Abort(fmt.Sprintf("blocks already seeded, last height: %d", *lastHeight))
-	}
-
-	newLastHeight, err := blocklist.HandleSeedBlocks(blockSeedInput)
+	newLastHeight, err := blocklist.HandleSeedBlocks(blockSeedInput, NetworkMode)
 	if err != nil {
 		sdk.Abort(err.Error())
 	}

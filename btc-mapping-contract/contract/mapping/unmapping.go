@@ -233,7 +233,7 @@ func (cs *ContractState) createSpendTransaction(
 			return nil, nil, err
 		}
 
-		// sdk.TssSignKey(TssKeyName, sigHash)
+		sdk.TssSignKey(TssKeyName, sigHash)
 
 		unsignedSigHashes[i] = UnsignedSigHash{
 			Index:         uint32(i),

@@ -2,19 +2,33 @@ TARGET = ./contract/main.go
 OUTPUT = artifacts/main.wasm
 TESTNET = artifacts/testnet3.wasm
 MAINNET = artifacts/mainnet.wasm
-FLAGS = -gc=custom -scheduler=none -panic=trap -no-debug -target=wasm-unknown
-TESTNETFLAGS = $(FLAGS) -ldflags="-X 'main.NetworkMode=testnet'"
+BASEFLAGS = -gc=custom -scheduler=none -panic=trap -no-debug -target=wasm-unknown
+TESTNETFLAGS = -ldflags="-X 'main.NetworkMode=testnet'"
+
+NETWORK ?= testnet
+
+ifeq ($(NETWORK),testnet)
+CFLAGS = $(BASEFLAGS) $(TESTNETFLAGS)
+else ifeq ($(NETWORK),mainnet)
+CFLAGS = $(BASEFLAGS)
+else
+$(error Unknown NETWORK: $(NETWORK))
+endif
 
 all: build
 
 build:
-	tinygo build $(TESTNETFLAGS) -o $(OUTPUT) $(TARGET)
+	@echo "Building $@ with $(NETWORK) flags"
+	tinygo build $(CFLAGS) -o $(OUTPUT) $(TARGET)
 
 testnet:
-	tinygo build $(TESTNETFLAGS) -o $(TESTNET) $(TARGET)
+	@echo "Building $@ with $(NETWORK) flags"
+	tinygo build $(CFLAGS) -o $(TESTNET) $(TARGET)
 
+mainnet: NETWORK ?= mainnet
 mainnet:
-	tinygo build $(FLAGS) -o $(MAINNET) $(TARGET)
+	@echo "Building $@ with $(NETWORK) flags"
+	tinygo build $(CFLAGS) -o $(MAINNET) $(TARGET)
 
 strip:
 	wasm-tools strip -o artifacts/main-stripped.wasm $(OUTPUT)

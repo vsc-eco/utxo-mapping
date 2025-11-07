@@ -95,14 +95,29 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, lastHeight *uint32) error {
 	return nil
 }
 
-func HandleSeedBlocks(seedInput *string) (uint32, error) {
+func HandleSeedBlocks(seedInput *string, networkMode string) (uint32, error) {
+	lastHeight, err := LastHeightFromState()
+	if err != nil {
+		if err != ErrorLastHeightDNE {
+			return 0, err
+		}
+	} else {
+		if networkMode != "testnet" {
+			return 0, fmt.Errorf("blocks already seeded, last height: %d", *lastHeight)
+		}
+	}
+
 	var blockSeedData BlockSeedInput
-	err := tinyjson.Unmarshal([]byte(*seedInput), &blockSeedData)
+	err = tinyjson.Unmarshal([]byte(*seedInput), &blockSeedData)
 	if err != nil {
 		return 0, err
 	}
 
-	sdk.StateSetObject(BlockPrefix+fmt.Sprintf("%d", blockSeedData.BlockHeight), blockSeedData.BlockHeader)
-	sdk.StateSetObject(lastHeightKey, fmt.Sprintf("%d", blockSeedData.BlockHeight))
-	return blockSeedData.BlockHeight, nil
+	if lastHeight == nil || *lastHeight < blockSeedData.BlockHeight {
+		sdk.StateSetObject(BlockPrefix+fmt.Sprintf("%d", blockSeedData.BlockHeight), blockSeedData.BlockHeader)
+		sdk.StateSetObject(lastHeightKey, fmt.Sprintf("%d", blockSeedData.BlockHeight))
+		return blockSeedData.BlockHeight, nil
+	}
+
+	return 0, fmt.Errorf("last height >= input block height. last height; %d", *lastHeight)
 }
