@@ -3,6 +3,7 @@ package mapping
 import (
 	"contract-template/sdk"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 
 	"github.com/CosmWasm/tinyjson"
@@ -47,10 +48,17 @@ func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) *[]Utxo {
 }
 
 func (cs *ContractState) updateUtxoSpends(txId string) error {
-	utxoSpend, ok := cs.TxSpends[txId]
-	if !ok {
+	utxoSpendJson := sdk.StateGetObject(txSpendsPrefix + txId)
+	if len(*utxoSpendJson) < 1 {
 		return nil
 	}
+
+	var utxoSpend SigningData
+	err := json.Unmarshal([]byte(*utxoSpendJson), utxoSpend)
+	if err != nil {
+		return fmt.Errorf("error unmarshalling utxo spend json: %w", err)
+	}
+
 	// not the most efficient but there should never be more than a few of these
 	type unconfirmedUtxo struct {
 		indexInRegistry int
@@ -82,6 +90,15 @@ func (cs *ContractState) updateUtxoSpends(txId string) error {
 			}
 		}
 	}
-	delete(cs.TxSpends, txId)
+
+	sdk.StateDeleteObject(txSpendsPrefix + txId)
+	for i, val := range cs.TxSpendsList {
+		if val == txId {
+			// swap with the last element and shorten
+			cs.TxSpendsList[i] = cs.TxSpendsList[len(cs.TxSpendsList)-1]
+			cs.TxSpendsList = cs.TxSpendsList[:len(cs.TxSpendsList)-1]
+			break
+		}
+	}
 	return nil
 }

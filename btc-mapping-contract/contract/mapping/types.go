@@ -7,7 +7,8 @@ const observedPrefix = "observed_txs"
 const utxoPrefix = "utxos"
 const utxoRegistryKey = "utxo_registry"
 const utxoLastIdKey = "utxo_last_id"
-const txSpendsKey = "tx_spends"
+const txSpendsRegistryKey = "tx_spend_registry"
+const txSpendsPrefix = "tx_spend"
 const supplyKey = "supply"
 
 const depositKey = "deposit_to"
@@ -60,8 +61,9 @@ type Utxo struct {
 type UtxoRegistry [][3][]byte
 
 //tinyjson:json
-type HeaderMap map[uint32][]byte
+type TxSpendsRegistry []string
 
+//tinyjson:json
 type SigningData struct {
 	Tx                string
 	UnsignedSigHashes []UnsignedSigHash
@@ -82,11 +84,6 @@ type AddressMetadata struct {
 //tinyjson:json
 type AccountBalanceMap map[string]int64
 
-// txs that have been built and stored (for the mapping bot to see and sign)
-//
-//tinyjson:json
-type TxSpends map[string]*SigningData
-
 //tinyjson:json
 type SystemSupply struct {
 	ActiveSupply int64
@@ -98,7 +95,7 @@ type SystemSupply struct {
 type ContractState struct {
 	UtxoList      UtxoRegistry
 	UtxoLastId    uint32
-	TxSpends      TxSpends
+	TxSpendsList  TxSpendsRegistry
 	Supply        SystemSupply
 	PublicKey     string
 	NetworkParams *chaincfg.Params

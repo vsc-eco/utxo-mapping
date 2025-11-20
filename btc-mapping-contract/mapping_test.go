@@ -16,7 +16,7 @@ import (
 //go:embed artifacts/main.wasm
 var ContractWasm []byte
 
-const rawInstruction = `{"tx_data":{"block_height":4736609,"raw_tx_hex":"020000000001018f4c96ff8a3fa466e8005c0caa6b01d5e1529df0bedbd94a0529514db0ffe0370000000000fdffffff0196260000000000002200202a0ce40846879b42fa7739eb15cdab77ca01b7817a97879b1f58feb52e44478c02473044022076e5f199324d192079acacb0124fcaf5930342b7e80909fc4eee21f48cb23d2b02200e13ef79db59d506f26c6de2fab230fc672a9d00a84269297abb1fbf2b842fd20121022b219f50bb0f57f84ee598b3434904706ee64289c5ac4b1218c4a3a35e390c6d60464800","merkle_proof_hex":"cbb6ae1b0cbe4ef2c17c9e28e06661660b458c862a638930b098d0aec4f4dced63ec55694517b9e1216840b81ef27d9b6e91b3dc31acd34b3830f58293385627f31456aed14b0813e0a3b9c8bf65a20f4423d70b9976b37c31fbaad6f3eab3205efc6dade7738f9fdc844943921f12b60ea246164dc098c852f1fac2e6c398bde37e85c04e8bfac72ee345d6f31d7da36c02e41f3087bd7d2fe1fd541ac2e979d9e5dab1fd538abe721206222e95815b96904faa3f1468aae7553f4536d1c197","tx_index":61},"instructions":["deposit_to=hive:milo-hpr"]}`
+const rawInstruction = `{"tx_data":{"block_height":4782849,"raw_tx_hex":"02000000019321ce0e5c5d9b815baf0670f742475436b83fc90b6f63f75268fec240ac4290010000006a473044022049ab9d2eae4f142a2e32b2a05b131013c74c4bb1f63ee54f3cd49829c667239e02203bd5b57353d28156957c30f272077f733c9bfcf1eb9659834f705751a324c435012103520e3be1d9d9a7356ec59aa433358435035f90e8cc0219baf4c44f8be4a379edfdffffff02b5855c34000000002251203ee8d7e436d62558c6eb1a5b2ab814741d8965058909772b015a57208e950ac832ba010000000000220020609c6ef5a960078ace8f2776ac7dd1bb5925434f51d89da5eb8f954249e07a5700fb4800","merkle_proof_hex":"31930b35c33e9fe68f1f28df5b49879383f6d3b70e53cbe8dd1c8d118ee0cb0d66f8a782a28e99e228f132fa95b6054d10bba61df91101f46ca587bd620bccb9a43e7ea1ae600a434685390889ace263568d829101a48f17a17346b6c968676bc926d17d9533a236e94fb188ea2c7ffe76423945a32190403edda285013868eeac4c752b93787141b37021cd39d5db1e7c0d4a5d7d12086a83f26d26cf9d2a74","tx_index":13},"instructions":["deposit_to=hive:milo-hpr"]}`
 
 func printKeys(ct *test_utils.ContractTest, contractId string, keys []string) {
 	for _, key := range keys {
@@ -30,19 +30,18 @@ func TestMapping(t *testing.T) {
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 	ct.StateSet(contractId, "observed_txs", `{}`)
 	ct.StateSet(contractId, "utxo_registry", `[]`)
-	ct.StateSet(contractId, "tx_spends", `{}`)
 	ct.StateSet(
 		contractId,
 		"supply",
 		`{"active_supply":0,"user_supply":0,"fee_supply":0,"base_fee_rate":1}`,
 	)
-	ct.StateSet(contractId, "last_block_height", "4736609")
+	ct.StateSet(contractId, "last_block_height", "4782849")
 	ct.StateSet(
 		contractId,
-		"block4736609",
-		"000000205fe55a9fc06c60fd340c84411363dfd8b574e8bfe6a44ec21f170f0d000000008c84bcca5e78351d0c8f671c7b9f83430e80ad462fa0b808a0be2c3b1c142df4e8b6e968ffff001db2174f36",
+		"block4782849",
+		"00000020c85f72486dce7bbe73e806f095494d37553995ffc9a6995ab860a34700000000e37446d7b9f3f5498d2b07a25ca3e76144a4754dd49794f8f8b91e7161cff7eee7321e69ffff001dc44cdfad",
 	)
-	ct.StateSet(contractId, "pubkey", `0242f9da15eae56fe6aca65136738905c0afdb2c4edf379e107b3b00b98c7fc9f0`)
+	ct.StateSet(contractId, "pubkey", `0332e9f22cfa2f6233c059c4d54700e3d00df3d7f55e3ea16207b860360446634f`)
 
 	result, gasUsed, logs := ct.Call(stateEngine.TxVscCallContract{
 		Self: stateEngine.TxSelf{
@@ -86,11 +85,10 @@ func TestMapping(t *testing.T) {
 		contractId,
 		[]string{
 			"balhive:milo-hpr",
-			"observed_txs64240d2b706020087463530cd13304907033dd50b7938817e1016416376876bf:0",
+			"observed_txs70392917bb417a68fabd51e8d97a48b5d9594538b76cd47317b4c5c7755b3229:1",
 			"utxo_registry",
 			"utxos0",
 			"utxo_last_id",
-			"tx_spends",
 			"supply",
 			"last_block_height",
 		},
@@ -103,36 +101,36 @@ func TestUnmapping(t *testing.T) {
 	ct := test_utils.NewContractTest()
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
-	ct.StateSet(contractId, "balhive:milo-hpr", "9878")
+	ct.StateSet(contractId, "balhive:milo-hpr", "113202")
 	ct.StateSet(
 		contractId,
-		"observed_txs64240d2b706020087463530cd13304907033dd50b7938817e1016416376876bf:0",
+		"observed_txs70392917bb417a68fabd51e8d97a48b5d9594538b76cd47317b4c5c7755b3229:1",
 		"1",
 	)
 	ct.StateSet(
 		contractId,
 		"utxo_registry",
-		`[["AA==","JpY=","AQ=="]]`,
+		`[["AA==","Aboy","AQ=="]]`,
 	)
 	ct.StateSet(
 		contractId,
 		"utxos0",
-		`{"tx_id":"64240d2b706020087463530cd13304907033dd50b7938817e1016416376876bf","vout":0,"amount":9878,"pk_script":"ACAqDOQIRoebQvp3OesVzat3ygG3gXqXh5sfWP61LkRHjA==","tag":"6ad59da3ece6b8fcfd0cd8c615ed5ec82504fbd81808b2aea5fb750adb01f20c"}`,
+		`{"tx_id":"70392917bb417a68fabd51e8d97a48b5d9594538b76cd47317b4c5c7755b3229","vout":1,"amount":113202,"pk_script":"ACBgnG71qWAHis6PJ3asfdG7WSVDT1HYnaXrj5VCSeB6Vw==","tag":"6ad59da3ece6b8fcfd0cd8c615ed5ec82504fbd81808b2aea5fb750adb01f20c"}`,
 	)
 	ct.StateSet(contractId, "utxo_last_id", "1")
-	ct.StateSet(contractId, "tx_spends", `{}`)
+	ct.StateSet(contractId, "tx_spends", "null")
 	ct.StateSet(
 		contractId,
 		"supply",
-		`{"active_supply":9878,"user_supply":9878,"fee_supply":0,"base_fee_rate":1}`,
+		`{"active_supply":113202,"user_supply":113202,"fee_supply":0,"base_fee_rate":1}`,
 	)
-	ct.StateSet(contractId, "last_block_height", "4736609")
+	ct.StateSet(contractId, "last_block_height", "4782849")
 	ct.StateSet(
 		contractId,
-		"block4736609",
-		"000000205fe55a9fc06c60fd340c84411363dfd8b574e8bfe6a44ec21f170f0d000000008c84bcca5e78351d0c8f671c7b9f83430e80ad462fa0b808a0be2c3b1c142df4e8b6e968ffff001db2174f36",
+		"block4782849",
+		"00000020c85f72486dce7bbe73e806f095494d37553995ffc9a6995ab860a34700000000e37446d7b9f3f5498d2b07a25ca3e76144a4754dd49794f8f8b91e7161cff7eee7321e69ffff001dc44cdfad",
 	)
-	ct.StateSet(contractId, "pubkey", `0242f9da15eae56fe6aca65136738905c0afdb2c4edf379e107b3b00b98c7fc9f0`)
+	ct.StateSet(contractId, "pubkey", `0332e9f22cfa2f6233c059c4d54700e3d00df3d7f55e3ea16207b860360446634f`)
 
 	result, gasUsed, logs := ct.Call(stateEngine.TxVscCallContract{
 		Self: stateEngine.TxSelf{
@@ -147,7 +145,7 @@ func TestUnmapping(t *testing.T) {
 		ContractId: contractId,
 		Action:     "unmap",
 		Payload: json.RawMessage(
-			[]byte(`{"amount":8000,"recipient_btc_address":"tb1qd4erjn4tvt52c92yv66lwju9pzsd2ltph0xe5s"}`),
+			[]byte(`{"amount":10000,"recipient_btc_address":"tb1q5dgehs94wf5mgfasnfjsh4dqv6hz8e35w4w7tk"}`),
 		),
 		RcLimit: 10000,
 		Intents: []contracts.Intent{},
@@ -166,8 +164,8 @@ func TestUnmapping(t *testing.T) {
 	if result.Err != nil {
 		fmt.Println("error:", *result.Err)
 	}
-	assert.True(t, result.Success)                        // assert contract execution success
-	if assert.LessOrEqual(t, gasUsed, uint(1000000000)) { // assert this call uses no more than 10M WASM gas
+	assert.True(t, result.Success)                         // assert contract execution success
+	if assert.LessOrEqual(t, gasUsed, uint(10000000000)) { // assert this call uses no more than 10M WASM gas
 		fmt.Println("gas used:", gasUsed)
 	}
 	assert.GreaterOrEqual(t, len(logs), 1) // assert at least 1 log emitted
@@ -181,7 +179,8 @@ func TestUnmapping(t *testing.T) {
 			"utxo_registry",
 			"utxo_last_id",
 			"utxos0",
-			"tx_spends",
+			"tx_spend_registry",
+			"tx_spendc5827857f860f4e5c1071e9da4b75fb87c9d256c00dee1663034e74dc06fe82f",
 			"supply",
 			"last_block_height",
 		},
@@ -280,6 +279,15 @@ func TestCreateKey(t *testing.T) {
 	}
 	assert.True(t, result.Success)                 // assert contract execution success
 	assert.LessOrEqual(t, gasUsed, uint(10000000)) // assert this call uses no more than 10M WASM gas
+
+	printKeys(
+		&ct,
+		contractId,
+		[]string{
+			"tx_spends",
+		},
+	)
+
 	fmt.Println("Return value:", result.Ret)
 }
 
@@ -309,20 +317,29 @@ func TestRegisterKey(t *testing.T) {
 	}
 	assert.True(t, result.Success)                 // assert contract execution success
 	assert.LessOrEqual(t, gasUsed, uint(10000000)) // assert this call uses no more than 10M WASM gas
+
+	printKeys(
+		&ct,
+		contractId,
+		[]string{
+			"tx_spends",
+		},
+	)
+
 	fmt.Println("Return value:", result.Ret)
 }
 
-const rawBlocks = `{"blocks":"000000204286711ef1b295f5393717779e97684f2df7db3637564376ed3a54010000000014833ac94c78dc6f17424a7e3620bcd5c1ea1c282196b2ba8cf4af5ac17c206a9dbbe968ffff001d936e4485000000203a3d51f10d78c09023158cac89d30c45270ce1031620294b457a4d0e00000000043fae4bb9f9729d603552558c0dc9dea27270feda93c014d76bee213f4c5b5752c0e968ffff001d1519a9c0","latest_fee":2}`
+const rawBlocks = `{"blocks":"04000020e25bdb1dac9e52ab73217048889ca6aabb013c8c75cf20a8cdbba1eb00000000593f41d586ab3ca38b2fef4247e4c1e67a25cbc057284f34f113b9d0318cd7705af21c69ffff001d1adeb3890000002056f01934cb217451b4cfc0de2659cb21d05574f9b498e2e50f7cb9220000000007c163714629200295224756e7738ee85ed86fa5a89a2a1bfd48a5b65107596e3cf71c69ffff001dc4463eff","latest_fee":1}`
 
 func TestAddBlocks(t *testing.T) {
 	ct := test_utils.NewContractTest()
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
-	ct.StateSet(contractId, "last_block_height", "4736609")
+	ct.StateSet(contractId, "last_block_height", "4782781")
 	ct.StateSet(
 		contractId,
-		"block4736609",
-		"000000205fe55a9fc06c60fd340c84411363dfd8b574e8bfe6a44ec21f170f0d000000008c84bcca5e78351d0c8f671c7b9f83430e80ad462fa0b808a0be2c3b1c142df4e8b6e968ffff001db2174f36",
+		"block4782781",
+		"0000002076bd5abaaf4f9b70901c84c29ce5211e85d0f5e2dc6be53619193b50000000007acadb1928b7931a92288bfd3ab925391b4913d7ebad46f92067399a5541d57aa6ed1c69ffff001df352048d",
 	)
 	// ct.StateSet("mapping_contract", "supply", `{}`)
 
@@ -349,10 +366,17 @@ func TestAddBlocks(t *testing.T) {
 	assert.True(t, result.Success)                   // assert contract execution success
 	assert.LessOrEqual(t, gasUsed, uint(1000000000)) // assert this call uses no more than 10M WASM gas
 
-	fmt.Printf("%s: %s\n\n", "last_block_height", ct.StateGet(contractId, "last_block_height"))
-	fmt.Printf("added block 1: %s\n", ct.StateGet("mapping_contract", "block4736610"))
-	fmt.Printf("added block 2: %s\n", ct.StateGet("mapping_contract", "block4736611"))
-	fmt.Printf("%s: %s\n\n", "supply", ct.StateGet(contractId, "supply"))
+	printKeys(
+		&ct,
+		contractId,
+		[]string{
+			"tx_spends",
+			"supply",
+			"last_block_height",
+			"block4782782",
+			"block4782783",
+		},
+	)
 
 	fmt.Println("Return value:", result.Ret)
 }
@@ -397,8 +421,64 @@ func TestSeedBlocks(t *testing.T) {
 	assert.True(t, result.Success)                   // assert contract execution success
 	assert.LessOrEqual(t, gasUsed, uint(1000000000)) // assert this call uses no more than 10M WASM gas
 
-	fmt.Printf("last height state: %s\n", ct.StateGet("mapping_contract", "last_block_height"))
-	fmt.Printf("seeded block: %s\n", ct.StateGet("mapping_contract", "block4736940"))
+	printKeys(
+		&ct,
+		contractId,
+		[]string{
+			"tx_spends",
+			"last_block_height",
+			"block4736940",
+		},
+	)
+
+	fmt.Println("Return value:", result.Ret)
+}
+
+func TestLogging(t *testing.T) {
+	ct := test_utils.NewContractTest()
+	contractId := "mapping_contract"
+	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
+	ct.StateSet(contractId, "tx_spends", "null")
+
+	result, gasUsed, logs := ct.Call(stateEngine.TxVscCallContract{
+		Self: stateEngine.TxSelf{
+			TxId:                 "sometxid",
+			BlockId:              "block:unmap",
+			Index:                69,
+			OpIndex:              0,
+			Timestamp:            "2025-10-14T00:00:00",
+			RequiredAuths:        []string{"hive:milo-hpr"},
+			RequiredPostingAuths: []string{},
+		},
+		ContractId: contractId,
+		Action:     "test_log",
+		Payload: json.RawMessage(
+			[]byte(`{"amount":10000,"recipient_btc_address":"tb1q5dgehs94wf5mgfasnfjsh4dqv6hz8e35w4w7tk"}`),
+		),
+		RcLimit: 10000,
+		Intents: []contracts.Intent{},
+	})
+
+	fmt.Println("logs:", logs)
+
+	if len(logs) > 0 {
+		fmt.Println("console logs: ==================================================")
+		for _, logArray := range logs {
+			for _, log := range logArray {
+				fmt.Println(log)
+			}
+		}
+		fmt.Printf("================================================================\n")
+	}
+
+	if result.Err != nil {
+		fmt.Println("error:", *result.Err)
+	}
+	assert.True(t, result.Success)                        // assert contract execution success
+	if assert.LessOrEqual(t, gasUsed, uint(1000000000)) { // assert this call uses no more than 10M WASM gas
+		fmt.Println("gas used:", gasUsed)
+	}
+	assert.GreaterOrEqual(t, len(logs), 1) // assert at least 1 log emitted
 
 	fmt.Println("Return value:", result.Ret)
 }

@@ -149,7 +149,7 @@ func (cs *ContractState) createSpendTransaction(
 		witnessScripts[index] = witnessScript
 	}
 
-	sdk.Log(fmt.Sprintf("witness scripts created %v", witnessScripts))
+	// sdk.Log(fmt.Sprintf("witness scripts created %v", witnessScripts))
 
 	destAddr, err := btcutil.DecodeAddress(destAddress, cs.NetworkParams)
 	if err != nil {
@@ -233,7 +233,7 @@ func (cs *ContractState) createSpendTransaction(
 			return nil, nil, err
 		}
 
-		sdk.TssSignKey(TssKeyName, sigHash)
+		// sdk.TssSignKey(TssKeyName, sigHash)
 
 		unsignedSigHashes[i] = UnsignedSigHash{
 			Index:         uint32(i),
@@ -242,7 +242,7 @@ func (cs *ContractState) createSpendTransaction(
 		}
 	}
 
-	sdk.Log(fmt.Sprintf("created sig hashes: %v", unsignedSigHashes))
+	// sdk.Log(fmt.Sprintf("created sig hashes: %v", unsignedSigHashes))
 
 	var buf bytes.Buffer
 	err = tx.Serialize(&buf)

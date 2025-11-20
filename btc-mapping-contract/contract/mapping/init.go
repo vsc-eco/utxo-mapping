@@ -29,7 +29,7 @@ func IntializeContractState(publicKey string, networkMode string) (*ContractStat
 	}
 
 	lastUtxoIdHex := sdk.StateGetObject(utxoLastIdKey)
-	lastUtxoId, err := strconv.ParseInt(*lastUtxoIdHex, 16, 32)
+	lastUtxoId, err := strconv.ParseUint(*lastUtxoIdHex, 16, 32)
 	if err != nil {
 		if *lastUtxoIdHex == "" {
 			lastUtxoId = 0
@@ -38,12 +38,12 @@ func IntializeContractState(publicKey string, networkMode string) (*ContractStat
 		}
 	}
 
-	var utxoSpends TxSpends
-	utxoSpendsState := sdk.StateGetObject(txSpendsKey)
-	if len(*utxoSpendsState) > 0 {
-		err := tinyjson.Unmarshal([]byte(*utxoSpendsState), &utxoSpends)
+	var txSpends UtxoRegistry
+	txSpendsState := sdk.StateGetObject(txSpendsRegistryKey)
+	if len(*txSpendsState) > 0 {
+		err := tinyjson.Unmarshal([]byte(*txSpendsState), &txSpends)
 		if err != nil {
-			return nil, fmt.Errorf("error unmarshaling utxo spends: %w", err)
+			return nil, fmt.Errorf("error unmarshaling txspends registry: %w", err)
 		}
 	}
 
@@ -59,7 +59,6 @@ func IntializeContractState(publicKey string, networkMode string) (*ContractStat
 	return &ContractState{
 		UtxoList:      utxos,
 		UtxoLastId:    uint32(lastUtxoId),
-		TxSpends:      utxoSpends,
 		Supply:        supply,
 		PublicKey:     publicKey,
 		NetworkParams: networkParams,
@@ -127,11 +126,11 @@ func (cs *ContractState) SaveToState() error {
 
 	sdk.StateSetObject(utxoLastIdKey, fmt.Sprintf("%x", cs.UtxoLastId))
 
-	utxoSpendsJson, err := tinyjson.Marshal(cs.TxSpends)
+	txSpendsJson, err := tinyjson.Marshal(cs.TxSpendsList)
 	if err != nil {
 		return err
 	}
-	sdk.StateSetObject(txSpendsKey, string(utxoSpendsJson))
+	sdk.StateSetObject(txSpendsRegistryKey, string(txSpendsJson))
 
 	supplyJson, err := tinyjson.Marshal(cs.Supply)
 	if err != nil {

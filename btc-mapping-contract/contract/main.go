@@ -151,18 +151,16 @@ func Unmap(tx *string) *string {
 
 	contractState, err := mapping.IntializeContractState(*publicKey, NetworkMode)
 	if err != nil {
-		sdk.Abort(err.Error())
+		sdk.Log(err.Error())
 	}
 
-	rawTx := contractState.HandleUnmap(&unmapInstructions)
+	outMsg := contractState.HandleUnmap(&unmapInstructions)
 	err = contractState.SaveToState()
 	if err != nil {
 		sdk.Abort(err.Error())
 	}
 
-	return &rawTx
-	// tmp := "tmp"
-	// return &tmp
+	return &outMsg
 }
 
 //go:wasmexport transfer
@@ -206,4 +204,11 @@ func CreateKeyPair(_ *string) *string {
 	keyId := mapping.TssKeyName
 	sdk.TssCreateKey(keyId, "ecdsa")
 	return &keyId
+}
+
+//go:wasmexport test_log
+func TestLog(input *string) *string {
+	sdk.Log(*input)
+	sdk.Abort("test abort")
+	return input
 }

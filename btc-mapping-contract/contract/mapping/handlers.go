@@ -103,7 +103,7 @@ func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) string {
 	if err != nil {
 		sdk.Abort(err.Error())
 	}
-	sdk.Log(fmt.Sprint("sender bal: %d", senderBal))
+	sdk.Log(fmt.Sprintf("sender bal: %d", senderBal))
 
 	vscFee, err := deductVscFee(amount)
 	if err != nil {
@@ -144,10 +144,16 @@ func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) string {
 
 		utxoLookup := packUtxo(internalId, utxo.Amount, 0)
 		cs.UtxoList = append(cs.UtxoList, utxoLookup)
-
 	}
 
-	cs.TxSpends[tx.TxID()] = signingData
+	signingDataJson, err := tinyjson.Marshal(signingData)
+	if err != nil {
+		sdk.Abort(fmt.Sprintf("error marshalling signing data: %s", err.Error()))
+	}
+
+	// use this key, then increment
+	sdk.StateSetObject(txSpendsPrefix+tx.TxID(), string(signingDataJson))
+	cs.TxSpendsList = append(cs.TxSpendsList, tx.TxID())
 
 	setAccBal(env.Sender.Address.String(), senderBal-amount)
 

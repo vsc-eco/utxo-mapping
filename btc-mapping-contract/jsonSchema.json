@@ -1,0 +1,259 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vsc-eco/utxo-mapping/btc-mapping-contract/jsonSchema.json",
+  "title": "Bitcoin VSC Type Definitions",
+  "description": "JSON Schema definitions for VSC/Magi Bitcoin Mapping Contract. NOTE: All byte arrays ([]byte) are serialized as base64-encoded strings.",
+  "$defs": {
+    "verification_request": {
+      "type": "object",
+      "properties": {
+        "block_height": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "description": "Block height (uint32)"
+        },
+        "raw_tx_hex": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]*$",
+          "description": "Raw transaction in hexadecimal format"
+        },
+        "merkle_proof_hex": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]*$",
+          "description": "Merkle proof as hex (array of 32-byte arrays)"
+        },
+        "tx_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "description": "Position of the transaction in the block (uint32)"
+        }
+      },
+      "required": [
+        "block_height",
+        "raw_tx_hex",
+        "merkle_proof_hex",
+        "tx_index"
+      ],
+      "additionalProperties": false
+    },
+    "mapping_input_data": {
+      "type": "object",
+      "properties": {
+        "tx_data": {
+          "type": { "$ref": "#/$defs/verification_request" },
+          "description": "Transaction verification data"
+        },
+        "instructions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "description": "Valid URL search params to be decoded later"
+          },
+          "description": "Array of instruction strings as URL search params"
+        }
+      },
+      "required": ["tx_data", "instructions"],
+      "additionalProperties": false
+    },
+    "account_info": {
+      "type": "object",
+      "properties": {
+        "modified_at": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Hive block height (uint64)"
+        },
+        "address": {
+          "type": "string",
+          "description": "CAIP-10 address (Bitcoin address for receiving funds)"
+        }
+      },
+      "required": ["modified_at", "address"],
+      "additionalProperties": false
+    },
+    "unmapping_input_data": {
+      "type": "object",
+      "properties": {
+        "amount": {
+          "type": "integer",
+          "description": "Amount in satoshis (int64)"
+        },
+        "recipient_btc_address": {
+          "type": "string",
+          "description": "Bitcoin address of the recipient"
+        }
+      },
+      "required": ["amount", "recipient_btc_address"],
+      "additionalProperties": false
+    },
+    "transfer_input_data": {
+      "type": "object",
+      "properties": {
+        "amount": {
+          "type": "integer",
+          "description": "Amount to transfer (int64)"
+        },
+        "recipient_vsc_address": {
+          "type": "string",
+          "description": "VSC address of the recipient"
+        }
+      },
+      "required": ["amount", "recipient_vsc_address"],
+      "additionalProperties": false
+    },
+    "utxo": {
+      "type": "object",
+      "properties": {
+        "tx_id": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$",
+          "description": "Transaction ID containing the output"
+        },
+        "vout": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "description": "Output index (uint32)"
+        },
+        "amount": {
+          "type": "integer",
+          "description": "Amount in satoshis (int64)"
+        },
+        "pk_script": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "description": "Public key script as base64-encoded byte array"
+        },
+        "tag": {
+          "type": "string",
+          "description": "Tag used to create the address"
+        }
+      },
+      "required": ["tx_id", "vout", "amount", "pk_script", "tag"],
+      "additionalProperties": false
+    },
+    "utxo_registry": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "description": "Base64-encoded byte array"
+        },
+        "minItems": 3,
+        "maxItems": 3,
+        "description": "Tuple of 3 base64-encoded byte arrays"
+      },
+      "description": "Registry of UTXOs as array of [3][]byte (each []byte serialized as base64)"
+    },
+    "account_balance_map": {
+      "type": "object",
+      "patternProperties": {
+        "^.*$": {
+          "type": "integer",
+          "description": "Account balance (int64)"
+        }
+      },
+      "additionalProperties": false,
+      "description": "Map of account address to balance"
+    },
+    "signing_data": {
+      "type": "object",
+      "description": "Placeholder for SigningData structure - define based on your actual type"
+    },
+    "tx_spends": {
+      "type": "object",
+      "patternProperties": {
+        "^.*$": {
+          "type": { "$ref": "#/$defs/signing_data" }
+        }
+      },
+      "additionalProperties": false,
+      "description": "Map of transaction identifier to signing data"
+    },
+    "system_supply": {
+      "type": "object",
+      "properties": {
+        "active_supply": {
+          "type": "integer",
+          "description": "Active supply amount (int64)"
+        },
+        "user_supply": {
+          "type": "integer",
+          "description": "User supply amount (int64)"
+        },
+        "fee_supply": {
+          "type": "integer",
+          "description": "Fee supply amount (int64)"
+        },
+        "base_fee_rate": {
+          "type": "integer",
+          "description": "Base fee rate in satoshis per byte (int64)"
+        }
+      },
+      "required": [
+        "active_supply",
+        "user_supply",
+        "fee_supply",
+        "base_fee_rate"
+      ],
+      "additionalProperties": false
+    },
+    "add_blocks_input": {
+      "type": "object",
+      "properties": {
+        "blocks": {
+          "type": "string",
+          "description": "Block data"
+        },
+        "latest_fee": {
+          "type": "integer",
+          "description": "Latest fee amount (int64)"
+        }
+      },
+      "required": ["blocks", "latest_fee"],
+      "additionalProperties": false
+    },
+    "add_block_output": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean",
+          "description": "Whether the operation succeeded"
+        },
+        "error": {
+          "type": "string",
+          "description": "Error message if operation failed"
+        },
+        "last_block_height": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "description": "Height of the last processed block (uint32)"
+        }
+      },
+      "required": ["success", "error", "last_block_height"],
+      "additionalProperties": false
+    },
+    "block_seed_input": {
+      "type": "object",
+      "properties": {
+        "block_header": {
+          "type": "string",
+          "description": "Block header data"
+        },
+        "block_height": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "description": "Block height (uint32)"
+        }
+      },
+      "required": ["block_header", "block_height"],
+      "additionalProperties": false
+    }
+  }
+}
