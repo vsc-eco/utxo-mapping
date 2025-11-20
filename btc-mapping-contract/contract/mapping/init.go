@@ -38,7 +38,7 @@ func IntializeContractState(publicKey string, networkMode string) (*ContractStat
 		}
 	}
 
-	var txSpends UtxoRegistry
+	var txSpends TxSpendsRegistry
 	txSpendsState := sdk.StateGetObject(txSpendsRegistryKey)
 	if len(*txSpendsState) > 0 {
 		err := tinyjson.Unmarshal([]byte(*txSpendsState), &txSpends)

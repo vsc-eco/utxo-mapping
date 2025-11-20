@@ -173,7 +173,8 @@ func Transfer(tx *string) *string {
 
 	mapping.HandleTrasfer(&transferInstructions)
 
-	return tx
+	outMsg := "success"
+	return &outMsg
 }
 
 //go:wasmexport register_public_key
@@ -204,11 +205,4 @@ func CreateKeyPair(_ *string) *string {
 	keyId := mapping.TssKeyName
 	sdk.TssCreateKey(keyId, "ecdsa")
 	return &keyId
-}
-
-//go:wasmexport test_log
-func TestLog(input *string) *string {
-	sdk.Log(*input)
-	sdk.Abort("test abort")
-	return input
 }

@@ -193,29 +193,36 @@ func TestTransfer(t *testing.T) {
 	ct := test_utils.NewContractTest()
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
-	ct.StateSet("mapping_contract", "account_balances", `{"hive:milo-hpr":9878}`)
+	ct.StateSet(contractId, "balhive:milo-hpr", "113202")
 	ct.StateSet(
-		"mapping_contract",
-		"observed_txs",
-		`{"64240d2b706020087463530cd13304907033dd50b7938817e1016416376876bf:0":true}`,
+		contractId,
+		"observed_txs70392917bb417a68fabd51e8d97a48b5d9594538b76cd47317b4c5c7755b3229:1",
+		"1",
 	)
 	ct.StateSet(
-		"mapping_contract",
-		"utxos",
-		`{"64240d2b706020087463530cd13304907033dd50b7938817e1016416376876bf:0":{"tx_id":"64240d2b706020087463530cd13304907033dd50b7938817e1016416376876bf","vout":0,"amount":9878,"pk_script":"ACAqDOQIRoebQvp3OesVzat3ygG3gXqXh5sfWP61LkRHjA==","tag":"6ad59da3ece6b8fcfd0cd8c615ed5ec82504fbd81808b2aea5fb750adb01f20c","confirmed":true}}`,
+		contractId,
+		"utxo_registry",
+		`[["AA==","Aboy","AQ=="]]`,
 	)
-	ct.StateSet("mapping_contract", "tx_spends", `{}`)
 	ct.StateSet(
-		"mapping_contract",
+		contractId,
+		"utxos0",
+		`{"tx_id":"70392917bb417a68fabd51e8d97a48b5d9594538b76cd47317b4c5c7755b3229","vout":1,"amount":113202,"pk_script":"ACBgnG71qWAHis6PJ3asfdG7WSVDT1HYnaXrj5VCSeB6Vw==","tag":"6ad59da3ece6b8fcfd0cd8c615ed5ec82504fbd81808b2aea5fb750adb01f20c"}`,
+	)
+	ct.StateSet(contractId, "utxo_last_id", "1")
+	ct.StateSet(contractId, "tx_spends", "null")
+	ct.StateSet(
+		contractId,
 		"supply",
-		`{"active_supply":9878,"user_supply":9878,"fee_supply":0,"base_fee_rate":1}`,
+		`{"active_supply":113202,"user_supply":113202,"fee_supply":0,"base_fee_rate":1}`,
 	)
+	ct.StateSet(contractId, "last_block_height", "4782849")
 	ct.StateSet(
-		"mapping_contract",
-		"blocklist",
-		`{"block_map":{"4736609":"000000205fe55a9fc06c60fd340c84411363dfd8b574e8bfe6a44ec21f170f0d000000008c84bcca5e78351d0c8f671c7b9f83430e80ad462fa0b808a0be2c3b1c142df4e8b6e968ffff001db2174f36"},"last_height":4736609}`,
+		contractId,
+		"block4782849",
+		"00000020c85f72486dce7bbe73e806f095494d37553995ffc9a6995ab860a34700000000e37446d7b9f3f5498d2b07a25ca3e76144a4754dd49794f8f8b91e7161cff7eee7321e69ffff001dc44cdfad",
 	)
-	ct.StateSet("mapping_contract", "pubkey", `0242f9da15eae56fe6aca65136738905c0afdb2c4edf379e107b3b00b98c7fc9f0`)
+	ct.StateSet(contractId, "pubkey", `0332e9f22cfa2f6233c059c4d54700e3d00df3d7f55e3ea16207b860360446634f`)
 
 	result, gasUsed, _ := ct.Call(stateEngine.TxVscCallContract{
 		Self: stateEngine.TxSelf{
@@ -307,7 +314,7 @@ func TestRegisterKey(t *testing.T) {
 			RequiredPostingAuths: []string{},
 		},
 		ContractId: contractId,
-		Action:     "register_pubkey",
+		Action:     "register_public_key",
 		Payload:    json.RawMessage([]byte("1000")),
 		RcLimit:    1000,
 		Intents:    []contracts.Intent{},

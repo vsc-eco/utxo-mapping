@@ -103,7 +103,6 @@ func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) string {
 	if err != nil {
 		sdk.Abort(err.Error())
 	}
-	sdk.Log(fmt.Sprintf("sender bal: %d", senderBal))
 
 	vscFee, err := deductVscFee(amount)
 	if err != nil {
