@@ -83,6 +83,10 @@ func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 			setAccBal(metadata.VscAddress, recipientBal+utxo.Amount)
 
 			totalMapped += utxo.Amount
+
+			if metadata.Type == MapSwap {
+				// call swap contract
+			}
 		}
 	}
 

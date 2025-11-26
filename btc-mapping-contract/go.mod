@@ -2,7 +2,7 @@ module contract-template
 
 go 1.24.0
 
-replace vsc-node => github.com/vsc-eco/go-vsc-node v0.0.0-20251105170547-29038f81f500
+replace vsc-node => github.com/vsc-eco/go-vsc-node v0.0.0-20251120092146-ea108c70b7f0
 
 // replace vsc-node => ../../go-vsc-node/
 
