@@ -1,6 +1,10 @@
 package mapping
 
-import "github.com/btcsuite/btcd/chaincfg"
+import (
+	"net/url"
+
+	"github.com/btcsuite/btcd/chaincfg"
+)
 
 const balancePrefix = "bal"
 const observedPrefix = "observed_txs"
@@ -10,8 +14,6 @@ const utxoLastIdKey = "utxo_last_id"
 const txSpendsRegistryKey = "tx_spend_registry"
 const txSpendsPrefix = "tx_spend"
 const supplyKey = "supply"
-
-const depositKey = "deposit_to"
 
 const TssKeyName string = "main"
 
@@ -75,10 +77,18 @@ type UnsignedSigHash struct {
 	WitnessScript string
 }
 
+type MappingType string
+
+const (
+	MapDeposit MappingType = "deposit"
+	MapSwap    MappingType = "swap"
+)
+
 type AddressMetadata struct {
-	Instruction string // instruction that is hashed to the tag used to create the address
+	Instruction *url.Values // instruction that is hashed to the tag used to create the address
 	VscAddress  string
 	Tag         []byte // tag (hashed instruction) used to create the address
+	Type        MappingType
 }
 
 //tinyjson:json

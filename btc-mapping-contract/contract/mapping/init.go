@@ -11,6 +11,10 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 )
 
+const depositKey = "deposit_to"
+const swapCurrencyKey = "swap_currency"
+const swapRecipientKey = "swap_to"
+
 func IntializeContractState(publicKey string, networkMode string) (*ContractState, error) {
 	var networkParams *chaincfg.Params
 	if networkMode == "testnet" {
@@ -99,7 +103,16 @@ func parseInstructions(
 		if err != nil {
 			return nil, err
 		}
+		var recipient string
+		var mappingType MappingType
 		if params.Has(depositKey) {
+			recipient = params.Get(depositKey)
+			mappingType = MapDeposit
+		} else if params.Has(swapRecipientKey) {
+			recipient = params.Get(swapRecipientKey)
+			mappingType = MapSwap
+		}
+		if recipient != "" {
 			hasher := sha256.New()
 			hasher.Write([]byte(instr))
 			hashBytes := hasher.Sum(nil)
@@ -108,9 +121,10 @@ func parseInstructions(
 				return nil, err
 			}
 			registry[address] = &AddressMetadata{
-				VscAddress:  params.Get(depositKey),
-				Instruction: instr,
+				VscAddress:  recipient,
+				Instruction: &params,
 				Tag:         hashBytes,
+				Type:        mappingType,
 			}
 		}
 	}
