@@ -3,6 +3,8 @@
 package mapping
 
 import (
+	json "encoding/json"
+
 	tinyjson "github.com/CosmWasm/tinyjson"
 	jlexer "github.com/CosmWasm/tinyjson/jlexer"
 	jwriter "github.com/CosmWasm/tinyjson/jwriter"
@@ -745,7 +747,262 @@ func (v MappingInputData) MarshalTinyJSON(w *jwriter.Writer) {
 func (v *MappingInputData) UnmarshalTinyJSON(l *jlexer.Lexer) {
 	tinyjsonA17a9c65DecodeExampleComBuildingTinyjsonMapping9(l, v)
 }
-func tinyjsonA17a9c65DecodeExampleComBuildingTinyjsonMapping10(in *jlexer.Lexer, out *AccountInfo) {
+func tinyjsonA17a9c65DecodeExampleComBuildingTinyjsonMapping10(in *jlexer.Lexer, out *DexInstruction) {
+	isTopLevel := in.IsStart()
+	if in.IsNull() {
+		if isTopLevel {
+			in.Consumed()
+		}
+		in.Skip()
+		return
+	}
+	in.Delim('{')
+	for !in.IsDelim('}') {
+		key := in.UnsafeFieldName(false)
+		in.WantColon()
+		if in.IsNull() {
+			in.Skip()
+			in.WantComma()
+			continue
+		}
+		switch key {
+		case "type":
+			out.Type = string(in.String())
+		case "version":
+			out.Version = string(in.String())
+		case "asset_in":
+			out.AssetIn = string(in.String())
+		case "asset_out":
+			out.AssetOut = string(in.String())
+		case "recipient":
+			out.Recipient = string(in.String())
+		case "slippage_bps":
+			if in.IsNull() {
+				in.Skip()
+				out.SlippageBps = nil
+			} else {
+				if out.SlippageBps == nil {
+					out.SlippageBps = new(int)
+				}
+				*out.SlippageBps = int(in.Int())
+			}
+		case "min_amount_out":
+			if in.IsNull() {
+				in.Skip()
+				out.MinAmountOut = nil
+			} else {
+				if out.MinAmountOut == nil {
+					out.MinAmountOut = new(int64)
+				}
+				*out.MinAmountOut = int64(in.Int64())
+			}
+		case "beneficiary":
+			if in.IsNull() {
+				in.Skip()
+				out.Beneficiary = nil
+			} else {
+				if out.Beneficiary == nil {
+					out.Beneficiary = new(string)
+				}
+				*out.Beneficiary = string(in.String())
+			}
+		case "ref_bps":
+			if in.IsNull() {
+				in.Skip()
+				out.RefBps = nil
+			} else {
+				if out.RefBps == nil {
+					out.RefBps = new(int)
+				}
+				*out.RefBps = int(in.Int())
+			}
+		case "return_address":
+			if in.IsNull() {
+				in.Skip()
+				out.ReturnAddress = nil
+			} else {
+				if out.ReturnAddress == nil {
+					out.ReturnAddress = new(ReturnAddress)
+				}
+				tinyjsonA17a9c65DecodeExampleComBuildingTinyjsonMapping11(in, out.ReturnAddress)
+			}
+		case "metadata":
+			if in.IsNull() {
+				in.Skip()
+			} else {
+				in.Delim('{')
+				if !in.IsDelim('}') {
+					out.Metadata = make(map[string]interface{})
+				} else {
+					out.Metadata = nil
+				}
+				for !in.IsDelim('}') {
+					key := string(in.String())
+					in.WantColon()
+					var v21 interface{}
+					if m, ok := v21.(tinyjson.Unmarshaler); ok {
+						m.UnmarshalTinyJSON(in)
+					} else if m, ok := v21.(json.Unmarshaler); ok {
+						_ = m.UnmarshalJSON(in.Raw())
+					} else {
+						v21 = in.Interface()
+					}
+					(out.Metadata)[key] = v21
+					in.WantComma()
+				}
+				in.Delim('}')
+			}
+		default:
+			in.SkipRecursive()
+		}
+		in.WantComma()
+	}
+	in.Delim('}')
+	if isTopLevel {
+		in.Consumed()
+	}
+}
+func tinyjsonA17a9c65EncodeExampleComBuildingTinyjsonMapping10(out *jwriter.Writer, in DexInstruction) {
+	out.RawByte('{')
+	first := true
+	_ = first
+	{
+		const prefix string = ",\"type\":"
+		out.RawString(prefix[1:])
+		out.String(string(in.Type))
+	}
+	{
+		const prefix string = ",\"version\":"
+		out.RawString(prefix)
+		out.String(string(in.Version))
+	}
+	{
+		const prefix string = ",\"asset_in\":"
+		out.RawString(prefix)
+		out.String(string(in.AssetIn))
+	}
+	{
+		const prefix string = ",\"asset_out\":"
+		out.RawString(prefix)
+		out.String(string(in.AssetOut))
+	}
+	{
+		const prefix string = ",\"recipient\":"
+		out.RawString(prefix)
+		out.String(string(in.Recipient))
+	}
+	if in.SlippageBps != nil {
+		const prefix string = ",\"slippage_bps\":"
+		out.RawString(prefix)
+		out.Int(int(*in.SlippageBps))
+	}
+	if in.MinAmountOut != nil {
+		const prefix string = ",\"min_amount_out\":"
+		out.RawString(prefix)
+		out.Int64(int64(*in.MinAmountOut))
+	}
+	if in.Beneficiary != nil {
+		const prefix string = ",\"beneficiary\":"
+		out.RawString(prefix)
+		out.String(string(*in.Beneficiary))
+	}
+	if in.RefBps != nil {
+		const prefix string = ",\"ref_bps\":"
+		out.RawString(prefix)
+		out.Int(int(*in.RefBps))
+	}
+	if in.ReturnAddress != nil {
+		const prefix string = ",\"return_address\":"
+		out.RawString(prefix)
+		tinyjsonA17a9c65EncodeExampleComBuildingTinyjsonMapping11(out, *in.ReturnAddress)
+	}
+	if len(in.Metadata) != 0 {
+		const prefix string = ",\"metadata\":"
+		out.RawString(prefix)
+		{
+			out.RawByte('{')
+			v22First := true
+			for v22Name, v22Value := range in.Metadata {
+				if v22First {
+					v22First = false
+				} else {
+					out.RawByte(',')
+				}
+				out.String(string(v22Name))
+				out.RawByte(':')
+				if m, ok := v22Value.(tinyjson.Marshaler); ok {
+					m.MarshalTinyJSON(out)
+				} else if m, ok := v22Value.(json.Marshaler); ok {
+					out.Raw(m.MarshalJSON())
+				} else {
+					out.Raw(json.Marshal(v22Value))
+				}
+			}
+			out.RawByte('}')
+		}
+	}
+	out.RawByte('}')
+}
+
+// MarshalTinyJSON supports tinyjson.Marshaler interface
+func (v DexInstruction) MarshalTinyJSON(w *jwriter.Writer) {
+	tinyjsonA17a9c65EncodeExampleComBuildingTinyjsonMapping10(w, v)
+}
+
+// UnmarshalTinyJSON supports tinyjson.Unmarshaler interface
+func (v *DexInstruction) UnmarshalTinyJSON(l *jlexer.Lexer) {
+	tinyjsonA17a9c65DecodeExampleComBuildingTinyjsonMapping10(l, v)
+}
+func tinyjsonA17a9c65DecodeExampleComBuildingTinyjsonMapping11(in *jlexer.Lexer, out *ReturnAddress) {
+	isTopLevel := in.IsStart()
+	if in.IsNull() {
+		if isTopLevel {
+			in.Consumed()
+		}
+		in.Skip()
+		return
+	}
+	in.Delim('{')
+	for !in.IsDelim('}') {
+		key := in.UnsafeFieldName(false)
+		in.WantColon()
+		if in.IsNull() {
+			in.Skip()
+			in.WantComma()
+			continue
+		}
+		switch key {
+		case "chain":
+			out.Chain = string(in.String())
+		case "address":
+			out.Address = string(in.String())
+		default:
+			in.SkipRecursive()
+		}
+		in.WantComma()
+	}
+	in.Delim('}')
+	if isTopLevel {
+		in.Consumed()
+	}
+}
+func tinyjsonA17a9c65EncodeExampleComBuildingTinyjsonMapping11(out *jwriter.Writer, in ReturnAddress) {
+	out.RawByte('{')
+	first := true
+	_ = first
+	{
+		const prefix string = ",\"chain\":"
+		out.RawString(prefix[1:])
+		out.String(string(in.Chain))
+	}
+	{
+		const prefix string = ",\"address\":"
+		out.RawString(prefix)
+		out.String(string(in.Address))
+	}
+	out.RawByte('}')
+}
+func tinyjsonA17a9c65DecodeExampleComBuildingTinyjsonMapping12(in *jlexer.Lexer, out *AccountInfo) {
 	isTopLevel := in.IsStart()
 	if in.IsNull() {
 		if isTopLevel {
@@ -778,7 +1035,7 @@ func tinyjsonA17a9c65DecodeExampleComBuildingTinyjsonMapping10(in *jlexer.Lexer,
 		in.Consumed()
 	}
 }
-func tinyjsonA17a9c65EncodeExampleComBuildingTinyjsonMapping10(out *jwriter.Writer, in AccountInfo) {
+func tinyjsonA17a9c65EncodeExampleComBuildingTinyjsonMapping12(out *jwriter.Writer, in AccountInfo) {
 	out.RawByte('{')
 	first := true
 	_ = first
@@ -797,14 +1054,14 @@ func tinyjsonA17a9c65EncodeExampleComBuildingTinyjsonMapping10(out *jwriter.Writ
 
 // MarshalTinyJSON supports tinyjson.Marshaler interface
 func (v AccountInfo) MarshalTinyJSON(w *jwriter.Writer) {
-	tinyjsonA17a9c65EncodeExampleComBuildingTinyjsonMapping10(w, v)
+	tinyjsonA17a9c65EncodeExampleComBuildingTinyjsonMapping12(w, v)
 }
 
 // UnmarshalTinyJSON supports tinyjson.Unmarshaler interface
 func (v *AccountInfo) UnmarshalTinyJSON(l *jlexer.Lexer) {
-	tinyjsonA17a9c65DecodeExampleComBuildingTinyjsonMapping10(l, v)
+	tinyjsonA17a9c65DecodeExampleComBuildingTinyjsonMapping12(l, v)
 }
-func tinyjsonA17a9c65DecodeExampleComBuildingTinyjsonMapping11(in *jlexer.Lexer, out *AccountBalanceMap) {
+func tinyjsonA17a9c65DecodeExampleComBuildingTinyjsonMapping13(in *jlexer.Lexer, out *AccountBalanceMap) {
 	isTopLevel := in.IsStart()
 	if in.IsNull() {
 		in.Skip()
@@ -814,9 +1071,9 @@ func tinyjsonA17a9c65DecodeExampleComBuildingTinyjsonMapping11(in *jlexer.Lexer,
 		for !in.IsDelim('}') {
 			key := string(in.String())
 			in.WantColon()
-			var v21 int64
-			v21 = int64(in.Int64())
-			(*out)[key] = v21
+			var v23 int64
+			v23 = int64(in.Int64())
+			(*out)[key] = v23
 			in.WantComma()
 		}
 		in.Delim('}')
@@ -825,21 +1082,21 @@ func tinyjsonA17a9c65DecodeExampleComBuildingTinyjsonMapping11(in *jlexer.Lexer,
 		in.Consumed()
 	}
 }
-func tinyjsonA17a9c65EncodeExampleComBuildingTinyjsonMapping11(out *jwriter.Writer, in AccountBalanceMap) {
+func tinyjsonA17a9c65EncodeExampleComBuildingTinyjsonMapping13(out *jwriter.Writer, in AccountBalanceMap) {
 	if in == nil && (out.Flags&jwriter.NilMapAsEmpty) == 0 {
 		out.RawString(`null`)
 	} else {
 		out.RawByte('{')
-		v22First := true
-		for v22Name, v22Value := range in {
-			if v22First {
-				v22First = false
+		v24First := true
+		for v24Name, v24Value := range in {
+			if v24First {
+				v24First = false
 			} else {
 				out.RawByte(',')
 			}
-			out.String(string(v22Name))
+			out.String(string(v24Name))
 			out.RawByte(':')
-			out.Int64(int64(v22Value))
+			out.Int64(int64(v24Value))
 		}
 		out.RawByte('}')
 	}
@@ -847,10 +1104,10 @@ func tinyjsonA17a9c65EncodeExampleComBuildingTinyjsonMapping11(out *jwriter.Writ
 
 // MarshalTinyJSON supports tinyjson.Marshaler interface
 func (v AccountBalanceMap) MarshalTinyJSON(w *jwriter.Writer) {
-	tinyjsonA17a9c65EncodeExampleComBuildingTinyjsonMapping11(w, v)
+	tinyjsonA17a9c65EncodeExampleComBuildingTinyjsonMapping13(w, v)
 }
 
 // UnmarshalTinyJSON supports tinyjson.Unmarshaler interface
 func (v *AccountBalanceMap) UnmarshalTinyJSON(l *jlexer.Lexer) {
-	tinyjsonA17a9c65DecodeExampleComBuildingTinyjsonMapping11(l, v)
+	tinyjsonA17a9c65DecodeExampleComBuildingTinyjsonMapping13(l, v)
 }

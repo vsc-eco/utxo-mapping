@@ -12,7 +12,7 @@ import (
 )
 
 const depositKey = "deposit_to"
-const swapCurrencyKey = "swap_currency"
+const swapAssetOut = "swap_asset_out"
 const swapRecipientKey = "swap_to"
 
 func IntializeContractState(publicKey string, networkMode string) (*ContractState, error) {
