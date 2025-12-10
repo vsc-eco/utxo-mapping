@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"github.com/CosmWasm/tinyjson"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -27,8 +28,9 @@ func isForVscAcc(txOut *wire.TxOut, addresses map[string]*AddressMetadata, netwo
 	return "", false
 }
 
-func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) *[]Utxo {
-	outputsForVsc := []Utxo{}
+func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) []Utxo {
+	outputsForVsc := make([]Utxo, len(ms.AddressRegistry))
+	i := 0
 
 	for index, txOut := range msgTx.TxOut {
 		if addr, ok := isForVscAcc(txOut, ms.AddressRegistry, ms.NetworkParams); ok {
@@ -40,11 +42,12 @@ func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) *[]Utxo {
 				PkScript: txOut.PkScript,
 				Tag:      hex.EncodeToString(ms.AddressRegistry[addr].Tag),
 			}
-			outputsForVsc = append(outputsForVsc, utxo)
+			outputsForVsc[i] = utxo
+			i++
 		}
 	}
 
-	return &outputsForVsc
+	return outputsForVsc
 }
 
 func (cs *ContractState) updateUtxoSpends(txId string) error {
@@ -101,4 +104,203 @@ func (cs *ContractState) updateUtxoSpends(txId string) error {
 		}
 	}
 	return nil
+}
+
+// attempts to return funds to the checkAddress, falls back on sending to dex account
+// returns the address it returns funds to
+func (cs *ContractState) allocateFunds(recipient string, amount int64) {
+	recipientBal, err := getAccBal(recipient)
+	if err != nil {
+		sdk.Abort(err.Error())
+	}
+	setAccBal(recipient, recipientBal+amount)
+}
+
+func (cs *ContractState) determineReturnInfo(metadata *AddressMetadata) (string, NetworkName, string) {
+	// fallback is typically the system address, which should never fail to be created
+	// if it does, defaults on a "blind faith" send to the sender's destination
+	fallBackAddress, _, err := createP2WSHAddress(cs.PublicKey, nil, cs.NetworkParams)
+	if err != nil {
+		fallBackAddress = metadata.Recipient
+	}
+
+	if !metadata.Params.Has(returnAddressKey) {
+		return metadata.Recipient, Vsc, "no return address provided, returning to destination VSC account"
+	}
+
+	returnAddress := metadata.Params.Get(returnAddressKey)
+
+	var returnNetwork Network
+
+	if !metadata.Params.Has(returnNetworkKey) {
+		returnNetwork = cs.NetworkOptions[Vsc]
+	} else {
+		returnNetwork, err = cs.getNetwork(metadata.Params.Get(returnNetworkKey))
+		if err != nil {
+			returnNetwork = cs.NetworkOptions[Vsc]
+		}
+	}
+
+	if returnNetwork.ValidateAddress(returnAddress) {
+		return returnAddress, returnNetwork.Name(), ""
+	} else {
+		// destination network, to be trimmed to VSC or BTC
+		destNetName := metadata.OutNetwork
+		if metadata.OutNetwork != Vsc && metadata.OutNetwork != Btc {
+			destNetName = Vsc
+		}
+		if cs.NetworkOptions[destNetName].ValidateAddress(returnAddress) {
+			return metadata.Recipient, destNetName, fmt.Sprintf(
+				"return address '%s' invalid on network '%s', funds returned to transaction destination account on vsc",
+				returnAddress,
+				returnNetwork.Name(),
+			)
+		}
+		return fallBackAddress, Vsc, fmt.Sprintf(
+			"return address '%s' invalid on network '%s' and destination address '%s' invalid on network '%s', funds burned",
+			returnAddress,
+			returnNetwork.Name(),
+			metadata.Recipient,
+			destNetName,
+		)
+	}
+}
+
+func (ms *MappingState) processUtxos(relevantUtxos []Utxo) (int64, MappingResults) {
+	totalMapped := int64(0)
+	env := sdk.GetEnv()
+
+	results := make(MappingResults, len(relevantUtxos))
+	// create new utxos entries for all of the relevant outputs in the incoming transaction
+	for i, utxo := range relevantUtxos {
+		_, addrs, _, err := txscript.ExtractPkScriptAddrs(utxo.PkScript, ms.NetworkParams)
+		if err != nil {
+			sdk.Abort(err.Error())
+		}
+		if metadata, ok := ms.AddressRegistry[addrs[0].EncodeAddress()]; ok {
+			// Create UTXO entry
+			utxoKey := fmt.Sprintf("%s:%d", utxo.TxId, utxo.Vout)
+			// proceed if this output has already been observed
+			alreadyObserved := sdk.StateGetObject(observedPrefix + utxoKey)
+			if *alreadyObserved != "" {
+				continue
+			}
+
+			utxoInternalId := ms.UtxoLastId
+			ms.UtxoLastId++
+			// TODO: change since 'confirmed' was removed
+			ms.UtxoList = append(ms.UtxoList, packUtxo(utxoInternalId, utxo.Amount, 1))
+			utxoJson, err := tinyjson.Marshal(utxo)
+			if err != nil {
+				sdk.Abort(err.Error())
+			}
+
+			sdk.StateSetObject(utxoPrefix+fmt.Sprintf("%d", utxoInternalId), string(utxoJson))
+
+			// set observed
+			sdk.StateSetObject(observedPrefix+utxoKey, "1")
+
+			if metadata.Type == MapDeposit {
+				// increment balance for recipient account (vsc account not btc account)
+				// alread verified that this addresss is valid on VSC
+				ms.allocateFunds(metadata.Recipient, utxo.Amount)
+			} else if metadata.Type == MapSwap {
+				ok := metadata.Params.Has(swapAssetOut)
+				if !ok {
+					sdk.Abort("asset out required to execute a swap")
+				}
+				assetOut := metadata.Params.Get(swapAssetOut)
+
+				instruction := DexInstruction{
+					Type:      "swap",
+					Version:   "1.0.0",
+					AssetIn:   BtcAssetValue,
+					AssetOut:  assetOut,
+					Recipient: metadata.Recipient,
+				}
+				instrJson, err := tinyjson.Marshal(instruction)
+				if err != nil {
+					sdk.Abort(fmt.Sprintf("error marshalling swap instruction: %s", err.Error()))
+				}
+
+				options := sdk.ContractCallOptions{
+					Intents: []sdk.Intent{
+						{
+							Type: "transfer.allow",
+							Args: map[string]string{
+								"limit": strconv.FormatInt(utxo.Amount, 10),
+								"token": "btc",
+							},
+						},
+					},
+				}
+
+				// increment the balance of the sender, since that's the only account that can authorize
+				// the intents for the swap and is calling the swap
+				sender := env.Sender.Address.String()
+				senderBal, err := getAccBal(sender)
+				if err != nil {
+					sdk.Abort(fmt.Sprintf("error getting sender account balance: %s", err.Error()))
+				}
+				setAccBal(sender, senderBal+utxo.Amount)
+
+				// call swap contract
+				swapResult := sdk.ContractCall(routerContracId, "execute", string(instrJson), &options)
+
+				// TODO: replace with check for success
+				if *swapResult == "" {
+					// swap succeeded
+					results[i] = &MappingResult{
+						Instruction: metadata.Instruction,
+						Success:     true,
+					}
+					continue
+				}
+
+				// CASE: swap failed
+				// TODO: replace with getting fee from swap output
+				feeTaken := int64(0)
+				returnAmount := utxo.Amount - feeTaken
+
+				outAddress, outNetwork, returnErr := ms.determineReturnInfo(metadata)
+				switch outNetwork {
+				case Vsc:
+					ms.allocateFunds(outAddress, returnAmount)
+				case Btc:
+					unmapInstructions := UnmappingInputData{
+						Amount:              returnAmount,
+						RecipientBtcAddress: outAddress,
+					}
+
+					//TODO: replace sdk.abort calls in HandleUnmap to avoid aborting map for unmap failure
+					ms.HandleUnmap(&unmapInstructions)
+				}
+
+				var errMsg string
+				if len(returnErr) > 0 {
+					errMsg = fmt.Sprintf("swap failed: %s, return error: %s", *swapResult, errMsg)
+				} else {
+					errMsg = fmt.Sprintf("swap failed: %s", *swapResult)
+				}
+
+				results[i] = &MappingResult{
+					Instruction:   metadata.Instruction,
+					Success:       false,
+					Error:         errMsg,
+					ReturnedTo:    outAddress,
+					ReturnNetwork: outNetwork,
+				}
+			}
+
+			// TODO: check cases for when this should increment
+			totalMapped += utxo.Amount
+		}
+	}
+
+	if totalMapped != 0 {
+		ms.Supply.ActiveSupply += totalMapped
+		ms.Supply.UserSupply += totalMapped
+	}
+
+	return totalMapped, results
 }

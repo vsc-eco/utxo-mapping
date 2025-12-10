@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -115,4 +116,24 @@ func getAccBal(vscAcc string) (int64, error) {
 // sets account balance to number (in base 10)
 func setAccBal(vscAcc string, newBal int64) {
 	sdk.StateSetObject(balancePrefix+vscAcc, strconv.FormatInt(newBal, 10))
+}
+
+var validVscPrefixes = []string{"hive:", "did:"}
+
+func vaildateVscAddress(vscAddr string) bool {
+	for _, prefix := range validVscPrefixes {
+		if strings.HasPrefix(vscAddr, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (cs *ContractState) getNetwork(s string) (Network, error) {
+	networkName := NetworkName(strings.ToLower(s))
+	network, ok := cs.NetworkOptions[networkName]
+	if ok {
+		return network, nil
+	}
+	return nil, fmt.Errorf("Invalid network")
 }
