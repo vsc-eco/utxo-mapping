@@ -17,6 +17,17 @@ const supplyKey = "supply"
 
 const TssKeyName string = "main"
 
+// Instruction URL search param keys
+const depositKey = "deposit_to"
+const swapAssetOut = "swap_asset_out"
+const swapNetworkOut = "swap_network_out"
+const swapRecipientKey = "swap_to"
+const returnAddressKey = "return_address"
+const returnNetworkKey = "return_network"
+
+// contract IDs
+const routerContracId = "INSERT_ROUTER_ID_HERE"
+
 //tinyjson:json
 type MappingInputData struct {
 	TxData *VerificationRequest
@@ -84,9 +95,13 @@ const (
 	MapSwap    MappingType = "swap"
 )
 
+type NetworkName string
+
 type AddressMetadata struct {
-	Instruction *url.Values // instruction that is hashed to the tag used to create the address
-	VscAddress  string
+	Instruction string
+	Params      *url.Values // instruction that is hashed to the tag used to create the address
+	Recipient   string
+	OutNetwork  NetworkName
 	Tag         []byte // tag (hashed instruction) used to create the address
 	Type        MappingType
 }
@@ -103,12 +118,13 @@ type SystemSupply struct {
 }
 
 type ContractState struct {
-	UtxoList      UtxoRegistry
-	UtxoLastId    uint32
-	TxSpendsList  TxSpendsRegistry
-	Supply        SystemSupply
-	PublicKey     string
-	NetworkParams *chaincfg.Params
+	UtxoList       UtxoRegistry
+	UtxoLastId     uint32
+	TxSpendsList   TxSpendsRegistry
+	Supply         SystemSupply
+	PublicKey      string
+	NetworkParams  *chaincfg.Params
+	NetworkOptions map[NetworkName]Network
 }
 
 type MappingState struct {
@@ -139,3 +155,15 @@ type ReturnAddress struct {
 }
 
 const BtcAssetValue string = "BTC"
+
+//tinyjson:json
+type MappingResults []*MappingResult
+
+//tinyjson:json
+type MappingResult struct {
+	Instruction   string      `json:"instruction"`
+	Success       bool        `json:"success"`
+	Error         string      `json:"error,omitempty"`
+	ReturnedTo    string      `json:"returned_to,omitempty"`
+	ReturnNetwork NetworkName `json:"return_network,omitempty"`
+}

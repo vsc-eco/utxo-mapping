@@ -11,10 +11,6 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 )
 
-const depositKey = "deposit_to"
-const swapAssetOut = "swap_asset_out"
-const swapRecipientKey = "swap_to"
-
 func IntializeContractState(publicKey string, networkMode string) (*ContractState, error) {
 	var networkParams *chaincfg.Params
 	if networkMode == "testnet" {
@@ -61,11 +57,12 @@ func IntializeContractState(publicKey string, networkMode string) (*ContractStat
 	}
 
 	return &ContractState{
-		UtxoList:      utxos,
-		UtxoLastId:    uint32(lastUtxoId),
-		Supply:        supply,
-		PublicKey:     publicKey,
-		NetworkParams: networkParams,
+		UtxoList:       utxos,
+		UtxoLastId:     uint32(lastUtxoId),
+		Supply:         supply,
+		PublicKey:      publicKey,
+		NetworkParams:  networkParams,
+		NetworkOptions: initNetworkLookup(networkParams),
 	}, nil
 }
 
@@ -78,7 +75,7 @@ func InitializeMappingState(publicKey string, networkMode string, instructions .
 	var registry map[string]*AddressMetadata
 	if len(instructions) > 0 {
 		var err error
-		registry, err = parseInstructions(publicKey, instructions, contractState.NetworkParams)
+		registry, err = contractState.parseInstructions(publicKey, instructions, contractState.NetworkParams)
 		if err != nil {
 			return nil, fmt.Errorf("error unmarshaling address registry: %w", err)
 		}
@@ -90,7 +87,7 @@ func InitializeMappingState(publicKey string, networkMode string, instructions .
 	}, err
 }
 
-func parseInstructions(
+func (cs *ContractState) parseInstructions(
 	publicKey string,
 	instrs []string,
 	networkParams *chaincfg.Params,
@@ -103,14 +100,32 @@ func parseInstructions(
 		if err != nil {
 			return nil, err
 		}
+
+		// validates all destination addresses as vaild on their network
+		// assumes VSC as the network for deposits and unspecified swaps
 		var recipient string
 		var mappingType MappingType
 		if params.Has(depositKey) {
 			recipient = params.Get(depositKey)
+			if !cs.NetworkOptions[Vsc].ValidateAddress(recipient) {
+				return nil, fmt.Errorf(
+					"bad instruction '%s': address '%s' invalid on network '%s'",
+					instr,
+					recipient,
+					Vsc,
+				)
+			}
 			mappingType = MapDeposit
 		} else if params.Has(swapRecipientKey) {
 			recipient = params.Get(swapRecipientKey)
+			recipientNetwork, err := cs.getNetwork(params.Get(swapNetworkOut))
+			if err != nil {
+				recipientNetwork = cs.NetworkOptions[Vsc]
+			}
 			mappingType = MapSwap
+			if !recipientNetwork.ValidateAddress(recipient) {
+				return nil, fmt.Errorf("bad instruction '%s': address '%s' invalid on network '%s'", instr, recipient, recipientNetwork.Name())
+			}
 		}
 		if recipient != "" {
 			hasher := sha256.New()
@@ -121,8 +136,9 @@ func parseInstructions(
 				return nil, err
 			}
 			registry[address] = &AddressMetadata{
-				VscAddress:  recipient,
-				Instruction: &params,
+				Instruction: instr,
+				Recipient:   recipient,
+				Params:      &params,
 				Tag:         hashBytes,
 				Type:        mappingType,
 			}

@@ -5,19 +5,13 @@ import (
 	"contract-template/sdk"
 	"encoding/hex"
 	"fmt"
-	"strconv"
 
 	"github.com/CosmWasm/tinyjson"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 )
 
 func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
-	env := sdk.GetEnv()
-
-	var totalMapped int64
-
 	rawTx, err := hex.DecodeString(txData.RawTxHex)
 	if err != nil {
 		return err
@@ -47,96 +41,9 @@ func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 	ms.updateUtxoSpends(msgTx.TxID())
 
 	// gets all outputs the address of which is specified in the instructions
-	relevantOutputs := *ms.indexOutputs(&msgTx)
+	relevantOutputs := ms.indexOutputs(&msgTx)
 
-	// create new utxos entries for all of the relevant outputs in the incoming transaction
-	for _, utxo := range relevantOutputs {
-		_, addrs, _, err := txscript.ExtractPkScriptAddrs(utxo.PkScript, ms.NetworkParams)
-		if err != nil {
-			sdk.Abort(err.Error())
-		}
-		if metadata, ok := ms.AddressRegistry[addrs[0].EncodeAddress()]; ok {
-			// Create UTXO entry
-			utxoKey := fmt.Sprintf("%s:%d", utxo.TxId, utxo.Vout)
-			// proceed if this output has already been observed
-			alreadyObserved := sdk.StateGetObject(observedPrefix + utxoKey)
-			if *alreadyObserved != "" {
-				continue
-			}
-
-			utxoInternalId := ms.UtxoLastId
-			ms.UtxoLastId++
-			// TODO: change since 'confirmed' was removed
-			ms.UtxoList = append(ms.UtxoList, packUtxo(utxoInternalId, utxo.Amount, 1))
-			utxoJson, err := tinyjson.Marshal(utxo)
-			if err != nil {
-				sdk.Abort(err.Error())
-			}
-
-			sdk.StateSetObject(utxoPrefix+fmt.Sprintf("%d", utxoInternalId), string(utxoJson))
-
-			// set observed
-			sdk.StateSetObject(observedPrefix+utxoKey, "1")
-
-			if metadata.Type == MapDeposit {
-				// increment balance for recipient account (vsc account not btc account)
-				recipientBal, err := getAccBal(metadata.VscAddress)
-				if err != nil {
-					sdk.Abort(err.Error())
-				}
-				setAccBal(metadata.VscAddress, recipientBal+utxo.Amount)
-			} else if metadata.Type == MapSwap {
-				ok := metadata.Instruction.Has(swapAssetOut)
-				if !ok {
-					sdk.Abort("asset out required to execute a swap")
-				}
-				assetOut := metadata.Instruction.Get(swapAssetOut)
-
-				instruction := DexInstruction{
-					Type:      "swap",
-					Version:   "1.0.0",
-					AssetIn:   BtcAssetValue,
-					AssetOut:  assetOut,
-					Recipient: metadata.VscAddress,
-				}
-				instrJson, err := tinyjson.Marshal(instruction)
-				if err != nil {
-					sdk.Abort(fmt.Sprintf("error marshalling swap instruction: %s", err.Error()))
-				}
-
-				options := sdk.ContractCallOptions{
-					Intents: []sdk.Intent{
-						{
-							Type: "transfer.allow",
-							Args: map[string]string{
-								"limit": strconv.FormatInt(utxo.Amount, 10),
-								"token": "btc",
-							},
-						},
-					},
-				}
-
-				// increment the balance of the sender, since that's the only account that can authorize
-				// the intents for the swap and is calling the swap
-				sender := env.Sender.Address.String()
-				senderBal, err := getAccBal(sender)
-				if err != nil {
-					sdk.Abort(fmt.Sprintf("error getting sender account balance: %s", err.Error()))
-				}
-				setAccBal(sender, senderBal+utxo.Amount)
-
-				// call swap contract
-				sdk.ContractCall("INSERT_ID_HERE", "execute", string(instrJson), &options)
-			}
-
-			totalMapped += utxo.Amount
-		}
-	}
-
-	if totalMapped != 0 {
-		ms.Supply.ActiveSupply += totalMapped
-		ms.Supply.UserSupply += totalMapped
-	}
+	ms.processUtxos(relevantOutputs)
 
 	return nil
 }
