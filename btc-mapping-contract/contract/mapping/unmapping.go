@@ -14,14 +14,11 @@ import (
 	"github.com/btcsuite/btcd/wire"
 )
 
-func deductVscFee(amount int64) (int64, error) {
+func calcVscFee(amount int64) (int64, error) {
 	const minFee int64 = 1000
 	const feeRate float64 = 0.01
 	percentageFee := int64(float64(amount) * feeRate)
-	finalFee := minFee
-	if percentageFee > minFee {
-		finalFee = percentageFee
-	}
+	finalFee := max(minFee, percentageFee)
 	if finalFee >= amount {
 		return 0, fmt.Errorf("transaction too small to cover fee.")
 	}
@@ -32,7 +29,7 @@ func getInputUtxos(registryEntries []uint32) ([]*Utxo, error) {
 	result := make([]*Utxo, len(registryEntries))
 	for i, internalId := range registryEntries {
 		utxo := Utxo{}
-		utxoJson := sdk.StateGetObject(utxoPrefix + fmt.Sprintf("%x", internalId))
+		utxoJson := sdk.StateGetObject(fmt.Sprintf("%s%x", utxoPrefix, internalId))
 		err := tinyjson.Unmarshal([]byte(*utxoJson), &utxo)
 		if err != nil {
 			return nil, err
@@ -42,6 +39,7 @@ func getInputUtxos(registryEntries []uint32) ([]*Utxo, error) {
 	return result, nil
 }
 
+// returns a list of internal ids of inputs for making a tx
 func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint32, int64, error) {
 	// approximate size of including a new PSWSH input (base tx size plus signature)
 	// slight overestimate (+1 at the end) to make sure there's enough balance
@@ -98,10 +96,10 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint32, int64, error) 
 		}
 	}
 	// this really should never happen
-	return nil, 0, fmt.Errorf("Total available balance insufficient to complete transaction.")
+	return nil, 0, fmt.Errorf("Total available balance insufficient to complete transaction")
 }
 
-func (cs *ContractState) calculatSegwitFee(baseSize int64, witnessScripts map[int][]byte) int64 {
+func (cs *ContractState) calculateSegwitFee(baseSize int64, witnessScripts map[int][]byte) int64 {
 	// estimates size of segwit signatures
 	witnessDataSize := int64(0)
 	for _, witnessScript := range witnessScripts {
@@ -141,7 +139,12 @@ func (cs *ContractState) createSpendTransaction(
 			return nil, nil, err
 		}
 
-		_, witnessScript, err := createP2WSHAddress(cs.PublicKey, tag, cs.NetworkParams)
+		_, witnessScript, err := createP2WSHAddressWithBackup(
+			cs.PublicKeys.PrimaryPubKey,
+			cs.PublicKeys.BackupPubKey,
+			tag,
+			cs.NetworkParams,
+		)
 
 		if err != nil {
 			return nil, nil, err
@@ -166,7 +169,7 @@ func (cs *ContractState) createSpendTransaction(
 	tx.AddTxOut(destTxOut)
 
 	baseSize := int64(tx.SerializeSize())
-	fee := cs.calculatSegwitFee(baseSize, witnessScripts)
+	fee := cs.calculateSegwitFee(baseSize, witnessScripts)
 
 	totalChange := totalInputsAmount - sendAmount
 
@@ -191,27 +194,22 @@ func (cs *ContractState) createSpendTransaction(
 		// create a dummy change ouput to calculate additional fee for adding change outputs
 		changeOutputSize := int64(wire.NewTxOut(int64(0), changeScript).SerializeSize())
 
-		numChangeOuputs := totalChange / SPLITTHRESHOLD
-		if numChangeOuputs < 1 {
-			numChangeOuputs = 1
-		}
-		if numChangeOuputs > MAXCHANGEOUTPUTS {
-			numChangeOuputs = MAXCHANGEOUTPUTS
-		}
+		numChangeOuputs := min(max(totalChange/SPLITTHRESHOLD, 1), MAXCHANGEOUTPUTS)
+
 		// recalculate the size/fee
 		baseSize += numChangeOuputs * changeOutputSize
-		fee = cs.calculatSegwitFee(baseSize, witnessScripts)
+		fee = cs.calculateSegwitFee(baseSize, witnessScripts)
 
 		eachChangeAmount := totalChange / numChangeOuputs
 
-		for i := int64(0); i < numChangeOuputs; i++ {
+		for range numChangeOuputs {
 			txOutChange := wire.NewTxOut(eachChangeAmount, changeScript)
 			tx.AddTxOut(txOutChange)
 		}
 	}
 
 	// modify the value of the destination amount to deduct the final fee
-	tx.TxOut[0].Value = sendAmount - fee
+	tx.TxOut[0].Value -= fee
 
 	// P2WSH: Calculate witness sighash
 	unsignedSigHashes := make([]UnsignedSigHash, len(inputs))
@@ -233,7 +231,7 @@ func (cs *ContractState) createSpendTransaction(
 			return nil, nil, err
 		}
 
-		sdk.TssSignKey(TssKeyName, sigHash)
+		// sdk.TssSignKey(TssKeyName, sigHash)
 
 		unsignedSigHashes[i] = UnsignedSigHash{
 			Index:         uint32(i),
@@ -257,15 +255,20 @@ func (cs *ContractState) createSpendTransaction(
 	}, tx, nil
 }
 
-func indexUnconfimedOutputs(tx *wire.MsgTx, changeAddress string, network *chaincfg.Params) ([]Utxo, error) {
-	utxos := make([]Utxo, len(tx.TxOut))
+func indexUnconfimedOutputs(tx *wire.MsgTx, changeAddress string, network *chaincfg.Params) ([]*Utxo, error) {
+	sdk.Log(fmt.Sprintf("len tx.txOut: %d", len(tx.TxOut)))
 
+	// 1 output will be to the destination, the others will be to change address
+	utxos := make([]*Utxo, len(tx.TxOut)-1)
+
+	i := 0
 	for index, txOut := range tx.TxOut {
 		_, addrs, _, err := txscript.ExtractPkScriptAddrs(txOut.PkScript, network)
 		if err != nil {
 			return nil, err
 		}
 		if addrs[0].EncodeAddress() == changeAddress {
+			sdk.Log(fmt.Sprintf("utxo amt to change address: %d", txOut.Value))
 			utxo := Utxo{
 				TxId:     tx.TxID(),
 				Vout:     uint32(index),
@@ -273,8 +276,15 @@ func indexUnconfimedOutputs(tx *wire.MsgTx, changeAddress string, network *chain
 				PkScript: txOut.PkScript,
 				Tag:      "",
 			}
-			utxos = append(utxos, utxo)
+			if i < len(utxos) {
+				utxos[i] = &utxo
+				i++
+			} else {
+				utxos = append(utxos, &utxo)
+			}
 		}
 	}
+
+	sdk.Log(fmt.Sprintf("returning utxos: %v", utxos))
 	return utxos, nil
 }

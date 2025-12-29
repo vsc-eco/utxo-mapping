@@ -5,6 +5,7 @@ import (
 	"contract-template/sdk"
 	"encoding/hex"
 	"fmt"
+	"slices"
 
 	"github.com/CosmWasm/tinyjson"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -49,59 +50,80 @@ func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 }
 
 // Returns: raw tx hex to be broadcast
-func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) string {
+func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) (uint8, error) {
 	amount := instructions.Amount
 	env := sdk.GetEnv()
 
+	vscFee, err := calcVscFee(amount)
+	if err != nil {
+		return 1, err
+	}
+	vscCoverRequired := amount + vscFee
+
 	senderBal, err := checkSender(env, amount)
 	if err != nil {
-		sdk.Abort(err.Error())
+		return 1, err
 	}
 
-	vscFee, err := deductVscFee(amount)
+	inputUtxoIds, totalInputAmt, err := cs.getInputUtxoIds(amount)
 	if err != nil {
-		sdk.Abort(err.Error())
-	}
-
-	postFeeAmount := amount - vscFee
-	inputUtxoIds, totalInputAmt, err := cs.getInputUtxoIds(postFeeAmount)
-	if err != nil {
-		sdk.Abort(fmt.Sprintf("error getting input utxos: %w", err))
+		sdk.Abort(fmt.Sprintf("error getting input utxos: %s", err.Error()))
 	}
 
 	inputUtxos, err := getInputUtxos(inputUtxoIds)
 	if err != nil {
-		sdk.Abort(fmt.Sprintf("error getting input utxos: %w", err))
+		sdk.Abort(fmt.Sprintf("error getting input utxos: %s", err.Error()))
 	}
 
-	changeAddress, _, err := createP2WSHAddress(cs.PublicKey, nil, cs.NetworkParams)
+	changeAddress, _, err := createP2WSHAddressWithBackup(
+		cs.PublicKeys.PrimaryPubKey,
+		cs.PublicKeys.BackupPubKey,
+		nil,
+		cs.NetworkParams,
+	)
 	signingData, tx, err := cs.createSpendTransaction(
 		inputUtxos,
 		totalInputAmt,
 		instructions.RecipientBtcAddress,
 		changeAddress,
-		postFeeAmount,
+		vscCoverRequired,
 	)
+
 	if err != nil {
-		sdk.Abort(err.Error())
+		return 1, err
 	}
 
 	unconfirmedUtxos, err := indexUnconfimedOutputs(tx, changeAddress, cs.NetworkParams)
 	if err != nil {
-		sdk.Abort(err.Error())
+		return 1, err
 	}
 	for _, utxo := range unconfirmedUtxos {
+		utxoJson, err := tinyjson.Marshal(utxo)
+		if err != nil {
+			return 1, fmt.Errorf("error marhalling utxo json: %w", err)
+		}
 		// create utxo entry
 		internalId := cs.UtxoLastId
 		cs.UtxoLastId++
 
 		utxoLookup := packUtxo(internalId, utxo.Amount, 0)
+
+		sdk.Log(fmt.Sprintf("appending utxo with internal id: %d, amount: %d", internalId, utxo.Amount))
 		cs.UtxoList = append(cs.UtxoList, utxoLookup)
+		sdk.StateSetObject(fmt.Sprintf("%s%x", utxoPrefix, internalId), string(utxoJson))
+	}
+
+	for _, inputId := range inputUtxoIds {
+		cs.UtxoList = slices.DeleteFunc(
+			cs.UtxoList,
+			func(ss [3]int64) bool { return int64(inputId) == ss[0] },
+		)
+		sdk.StateDeleteObject(fmt.Sprintf("%s%x", utxoPrefix, inputId))
 	}
 
 	signingDataJson, err := tinyjson.Marshal(signingData)
 	if err != nil {
-		sdk.Abort(fmt.Sprintf("error marshalling signing data: %s", err.Error()))
+		return 1, fmt.Errorf("error marshalling signing data: %w", err)
 	}
 
 	// use this key, then increment
@@ -110,11 +132,11 @@ func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) string {
 
 	setAccBal(env.Sender.Address.String(), senderBal-amount)
 
-	cs.Supply.ActiveSupply -= postFeeAmount
+	cs.Supply.ActiveSupply -= vscCoverRequired
 	cs.Supply.UserSupply -= amount
 	cs.Supply.FeeSupply += vscFee
 
-	return "success"
+	return 0, nil
 }
 
 func HandleTrasfer(instructions *TransferInputData) {

@@ -11,11 +11,14 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 )
 
-func IntializeContractState(publicKey string, networkMode string) (*ContractState, error) {
+func IntializeContractState(publicKeys *PublicKeys, networkMode string) (*ContractState, error) {
 	var networkParams *chaincfg.Params
-	if networkMode == "testnet" {
+	switch networkMode {
+	case Testnet3:
 		networkParams = &chaincfg.TestNet3Params
-	} else {
+	case Testnet4:
+		networkParams = &chaincfg.TestNet4Params
+	default:
 		networkParams = &chaincfg.MainNetParams
 	}
 
@@ -60,14 +63,14 @@ func IntializeContractState(publicKey string, networkMode string) (*ContractStat
 		UtxoList:       utxos,
 		UtxoLastId:     uint32(lastUtxoId),
 		Supply:         supply,
-		PublicKey:      publicKey,
+		PublicKeys:     publicKeys,
 		NetworkParams:  networkParams,
 		NetworkOptions: initNetworkLookup(networkParams),
 	}, nil
 }
 
-func InitializeMappingState(publicKey string, networkMode string, instructions ...string) (*MappingState, error) {
-	contractState, err := IntializeContractState(publicKey, networkMode)
+func InitializeMappingState(publicKeys *PublicKeys, networkMode string, instructions ...string) (*MappingState, error) {
+	contractState, err := IntializeContractState(publicKeys, networkMode)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +78,7 @@ func InitializeMappingState(publicKey string, networkMode string, instructions .
 	var registry map[string]*AddressMetadata
 	if len(instructions) > 0 {
 		var err error
-		registry, err = contractState.parseInstructions(publicKey, instructions, contractState.NetworkParams)
+		registry, err = contractState.parseInstructions(publicKeys, instructions, contractState.NetworkParams)
 		if err != nil {
 			return nil, fmt.Errorf("error unmarshaling address registry: %w", err)
 		}
@@ -88,7 +91,7 @@ func InitializeMappingState(publicKey string, networkMode string, instructions .
 }
 
 func (cs *ContractState) parseInstructions(
-	publicKey string,
+	publicKeys *PublicKeys,
 	instrs []string,
 	networkParams *chaincfg.Params,
 ) (map[string]*AddressMetadata, error) {
@@ -131,7 +134,12 @@ func (cs *ContractState) parseInstructions(
 			hasher := sha256.New()
 			hasher.Write([]byte(instr))
 			hashBytes := hasher.Sum(nil)
-			address, _, err := createP2WSHAddress(publicKey, hashBytes, networkParams)
+			address, _, err := createP2WSHAddressWithBackup(
+				publicKeys.PrimaryPubKey,
+				publicKeys.BackupPubKey,
+				hashBytes,
+				networkParams,
+			)
 			if err != nil {
 				return nil, err
 			}

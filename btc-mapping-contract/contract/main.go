@@ -28,14 +28,15 @@ import (
 )
 
 const oracleAddress = "did:vsc:oracle:btc"
-const publicKeyStateKey = "pubkey"
+const primaryPublicKeyStateKey = "pubkey"
+const backupPublicKeyStateKey = "backupkey"
 
 // passed via ldflags, will compile for testnet when set to "testnet"
 var NetworkMode string
 
 func checkAuth() {
 	var adminAddress string
-	if NetworkMode == "testnet" {
+	if mapping.IsTestnet(NetworkMode) {
 		adminAddress = *sdk.GetEnvKey("contract.owner")
 	} else {
 		adminAddress = oracleAddress
@@ -115,9 +116,12 @@ func Map(incomingTx *string) *string {
 		sdk.Abort(err.Error())
 	}
 
-	publicKey := sdk.StateGetObject(publicKeyStateKey)
+	publicKeys := mapping.PublicKeys{
+		PrimaryPubKey: *sdk.StateGetObject(primaryPublicKeyStateKey),
+		BackupPubKey:  *sdk.StateGetObject(backupPublicKeyStateKey),
+	}
 
-	contractState, err := mapping.InitializeMappingState(*publicKey, NetworkMode, mapInstructions.Instructions...)
+	contractState, err := mapping.InitializeMappingState(&publicKeys, NetworkMode, mapInstructions.Instructions...)
 	if err != nil {
 		sdk.Abort(err.Error())
 	}
@@ -138,8 +142,11 @@ func Map(incomingTx *string) *string {
 
 //go:wasmexport unmap
 func Unmap(tx *string) *string {
-	publicKey := sdk.StateGetObject(publicKeyStateKey)
-	if *publicKey == "" {
+	publicKeys := mapping.PublicKeys{
+		PrimaryPubKey: *sdk.StateGetObject(primaryPublicKeyStateKey),
+		BackupPubKey:  *sdk.StateGetObject(backupPublicKeyStateKey),
+	}
+	if publicKeys.PrimaryPubKey == "" {
 		sdk.Abort("No registered public key")
 	}
 
@@ -149,17 +156,21 @@ func Unmap(tx *string) *string {
 		sdk.Abort(err.Error())
 	}
 
-	contractState, err := mapping.IntializeContractState(*publicKey, NetworkMode)
+	contractState, err := mapping.IntializeContractState(&publicKeys, NetworkMode)
 	if err != nil {
 		sdk.Log(err.Error())
 	}
 
-	outMsg := contractState.HandleUnmap(&unmapInstructions)
+	retCode, err := contractState.HandleUnmap(&unmapInstructions)
+	if err != nil {
+		sdk.Abort(fmt.Sprintf("%d %s", retCode, err.Error()))
+	}
 	err = contractState.SaveToState()
 	if err != nil {
 		sdk.Abort(err.Error())
 	}
 
+	outMsg := fmt.Sprintf("%d", retCode)
 	return &outMsg
 }
 
@@ -178,21 +189,50 @@ func Transfer(tx *string) *string {
 }
 
 //go:wasmexport register_public_key
-func RegisterPublicKey(key *string) *string {
+func RegisterPublicKey(keyStr *string) *string {
 	env := sdk.GetEnv()
 	// leave this as owner always
 	if env.Sender.Address.String() != *sdk.GetEnvKey("contract.owner") {
 		sdk.Abort("no permission")
 	}
 
-	existing := sdk.StateGetObject(publicKeyStateKey)
-	if *existing == "" {
-		sdk.StateSetObject(publicKeyStateKey, *key)
-		result := "success"
-		return &result
+	var keys mapping.PublicKeys
+	err := tinyjson.Unmarshal([]byte(*keyStr), &keys)
+	if err != nil {
+		sdk.Abort(fmt.Sprintf("error unmarshalling keys: %s", err.Error()))
 	}
-	result := fmt.Sprintf("key already registered: %s", *existing)
-	return &result
+
+	result := mapping.PublicKeys{
+		PrimaryPubKey: "unchanged",
+		BackupPubKey:  "unchanged",
+	}
+
+	if keys.PrimaryPubKey != "" {
+		existingPrimary := sdk.StateGetObject(primaryPublicKeyStateKey)
+		if *existingPrimary == "" || mapping.IsTestnet(NetworkMode) {
+			sdk.StateSetObject(primaryPublicKeyStateKey, keys.PrimaryPubKey)
+			result.PrimaryPubKey = "set primary key"
+		} else {
+			result.PrimaryPubKey = fmt.Sprintf("primary key already registered: %s", *existingPrimary)
+		}
+	}
+
+	if keys.BackupPubKey != "" {
+		existingBackup := sdk.StateGetObject(backupPublicKeyStateKey)
+		if *existingBackup == "" || mapping.IsTestnet(NetworkMode) {
+			sdk.StateSetObject(backupPublicKeyStateKey, keys.BackupPubKey)
+			result.BackupPubKey = "set backup key"
+		} else {
+			result.BackupPubKey = fmt.Sprintf("backup key already registered: %s", *existingBackup)
+		}
+	}
+
+	resultBytes, err := tinyjson.Marshal(result)
+	if err != nil {
+		sdk.Abort(fmt.Sprintf("error marshalling result: %s", err.Error()))
+	}
+	resultMsg := string(resultBytes)
+	return &resultMsg
 }
 
 //go:wasmexport create_key_pair
