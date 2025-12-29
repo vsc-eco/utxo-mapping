@@ -1,12 +1,11 @@
 package mapping
 
 import (
-	"bytes"
 	"contract-template/sdk"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -15,16 +14,98 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 )
 
+func createP2WSHAddressWithBackup(
+	primaryPubKeyHex string, backupPubKeyHex string, tag []byte, network *chaincfg.Params,
+) (string, []byte, error) {
+	primaryPubKeyBytes, err := hex.DecodeString(primaryPubKeyHex)
+	if err != nil {
+		return "", nil, err
+	}
+
+	if backupPubKeyHex == "" {
+		return createSimpleP2WSHAddress(primaryPubKeyBytes, tag, network)
+	}
+
+	backupPubKeyBytes, err := hex.DecodeString(backupPubKeyHex)
+	if err != nil {
+		return "", nil, err
+	}
+
+	csvBlocks := backupCSVBlocks
+
+	if network.Net != chaincfg.MainNetParams.Net {
+		csvBlocks = 2
+	}
+
+	scriptBuilder := txscript.NewScriptBuilder()
+
+	// start if
+	scriptBuilder.AddOp(txscript.OP_IF)
+
+	// primary spending path
+	// uses OP_CHECKSIG instead of OP_CHECKSIGVERIFY for tags of length 0
+	// because an empty tag will leave the stack empty after verificaiton
+	// and the tx will fail
+	scriptBuilder.AddData(primaryPubKeyBytes)
+	if tag == nil || len(tag) > 0 {
+		scriptBuilder.AddOp(txscript.OP_CHECKSIGVERIFY)
+		scriptBuilder.AddData(tag)
+	} else {
+		scriptBuilder.AddOp(txscript.OP_CHECKSIG)
+	}
+
+	// else: backup path
+	scriptBuilder.AddOp(txscript.OP_ELSE)
+
+	// CSV timelock check
+	scriptBuilder.AddInt64(int64(csvBlocks))
+	scriptBuilder.AddOp(txscript.OP_CHECKSEQUENCEVERIFY)
+	scriptBuilder.AddOp(txscript.OP_DROP) // CSV leaves value on stack, need to drop it
+
+	// backup key signature check
+	scriptBuilder.AddData(backupPubKeyBytes)
+	scriptBuilder.AddOp(txscript.OP_CHECKSIG)
+
+	// end if
+	scriptBuilder.AddOp(txscript.OP_ENDIF)
+
+	script, err := scriptBuilder.Script()
+	if err != nil {
+		return "", nil, err
+	}
+
+	// Create P2WSH address
+	witnessProgram := sha256.Sum256(script)
+	addressWitnessScriptHash, err := btcutil.NewAddressWitnessScriptHash(witnessProgram[:], network)
+	if err != nil {
+		return "", nil, err
+	}
+
+	return addressWitnessScriptHash.EncodeAddress(), script, nil
+}
+
 func createP2WSHAddress(pubKeyHex string, tag []byte, network *chaincfg.Params) (string, []byte, error) {
 	pubKeyBytes, err := hex.DecodeString(pubKeyHex)
 	if err != nil {
 		return "", nil, err
 	}
 
+	return createSimpleP2WSHAddress(pubKeyBytes, tag, network)
+}
+
+func createSimpleP2WSHAddress(pubKeyBytes []byte, tag []byte, network *chaincfg.Params) (string, []byte, error) {
+	// uses OP_CHECKSIG instead of OP_CHECKSIGVERIFY for tags of length 0
+	// because an empty tag will leave the stack empty after verificaiton
+	// and the tx will fail
 	scriptBuilder := txscript.NewScriptBuilder()
-	scriptBuilder.AddData(pubKeyBytes)              // Push pubkey
-	scriptBuilder.AddOp(txscript.OP_CHECKSIGVERIFY) // OP_CHECKSIGVERIFY
-	scriptBuilder.AddData(tag)                      // Push tag/bits
+	if len(tag) > 0 {
+		scriptBuilder.AddData(pubKeyBytes)
+		scriptBuilder.AddOp(txscript.OP_CHECKSIGVERIFY)
+		scriptBuilder.AddData(tag)
+	} else {
+		scriptBuilder.AddData(pubKeyBytes)
+		scriptBuilder.AddOp(txscript.OP_CHECKSIG)
+	}
 
 	script, err := scriptBuilder.Script()
 	if err != nil {
@@ -66,39 +147,12 @@ func checkSender(env sdk.Env, amount int64) (int64, error) {
 	return senderBal, nil
 }
 
-func packUtxo(internalId uint32, amount int64, confirmed uint8) [3][]byte {
-	idBytes := make([]byte, 4)
-	amountBytes := make([]byte, 8)
-	confirmedBytes := []byte{confirmed}
-
-	binary.BigEndian.PutUint32(idBytes, internalId)
-	binary.BigEndian.PutUint64(amountBytes, uint64(amount))
-
-	idBytes = bytes.TrimLeft(idBytes, "\x00")
-	amountBytes = bytes.TrimLeft(amountBytes, "\x00")
-
-	if len(idBytes) == 0 {
-		idBytes = []byte{0}
-	}
-	if len(amountBytes) == 0 {
-		amountBytes = []byte{0}
-	}
-
-	return [3][]byte{idBytes, amountBytes, confirmedBytes}
+func packUtxo(internalId uint32, amount int64, confirmed uint8) [3]int64 {
+	return [3]int64{int64(internalId), amount, int64(confirmed)}
 }
 
-func unpackUtxo(utxo [3][]byte) (uint32, int64, uint8) {
-	idBytes := make([]byte, 4)
-	amountBytes := make([]byte, 8)
-
-	copy(idBytes[4-len(utxo[0]):], utxo[0])
-	copy(amountBytes[8-len(utxo[1]):], utxo[1])
-
-	internalId := binary.BigEndian.Uint32(idBytes)
-	amount := int64(binary.BigEndian.Uint64(amountBytes))
-	confirmed := utxo[2][0]
-
-	return internalId, amount, confirmed
+func unpackUtxo(utxo [3]int64) (uint32, int64, uint8) {
+	return uint32(utxo[0]), utxo[1], uint8(utxo[2])
 }
 
 func getAccBal(vscAcc string) (int64, error) {
@@ -118,17 +172,6 @@ func setAccBal(vscAcc string, newBal int64) {
 	sdk.StateSetObject(balancePrefix+vscAcc, strconv.FormatInt(newBal, 10))
 }
 
-var validVscPrefixes = []string{"hive:", "did:"}
-
-func vaildateVscAddress(vscAddr string) bool {
-	for _, prefix := range validVscPrefixes {
-		if strings.HasPrefix(vscAddr, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
 func (cs *ContractState) getNetwork(s string) (Network, error) {
 	networkName := NetworkName(strings.ToLower(s))
 	network, ok := cs.NetworkOptions[networkName]
@@ -136,4 +179,13 @@ func (cs *ContractState) getNetwork(s string) (Network, error) {
 		return network, nil
 	}
 	return nil, fmt.Errorf("Invalid network")
+}
+
+func IsTestnet(networkName string) bool {
+	testnets := []string{
+		Testnet3,
+		Testnet4,
+	}
+
+	return slices.Contains(testnets, networkName)
 }

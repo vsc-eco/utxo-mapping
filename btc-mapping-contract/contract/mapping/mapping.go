@@ -3,7 +3,6 @@ package mapping
 import (
 	"contract-template/sdk"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strconv"
 
@@ -57,7 +56,7 @@ func (cs *ContractState) updateUtxoSpends(txId string) error {
 	}
 
 	var utxoSpend SigningData
-	err := json.Unmarshal([]byte(*utxoSpendJson), utxoSpend)
+	err := tinyjson.Unmarshal([]byte(*utxoSpendJson), &utxoSpend)
 	if err != nil {
 		return fmt.Errorf("error unmarshalling utxo spend json: %w", err)
 	}
@@ -74,7 +73,7 @@ func (cs *ContractState) updateUtxoSpends(txId string) error {
 		internalId, _, confirmed := unpackUtxo(utxoBytes)
 		if confirmed == 0 {
 			utxo := Utxo{}
-			utxoJson := sdk.StateGetObject(utxoPrefix + fmt.Sprintf("%x", internalId))
+			utxoJson := sdk.StateGetObject(fmt.Sprintf("%s%x", utxoPrefix, internalId))
 			err := tinyjson.Unmarshal([]byte(*utxoJson), &utxo)
 			if err != nil {
 				return err
@@ -88,7 +87,7 @@ func (cs *ContractState) updateUtxoSpends(txId string) error {
 		for _, unconfirmed := range unconfirmedUtxos {
 			if txId == unconfirmed.utxo.TxId && sigHash.Index == unconfirmed.utxo.Vout {
 				// set the confirmed byte array to 1
-				cs.UtxoList[unconfirmed.indexInRegistry][2] = []byte{1}
+				cs.UtxoList[unconfirmed.indexInRegistry][2] = 1
 				continue
 			}
 		}
@@ -119,7 +118,12 @@ func (cs *ContractState) allocateFunds(recipient string, amount int64) {
 func (cs *ContractState) determineReturnInfo(metadata *AddressMetadata) (string, NetworkName, string) {
 	// fallback is typically the system address, which should never fail to be created
 	// if it does, defaults on a "blind faith" send to the sender's destination
-	fallBackAddress, _, err := createP2WSHAddress(cs.PublicKey, nil, cs.NetworkParams)
+	fallBackAddress, _, err := createP2WSHAddressWithBackup(
+		cs.PublicKeys.PrimaryPubKey,
+		cs.PublicKeys.BackupPubKey,
+		nil,
+		cs.NetworkParams,
+	)
 	if err != nil {
 		fallBackAddress = metadata.Recipient
 	}
@@ -179,9 +183,9 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) (int64, MappingResult
 		}
 		if metadata, ok := ms.AddressRegistry[addrs[0].EncodeAddress()]; ok {
 			// Create UTXO entry
-			utxoKey := fmt.Sprintf("%s:%d", utxo.TxId, utxo.Vout)
+			observedUtxoKey := fmt.Sprintf("%s:%d", utxo.TxId, utxo.Vout)
 			// proceed if this output has already been observed
-			alreadyObserved := sdk.StateGetObject(observedPrefix + utxoKey)
+			alreadyObserved := sdk.StateGetObject(observedPrefix + observedUtxoKey)
 			if *alreadyObserved != "" {
 				continue
 			}
@@ -195,10 +199,10 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) (int64, MappingResult
 				sdk.Abort(err.Error())
 			}
 
-			sdk.StateSetObject(utxoPrefix+fmt.Sprintf("%d", utxoInternalId), string(utxoJson))
+			sdk.StateSetObject(fmt.Sprintf("%s%x", utxoPrefix, utxoInternalId), string(utxoJson))
 
 			// set observed
-			sdk.StateSetObject(observedPrefix+utxoKey, "1")
+			sdk.StateSetObject(observedPrefix+observedUtxoKey, "1")
 
 			if metadata.Type == MapDeposit {
 				// increment balance for recipient account (vsc account not btc account)

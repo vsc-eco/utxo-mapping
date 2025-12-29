@@ -25,6 +25,9 @@ const swapRecipientKey = "swap_to"
 const returnAddressKey = "return_address"
 const returnNetworkKey = "return_network"
 
+// Address Creation
+const backupCSVBlocks = 4320 // ~1 month
+
 // contract IDs
 const routerContracId = "INSERT_ROUTER_ID_HERE"
 
@@ -71,7 +74,7 @@ type Utxo struct {
 }
 
 //tinyjson:json
-type UtxoRegistry [][3][]byte
+type UtxoRegistry [][3]int64
 
 //tinyjson:json
 type TxSpendsRegistry []string
@@ -96,6 +99,12 @@ const (
 )
 
 type NetworkName string
+
+const (
+	Testnet3 string = "testnet3"
+	Testnet4 string = "testnet4"
+	Mainnet  string = "mainnet"
+)
 
 type AddressMetadata struct {
 	Instruction string
@@ -122,7 +131,7 @@ type ContractState struct {
 	UtxoLastId     uint32
 	TxSpendsList   TxSpendsRegistry
 	Supply         SystemSupply
-	PublicKey      string
+	PublicKeys     *PublicKeys
 	NetworkParams  *chaincfg.Params
 	NetworkOptions map[NetworkName]Network
 }
@@ -136,17 +145,17 @@ type MappingState struct {
 //
 //tinyjson:json
 type DexInstruction struct {
-	Type          string                 `json:"type"`
-	Version       string                 `json:"version"`
-	AssetIn       string                 `json:"asset_in"`
-	AssetOut      string                 `json:"asset_out"`
-	Recipient     string                 `json:"recipient"`
-	SlippageBps   *int                   `json:"slippage_bps,omitempty"`
-	MinAmountOut  *int64                 `json:"min_amount_out,omitempty"`
-	Beneficiary   *string                `json:"beneficiary,omitempty"`
-	RefBps        *int                   `json:"ref_bps,omitempty"`
-	ReturnAddress *ReturnAddress         `json:"return_address,omitempty"`
-	Metadata      map[string]interface{} `json:"metadata,omitempty"`
+	Type          string         `json:"type"`
+	Version       string         `json:"version"`
+	AssetIn       string         `json:"asset_in"`
+	AssetOut      string         `json:"asset_out"`
+	Recipient     string         `json:"recipient"`
+	SlippageBps   *int           `json:"slippage_bps,omitempty"`
+	MinAmountOut  *int64         `json:"min_amount_out,omitempty"`
+	Beneficiary   *string        `json:"beneficiary,omitempty"`
+	RefBps        *int           `json:"ref_bps,omitempty"`
+	ReturnAddress *ReturnAddress `json:"return_address,omitempty"`
+	Metadata      map[string]any `json:"metadata,omitempty"`
 }
 
 type ReturnAddress struct {
@@ -166,4 +175,10 @@ type MappingResult struct {
 	Error         string      `json:"error,omitempty"`
 	ReturnedTo    string      `json:"returned_to,omitempty"`
 	ReturnNetwork NetworkName `json:"return_network,omitempty"`
+}
+
+//tinyjson:json
+type PublicKeys struct {
+	PrimaryPubKey string `json:"primary_public_key,omitempty"`
+	BackupPubKey  string `json:"backup_public_key,omitempty"`
 }
