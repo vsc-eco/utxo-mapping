@@ -61,7 +61,7 @@ func IntializeContractState(publicKeys *PublicKeys, networkMode string) (*Contra
 
 	return &ContractState{
 		UtxoList:       utxos,
-		UtxoLastId:     uint32(lastUtxoId),
+		UtxoNextId:     uint32(lastUtxoId),
 		Supply:         supply,
 		PublicKeys:     publicKeys,
 		NetworkParams:  networkParams,
@@ -162,7 +162,7 @@ func (cs *ContractState) SaveToState() error {
 	}
 	sdk.StateSetObject(utxoRegistryKey, string(utxosJson))
 
-	sdk.StateSetObject(utxoLastIdKey, fmt.Sprintf("%x", cs.UtxoLastId))
+	sdk.StateSetObject(utxoLastIdKey, fmt.Sprintf("%x", cs.UtxoNextId))
 
 	txSpendsJson, err := tinyjson.Marshal(cs.TxSpendsList)
 	if err != nil {

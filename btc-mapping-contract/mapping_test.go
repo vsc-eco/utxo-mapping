@@ -88,7 +88,7 @@ func TestMapping(t *testing.T) {
 			"observed_txs95af4aafb228696204ed86003e9ac6b904d6493d4311eda90ac34875c4ebab9a:0",
 			"utxo_registry",
 			"utxos0",
-			"utxo_last_id",
+			"utxo_id",
 			"supply",
 			"last_block_height",
 		},
@@ -101,7 +101,7 @@ func TestUnmapping(t *testing.T) {
 	ct := test_utils.NewContractTest()
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
-	ct.StateSet(contractId, "balhive:milo-hpr", "5000")
+	ct.StateSet(contractId, "balhive:milo-hpr", "10000")
 	ct.StateSet(
 		contractId,
 		"observed_txs95af4aafb228696204ed86003e9ac6b904d6493d4311eda90ac34875c4ebab9a:0",
@@ -109,20 +109,30 @@ func TestUnmapping(t *testing.T) {
 	)
 	ct.StateSet(
 		contractId,
+		"observed_txs4cfede180e58a2326aabd41c20fefcf60aba212e031e5b27be3dbfd5caf09af1:1",
+		"1",
+	)
+	ct.StateSet(
+		contractId,
 		"utxo_registry",
-		`[["0","1388","1"]]`,
+		`[[0,5000,1],[1,5000,1]]`,
 	)
 	ct.StateSet(
 		contractId,
 		"utxos0",
 		`{"tx_id":"95af4aafb228696204ed86003e9ac6b904d6493d4311eda90ac34875c4ebab9a","vout":0,"amount":5000,"pk_script":"ACAqDOQIRoebQvp3OesVzat3ygG3gXqXh5sfWP61LkRHjA==","tag":"6ad59da3ece6b8fcfd0cd8c615ed5ec82504fbd81808b2aea5fb750adb01f20c"}`,
 	)
-	ct.StateSet(contractId, "utxo_last_id", "1")
+	ct.StateSet(
+		contractId,
+		"utxos1",
+		`{"tx_id":"4cfede180e58a2326aabd41c20fefcf60aba212e031e5b27be3dbfd5caf09af1","vout":1,"amount":5000,"pk_script":"ACC63J0lCXrLrpyBg0RUMqOyJOX7MbMjqDXkNkwDg974/w==","tag":""}`,
+	)
+	ct.StateSet(contractId, "utxo_id", "2")
 	ct.StateSet(contractId, "tx_spends", "null")
 	ct.StateSet(
 		contractId,
 		"supply",
-		`{"active_supply":5000,"user_supply":5000,"fee_supply":0,"base_fee_rate":1}`,
+		`{"active_supply":10000,"user_supply":10000,"fee_supply":0,"base_fee_rate":1}`,
 	)
 	ct.StateSet(contractId, "last_block_height", "114810")
 	ct.StateSet(
@@ -145,7 +155,7 @@ func TestUnmapping(t *testing.T) {
 		ContractId: contractId,
 		Action:     "unmap",
 		Payload: json.RawMessage(
-			[]byte(`{"amount":3500,"recipient_btc_address":"tb1qxvxtxtjgcmu8r82ss4yhg899xt4rfdnvhjspp8"}`),
+			[]byte(`{"amount":7500,"recipient_btc_address":"tb1qxvxtxtjgcmu8r82ss4yhg899xt4rfdnvhjspp8"}`),
 		),
 		RcLimit: 10000,
 		Intents: []contracts.Intent{},
@@ -170,23 +180,34 @@ func TestUnmapping(t *testing.T) {
 	}
 	assert.GreaterOrEqual(t, len(logs), 1) // assert at least 1 log emitted
 
+	txSpendsReg := []string{}
+	err := json.Unmarshal([]byte(ct.StateGet(contractId, "tx_spend_registry")), &txSpendsReg)
+	if err != nil {
+		fmt.Printf("err unmarshalling txspends registry: %s", err.Error())
+	}
+
+	keysToPrint := []string{
+		"balhive:milo-hpr",
+		"observed_txs64240d2b706020087463530cd13304907033dd50b7938817e1016416376876bf:0",
+		"utxo_registry",
+		"utxo_id",
+		"utxos0",
+		"utxos1",
+		"utxos2",
+		"utxos3",
+		"supply",
+		"last_block_height",
+		"tx_spend_registry",
+	}
+
+	for _, txSpend := range txSpendsReg {
+		keysToPrint = append(keysToPrint, "tx_spend"+txSpend)
+	}
+
 	printKeys(
 		&ct,
 		contractId,
-		[]string{
-			"balhive:milo-hpr",
-			"observed_txs64240d2b706020087463530cd13304907033dd50b7938817e1016416376876bf:0",
-			"utxo_registry",
-			"utxo_last_id",
-			"utxos0",
-			"utxos1",
-			"utxos2",
-			"utxos3",
-			"tx_spend_registry",
-			"tx_spendc5827857f860f4e5c1071e9da4b75fb87c9d256c00dee1663034e74dc06fe82f",
-			"supply",
-			"last_block_height",
-		},
+		keysToPrint,
 	)
 
 	fmt.Println("Return value:", result.Ret)
@@ -212,7 +233,7 @@ func TestTransfer(t *testing.T) {
 		"utxos0",
 		`{"tx_id":"70392917bb417a68fabd51e8d97a48b5d9594538b76cd47317b4c5c7755b3229","vout":1,"amount":113202,"pk_script":"ACBgnG71qWAHis6PJ3asfdG7WSVDT1HYnaXrj5VCSeB6Vw==","tag":"6ad59da3ece6b8fcfd0cd8c615ed5ec82504fbd81808b2aea5fb750adb01f20c"}`,
 	)
-	ct.StateSet(contractId, "utxo_last_id", "1")
+	ct.StateSet(contractId, "utxo_id", "1")
 	ct.StateSet(contractId, "tx_spends", "null")
 	ct.StateSet(
 		contractId,
@@ -362,7 +383,7 @@ func TestAddBlocks(t *testing.T) {
 	ct.StateSet(
 		contractId,
 		"block4782781",
-		"0000002076bd5abaaf4f9b70901c84c29ce5211e85d0f5e2dc6be53619193b50000000007acadb1928b7931a92288bfd3ab925391b4913d7ebad46f92067399a5541d57aa6ed1c69ffff001df352048d",
+		"0000002076bd5abaaf4f9b70901c84c29ce5211e85d0f5e2dc6be53619193b500007acadb1928b7931a92288bfd3ab925391b4913d7ebad46f92067399a5541d57aa6ed1c69ffff001df352048d",
 	)
 	// ct.StateSet("mapping_contract", "supply", `{}`)
 

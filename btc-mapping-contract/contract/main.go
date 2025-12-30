@@ -158,19 +158,19 @@ func Unmap(tx *string) *string {
 
 	contractState, err := mapping.IntializeContractState(&publicKeys, NetworkMode)
 	if err != nil {
-		sdk.Log(err.Error())
+		sdk.Abort(err.Error())
 	}
 
-	retCode, err := contractState.HandleUnmap(&unmapInstructions)
+	err = contractState.HandleUnmap(&unmapInstructions)
 	if err != nil {
-		sdk.Abort(fmt.Sprintf("%d %s", retCode, err.Error()))
+		sdk.Abort(fmt.Sprintf("%d %s", 1, err.Error()))
 	}
 	err = contractState.SaveToState()
 	if err != nil {
 		sdk.Abort(err.Error())
 	}
 
-	outMsg := fmt.Sprintf("%d", retCode)
+	outMsg := fmt.Sprintf("%d", 0)
 	return &outMsg
 }
 
@@ -182,9 +182,12 @@ func Transfer(tx *string) *string {
 		sdk.Abort(err.Error())
 	}
 
-	mapping.HandleTrasfer(&transferInstructions)
+	err = mapping.HandleTrasfer(&transferInstructions)
+	if err != nil {
+		sdk.Abort(fmt.Sprintf("%d %s", 1, err.Error()))
+	}
 
-	outMsg := "success"
+	outMsg := fmt.Sprintf("%d", 0)
 	return &outMsg
 }
 

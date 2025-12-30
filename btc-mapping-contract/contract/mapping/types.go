@@ -10,7 +10,7 @@ const balancePrefix = "bal"
 const observedPrefix = "observed_txs"
 const utxoPrefix = "utxos"
 const utxoRegistryKey = "utxo_registry"
-const utxoLastIdKey = "utxo_last_id"
+const utxoLastIdKey = "utxo_id"
 const txSpendsRegistryKey = "tx_spend_registry"
 const txSpendsPrefix = "tx_spend"
 const supplyKey = "supply"
@@ -128,7 +128,7 @@ type SystemSupply struct {
 
 type ContractState struct {
 	UtxoList       UtxoRegistry
-	UtxoLastId     uint32
+	UtxoNextId     uint32
 	TxSpendsList   TxSpendsRegistry
 	Supply         SystemSupply
 	PublicKeys     *PublicKeys

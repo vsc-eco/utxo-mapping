@@ -14,6 +14,13 @@ import (
 	"github.com/btcsuite/btcd/wire"
 )
 
+// constants in sats
+const dustThreshold = 546
+
+// 0.01 BTC
+const splitThreshold = 1000000
+const maxChangeOutputs = 4
+
 func calcVscFee(amount int64) (int64, error) {
 	const minFee int64 = 1000
 	const feeRate float64 = 0.01
@@ -39,6 +46,35 @@ func getInputUtxos(registryEntries []uint32) ([]*Utxo, error) {
 	return result, nil
 }
 
+// Helper function to estimate fee for a given number of inputs and outputs
+func (cs *ContractState) estimateFee(numInputs int64, amount, inputAmount int64) int64 {
+	numOutputs := int64(1)
+	totalChange := inputAmount - amount
+	if totalChange > dustThreshold {
+		// total number of change outputs
+		numOutputs += min(max(totalChange/splitThreshold, 1), maxChangeOutputs)
+	}
+
+	// Base transaction overhead (version, locktime, etc.)
+	baseSize := int64(10)
+
+	// Input size: outpoint (36) + script sig length (1) + sequence (4)
+	inputSize := numInputs * 41
+
+	// Output size: value (8) + script length (1) + P2WSH script (34)
+	outputSize := numOutputs * 43
+
+	// Witness data per input (signature + witness script)
+	// 72 bytes sig + 68 bytes witness script + 3 bytes for size markers
+	witnessDataSize := numInputs * (72 + 68 + 3)
+
+	totalSize := baseSize + inputSize + outputSize
+	// Calculate vSize: (base_size * 3 + total_size + witness_data) / 4 + witness flag overhead
+	vSize := (totalSize*3+totalSize+witnessDataSize+3)/4 + 2
+
+	return vSize * cs.Supply.BaseFeeRate
+}
+
 // returns a list of internal ids of inputs for making a tx
 func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint32, int64, error) {
 	// approximate size of including a new PSWSH input (base tx size plus signature)
@@ -56,8 +92,10 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint32, int64, error) 
 		if confirmed == 0 {
 			continue
 		}
+		fee := cs.estimateFee(1, amount, utxoAmount)
+		requiredAmount := amount + fee
 		// calculates amount required to cover initial tx plus the addition of itself as an input
-		if utxoAmount >= amount {
+		if utxoAmount >= requiredAmount {
 			return []uint32{internalId}, utxoAmount, nil
 		}
 	}
@@ -76,7 +114,11 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint32, int64, error) 
 			inputs = append(inputs, internalId)
 			accAmount += utxoAmount
 			// greater than or equal
-			if accAmount >= amount {
+
+			fee := cs.estimateFee(int64(len(inputs)), amount, accAmount)
+			requiredAmount := amount + fee
+
+			if accAmount >= requiredAmount {
 				return inputs, accAmount, nil
 			}
 		} else {
@@ -91,7 +133,11 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint32, int64, error) 
 	for _, utxo := range unconfirmedTxs {
 		inputs = append(inputs, utxo.internalId)
 		accAmount += utxo.amount
-		if accAmount >= amount {
+
+		fee := cs.estimateFee(int64(len(inputs)), amount, accAmount)
+		requiredAmount := amount + fee
+
+		if accAmount >= requiredAmount {
 			return inputs, accAmount, nil
 		}
 	}
@@ -118,7 +164,7 @@ func (cs *ContractState) createSpendTransaction(
 	destAddress string,
 	changeAddress string,
 	sendAmount int64,
-) (*SigningData, *wire.MsgTx, error) {
+) (*SigningData, *wire.MsgTx, int64, error) {
 	tx := wire.NewMsgTx(wire.TxVersion)
 
 	// create all witness script now for better size estimation
@@ -126,7 +172,7 @@ func (cs *ContractState) createSpendTransaction(
 	for index, utxo := range inputs {
 		txHash, err := chainhash.NewHashFromStr(utxo.TxId)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, 0, err
 		}
 
 		outPoint := wire.NewOutPoint(txHash, utxo.Vout)
@@ -136,7 +182,7 @@ func (cs *ContractState) createSpendTransaction(
 		tag, err := hex.DecodeString(utxo.Tag)
 
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, 0, err
 		}
 
 		_, witnessScript, err := createP2WSHAddressWithBackup(
@@ -147,7 +193,7 @@ func (cs *ContractState) createSpendTransaction(
 		)
 
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, 0, err
 		}
 		witnessScripts[index] = witnessScript
 	}
@@ -156,13 +202,13 @@ func (cs *ContractState) createSpendTransaction(
 
 	destAddr, err := btcutil.DecodeAddress(destAddress, cs.NetworkParams)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 
 	// Create output script for destination
 	destScript, err := txscript.PayToAddrScript(destAddr)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 
 	destTxOut := wire.NewTxOut(sendAmount, destScript)
@@ -173,43 +219,41 @@ func (cs *ContractState) createSpendTransaction(
 
 	totalChange := totalInputsAmount - sendAmount
 
-	// constants in sats
-	const DUSTTHRESHOLD = 546
-	// 0.01 BTC
-	const SPLITTHRESHOLD = 1000000
-	const MAXCHANGEOUTPUTS = 4
-
 	// if change is not dust
-	if totalChange > DUSTTHRESHOLD {
+	if totalChange > dustThreshold {
 		// split if above SPLITTHRESHOLD, taking into account the added fee
 		// for each split (about 34 bytes per output)
 		changeAddressObj, err := btcutil.DecodeAddress(changeAddress, cs.NetworkParams)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, 0, err
 		}
 		changeScript, err := txscript.PayToAddrScript(changeAddressObj)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, 0, err
 		}
 		// create a dummy change ouput to calculate additional fee for adding change outputs
 		changeOutputSize := int64(wire.NewTxOut(int64(0), changeScript).SerializeSize())
 
-		numChangeOuputs := min(max(totalChange/SPLITTHRESHOLD, 1), MAXCHANGEOUTPUTS)
+		numChangeOuputs := min(max(totalChange/splitThreshold, 1), maxChangeOutputs)
 
 		// recalculate the size/fee
 		baseSize += numChangeOuputs * changeOutputSize
 		fee = cs.calculateSegwitFee(baseSize, witnessScripts)
 
-		eachChangeAmount := totalChange / numChangeOuputs
+		eachChangeAmount := (totalChange - fee) / numChangeOuputs
+		firstChangeAmount := eachChangeAmount
+		if (eachChangeAmount * numChangeOuputs) != (totalChange - fee) {
+			firstChangeAmount += (totalChange - fee - eachChangeAmount*numChangeOuputs)
+		}
 
-		for range numChangeOuputs {
+		txOutChange := wire.NewTxOut(firstChangeAmount, changeScript)
+		tx.AddTxOut(txOutChange)
+
+		for range numChangeOuputs - 1 {
 			txOutChange := wire.NewTxOut(eachChangeAmount, changeScript)
 			tx.AddTxOut(txOutChange)
 		}
 	}
-
-	// modify the value of the destination amount to deduct the final fee
-	tx.TxOut[0].Value -= fee
 
 	// P2WSH: Calculate witness sighash
 	unsignedSigHashes := make([]UnsignedSigHash, len(inputs))
@@ -228,7 +272,7 @@ func (cs *ContractState) createSpendTransaction(
 		)
 
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, 0, err
 		}
 
 		// sdk.TssSignKey(TssKeyName, sigHash)
@@ -245,14 +289,14 @@ func (cs *ContractState) createSpendTransaction(
 	var buf bytes.Buffer
 	err = tx.Serialize(&buf)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 	txHex := hex.EncodeToString(buf.Bytes())
 
 	return &SigningData{
 		Tx:                txHex,
 		UnsignedSigHashes: unsignedSigHashes,
-	}, tx, nil
+	}, tx, fee, nil
 }
 
 func indexUnconfimedOutputs(tx *wire.MsgTx, changeAddress string, network *chaincfg.Params) ([]*Utxo, error) {
@@ -285,6 +329,5 @@ func indexUnconfimedOutputs(tx *wire.MsgTx, changeAddress string, network *chain
 		}
 	}
 
-	sdk.Log(fmt.Sprintf("returning utxos: %v", utxos))
 	return utxos, nil
 }

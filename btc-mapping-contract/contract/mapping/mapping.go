@@ -12,27 +12,34 @@ import (
 	"github.com/btcsuite/btcd/wire"
 )
 
-func isForVscAcc(txOut *wire.TxOut, addresses map[string]*AddressMetadata, network *chaincfg.Params) (string, bool) {
+func isForVscAcc(
+	txOut *wire.TxOut,
+	addresses map[string]*AddressMetadata,
+	network *chaincfg.Params,
+) (string, bool, error) {
 	_, addrs, _, err := txscript.ExtractPkScriptAddrs(txOut.PkScript, network)
 	if err != nil {
-		sdk.Abort(err.Error())
+		return "", false, fmt.Errorf("coult not extract pkscript address: %w", err)
 	}
 	// should always being exactly length 1 for P2SH an P2WSH addresses
 	for _, addr := range addrs {
 		addressString := addr.EncodeAddress()
 		if _, ok := addresses[addressString]; ok {
-			return addr.EncodeAddress(), true
+			return addr.EncodeAddress(), true, nil
 		}
 	}
-	return "", false
+	return "", false, nil
 }
 
-func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) []Utxo {
+func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) ([]Utxo, error) {
 	outputsForVsc := make([]Utxo, len(ms.AddressRegistry))
 	i := 0
 
 	for index, txOut := range msgTx.TxOut {
-		if addr, ok := isForVscAcc(txOut, ms.AddressRegistry, ms.NetworkParams); ok {
+		if addr, ok, err := isForVscAcc(txOut, ms.AddressRegistry, ms.NetworkParams); ok {
+			if err != nil {
+				return nil, err
+			}
 
 			utxo := Utxo{
 				TxId:     msgTx.TxID(),
@@ -46,7 +53,7 @@ func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) []Utxo {
 		}
 	}
 
-	return outputsForVsc
+	return outputsForVsc, nil
 }
 
 func (cs *ContractState) updateUtxoSpends(txId string) error {
@@ -107,12 +114,13 @@ func (cs *ContractState) updateUtxoSpends(txId string) error {
 
 // attempts to return funds to the checkAddress, falls back on sending to dex account
 // returns the address it returns funds to
-func (cs *ContractState) allocateFunds(recipient string, amount int64) {
+func (cs *ContractState) allocateFunds(recipient string, amount int64) error {
 	recipientBal, err := getAccBal(recipient)
 	if err != nil {
-		sdk.Abort(err.Error())
+		return err
 	}
 	setAccBal(recipient, recipientBal+amount)
+	return nil
 }
 
 func (cs *ContractState) determineReturnInfo(metadata *AddressMetadata) (string, NetworkName, string) {
@@ -170,7 +178,7 @@ func (cs *ContractState) determineReturnInfo(metadata *AddressMetadata) (string,
 	}
 }
 
-func (ms *MappingState) processUtxos(relevantUtxos []Utxo) (int64, MappingResults) {
+func (ms *MappingState) processUtxos(relevantUtxos []Utxo) (int64, MappingResults, error) {
 	totalMapped := int64(0)
 	env := sdk.GetEnv()
 
@@ -179,7 +187,7 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) (int64, MappingResult
 	for i, utxo := range relevantUtxos {
 		_, addrs, _, err := txscript.ExtractPkScriptAddrs(utxo.PkScript, ms.NetworkParams)
 		if err != nil {
-			sdk.Abort(err.Error())
+			return 0, nil, err
 		}
 		if metadata, ok := ms.AddressRegistry[addrs[0].EncodeAddress()]; ok {
 			// Create UTXO entry
@@ -190,13 +198,13 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) (int64, MappingResult
 				continue
 			}
 
-			utxoInternalId := ms.UtxoLastId
-			ms.UtxoLastId++
+			utxoInternalId := ms.UtxoNextId
+			ms.UtxoNextId++
 			// TODO: change since 'confirmed' was removed
 			ms.UtxoList = append(ms.UtxoList, packUtxo(utxoInternalId, utxo.Amount, 1))
 			utxoJson, err := tinyjson.Marshal(utxo)
 			if err != nil {
-				sdk.Abort(err.Error())
+				return 0, nil, err
 			}
 
 			sdk.StateSetObject(fmt.Sprintf("%s%x", utxoPrefix, utxoInternalId), string(utxoJson))
@@ -211,7 +219,7 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) (int64, MappingResult
 			} else if metadata.Type == MapSwap {
 				ok := metadata.Params.Has(swapAssetOut)
 				if !ok {
-					sdk.Abort("asset out required to execute a swap")
+					return 0, nil, fmt.Errorf("asset out required to execute a swap")
 				}
 				assetOut := metadata.Params.Get(swapAssetOut)
 
@@ -224,7 +232,7 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) (int64, MappingResult
 				}
 				instrJson, err := tinyjson.Marshal(instruction)
 				if err != nil {
-					sdk.Abort(fmt.Sprintf("error marshalling swap instruction: %s", err.Error()))
+					return 0, nil, fmt.Errorf("error marshalling swap instruction: %w", err)
 				}
 
 				options := sdk.ContractCallOptions{
@@ -244,7 +252,7 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) (int64, MappingResult
 				sender := env.Sender.Address.String()
 				senderBal, err := getAccBal(sender)
 				if err != nil {
-					sdk.Abort(fmt.Sprintf("error getting sender account balance: %s", err.Error()))
+					return 0, nil, fmt.Errorf("error getting sender account balance: %w", err)
 				}
 				setAccBal(sender, senderBal+utxo.Amount)
 
@@ -276,8 +284,10 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) (int64, MappingResult
 						RecipientBtcAddress: outAddress,
 					}
 
-					//TODO: replace sdk.abort calls in HandleUnmap to avoid aborting map for unmap failure
-					ms.HandleUnmap(&unmapInstructions)
+					err := ms.HandleUnmap(&unmapInstructions)
+					if err != nil {
+						// TODO: handle case where unmap fails
+					}
 				}
 
 				var errMsg string
@@ -306,5 +316,5 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) (int64, MappingResult
 		ms.Supply.UserSupply += totalMapped
 	}
 
-	return totalMapped, results
+	return totalMapped, results, nil
 }
