@@ -57,7 +57,7 @@ func LastHeightToState(lastHeight *uint32) {
 func DivideHeaderList(blocksHex *string) ([]BlockHeaderBytes, error) {
 	blockBytes, err := hex.DecodeString(*blocksHex)
 	if err != nil {
-		sdk.Abort(err.Error())
+		return nil, err
 	}
 	if len(blockBytes)%80 != 0 {
 		return nil, fmt.Errorf("incorrect block length")
@@ -74,7 +74,7 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, lastHeight *uint32) error {
 	lastBlockHex := sdk.StateGetObject(BlockPrefix + fmt.Sprintf("%d", *lastHeight))
 	lastBlockBytes, err := hex.DecodeString(*lastBlockHex)
 	if err != nil {
-		sdk.Abort(err.Error())
+		return err
 	}
 	var lastBlockHeader wire.BlockHeader
 	lastBlockHeader.BtcDecode(bytes.NewReader(lastBlockBytes[:]), wire.ProtocolVersion, wire.LatestEncoding)

@@ -726,9 +726,7 @@ func tinyjsonA17a9c65DecodeExampleComBuildingTinyjsonMapping10(in *jlexer.Lexer,
 				in.Skip()
 				v15 = nil
 			} else {
-				if v15 == nil {
-					v15 = new(MappingResult)
-				}
+				v15 = new(MappingResult)
 				(*v15).UnmarshalTinyJSON(in)
 			}
 			*out = append(*out, v15)
