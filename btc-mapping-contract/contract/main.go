@@ -42,7 +42,7 @@ func checkAuth() {
 		adminAddress = oracleAddress
 	}
 	if sdk.GetEnv().Sender.Address.String() != adminAddress {
-		sdk.Abort("no permission")
+		sdk.Abort("[1] no permission")
 	}
 }
 
@@ -50,12 +50,12 @@ func checkAuth() {
 func SeedBlocks(blockSeedInput *string) *string {
 	checkAuth()
 
-	newLastHeight, err := blocklist.HandleSeedBlocks(blockSeedInput, NetworkMode)
+	newLastHeight, err := blocklist.HandleSeedBlocks(blockSeedInput, mapping.IsTestnet(NetworkMode))
 	if err != nil {
-		sdk.Abort(err.Error())
+		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
 	}
 
-	outMsg := fmt.Sprintf("last height: %d", newLastHeight)
+	outMsg := fmt.Sprintf("[0] last height: %d", newLastHeight)
 	return &outMsg
 }
 
@@ -66,46 +66,47 @@ func AddBlocks(addBlocksInput *string) *string {
 	var addBlocksObj blocklist.AddBlocksInput
 	err := tinyjson.Unmarshal([]byte(*addBlocksInput), &addBlocksObj)
 	if err != nil {
-		sdk.Abort(err.Error())
+		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
 	}
 
 	blockHeaders, err := blocklist.DivideHeaderList(&addBlocksObj.Blocks)
 	if err != nil {
-		sdk.Abort(err.Error())
+		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
 	}
 
+	// pointer to last height to be modified in the function
 	lastHeight, err := blocklist.LastHeightFromState()
 	if err != nil {
-		sdk.Abort(err.Error())
+		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
 	}
 
+	initialLastHeight := *lastHeight
+
+	exitMsg := ""
 	err = blocklist.HandleAddBlocks(blockHeaders, lastHeight)
-	// save it before handling add blocks error, because failure there is a more extreme fail case
-	blocklist.LastHeightToState(lastHeight)
+	if err != nil {
+		if err != blocklist.ErrorSequenceIncorrect {
+			sdk.Abort(fmt.Sprintf("error adding blocks: %s", err.Error()))
+		} else {
+			blocksAdded := *lastHeight - initialLastHeight
+			exitMsg = fmt.Sprintf("[1] error adding blocks: %s, %d blocks added before encountering error", err.Error(), blocksAdded)
+		}
+	} else {
+		exitMsg = fmt.Sprintf("[0] last height: %d", *lastHeight)
+	}
 
-	// handle adding blocks error
-	outMsg := blocklist.AddBlockOutput{
-		LastBlockHeight: *lastHeight,
-		Success:         err == nil,
-	}
-	if err != nil {
-		outMsg.Error = err.Error()
-	}
-	outMsgBytes, err := tinyjson.Marshal(outMsg)
-	if err != nil {
-		sdk.Abort(err.Error())
-	}
-	outMsgString := string(outMsgBytes)
+	blocklist.LastHeightToState(lastHeight)
 
 	// update base fee rate, do this after blocks because blocks more likely to fail
 	systemSupply, err := mapping.SupplyFromState()
 	if err != nil {
-		sdk.Abort(err.Error())
+		sdk.Abort(fmt.Sprintf("error updating base fee rate: %s", err.Error()))
 	}
 	systemSupply.BaseFeeRate = addBlocksObj.LatestFee
 	mapping.SaveSupplyToState(systemSupply)
+	exitMsg += fmt.Sprintf(", base fee: %d", systemSupply.BaseFeeRate)
 
-	return &outMsgString
+	return &exitMsg
 }
 
 //go:wasmexport map
@@ -113,7 +114,7 @@ func Map(incomingTx *string) *string {
 	var mapInstructions mapping.MappingInputData
 	err := tinyjson.Unmarshal([]byte(*incomingTx), &mapInstructions)
 	if err != nil {
-		sdk.Abort(err.Error())
+		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
 	}
 
 	publicKeys := mapping.PublicKeys{
@@ -123,21 +124,21 @@ func Map(incomingTx *string) *string {
 
 	contractState, err := mapping.InitializeMappingState(&publicKeys, NetworkMode, mapInstructions.Instructions...)
 	if err != nil {
-		sdk.Abort(err.Error())
+		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
 	}
 
 	err = contractState.HandleMap(mapInstructions.TxData)
 	if err != nil {
-		sdk.Abort(err.Error())
+		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
 	}
 
 	err = contractState.SaveToState()
 	if err != nil {
-		sdk.Abort(err.Error())
+		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
 	}
 
-	ret := "success"
-	return &ret
+	exitMsg := "[0]"
+	return &exitMsg
 }
 
 //go:wasmexport unmap
@@ -153,25 +154,25 @@ func Unmap(tx *string) *string {
 	var unmapInstructions mapping.UnmappingInputData
 	err := tinyjson.Unmarshal([]byte(*tx), &unmapInstructions)
 	if err != nil {
-		sdk.Abort(err.Error())
+		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
 	}
 
 	contractState, err := mapping.IntializeContractState(&publicKeys, NetworkMode)
 	if err != nil {
-		sdk.Abort(err.Error())
+		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
 	}
 
 	err = contractState.HandleUnmap(&unmapInstructions)
 	if err != nil {
-		sdk.Abort(fmt.Sprintf("%d %s", 1, err.Error()))
+		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
 	}
 	err = contractState.SaveToState()
 	if err != nil {
-		sdk.Abort(err.Error())
+		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
 	}
 
-	outMsg := fmt.Sprintf("%d", 0)
-	return &outMsg
+	exitMsg := "[0]"
+	return &exitMsg
 }
 
 //go:wasmexport transfer
@@ -184,11 +185,11 @@ func Transfer(tx *string) *string {
 
 	err = mapping.HandleTrasfer(&transferInstructions)
 	if err != nil {
-		sdk.Abort(fmt.Sprintf("%d %s", 1, err.Error()))
+		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
 	}
 
-	outMsg := fmt.Sprintf("%d", 0)
-	return &outMsg
+	exitMsg := "[0]"
+	return &exitMsg
 }
 
 //go:wasmexport register_public_key
@@ -234,7 +235,7 @@ func RegisterPublicKey(keyStr *string) *string {
 	if err != nil {
 		sdk.Abort(fmt.Sprintf("error marshalling result: %s", err.Error()))
 	}
-	resultMsg := string(resultBytes)
+	resultMsg := "[0] " + string(resultBytes)
 	return &resultMsg
 }
 
@@ -247,5 +248,6 @@ func CreateKeyPair(_ *string) *string {
 
 	keyId := mapping.TssKeyName
 	sdk.TssCreateKey(keyId, "ecdsa")
-	return &keyId
+	exitMsg := "[0] " + keyId
+	return &exitMsg
 }

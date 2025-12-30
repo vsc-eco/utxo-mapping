@@ -217,7 +217,7 @@ func TestTransfer(t *testing.T) {
 	ct := test_utils.NewContractTest()
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
-	ct.StateSet(contractId, "balhive:milo-hpr", "113202")
+	ct.StateSet(contractId, "balhive:milo-hpr", "5000")
 	ct.StateSet(
 		contractId,
 		"observed_txs70392917bb417a68fabd51e8d97a48b5d9594538b76cd47317b4c5c7755b3229:1",
@@ -231,14 +231,13 @@ func TestTransfer(t *testing.T) {
 	ct.StateSet(
 		contractId,
 		"utxos0",
-		`{"tx_id":"70392917bb417a68fabd51e8d97a48b5d9594538b76cd47317b4c5c7755b3229","vout":1,"amount":113202,"pk_script":"ACBgnG71qWAHis6PJ3asfdG7WSVDT1HYnaXrj5VCSeB6Vw==","tag":"6ad59da3ece6b8fcfd0cd8c615ed5ec82504fbd81808b2aea5fb750adb01f20c"}`,
+		`{"tx_id":"70392917bb417a68fabd51e8d97a48b5d9594538b76cd47317b4c5c7755b3229","vout":1,"amount":5000,"pk_script":"ACBgnG71qWAHis6PJ3asfdG7WSVDT1HYnaXrj5VCSeB6Vw==","tag":"6ad59da3ece6b8fcfd0cd8c615ed5ec82504fbd81808b2aea5fb750adb01f20c"}`,
 	)
 	ct.StateSet(contractId, "utxo_id", "1")
-	ct.StateSet(contractId, "tx_spends", "null")
 	ct.StateSet(
 		contractId,
 		"supply",
-		`{"active_supply":113202,"user_supply":113202,"fee_supply":0,"base_fee_rate":1}`,
+		`{"active_supply":5000,"user_supply":5000,"fee_supply":0,"base_fee_rate":1}`,
 	)
 	ct.StateSet(contractId, "last_block_height", "4782849")
 	ct.StateSet(
@@ -274,12 +273,15 @@ func TestTransfer(t *testing.T) {
 		fmt.Println("gas used:", gasUsed)
 	}
 
-	fmt.Printf("%s: %s\n\n", "account_balance", ct.StateGet("mapping_contract", "account_balances"))
-	fmt.Printf("%s: %s\n\n", "observed_txs", ct.StateGet("mapping_contract", "observed_txs"))
-	fmt.Printf("%s: %s\n\n", "utxos", ct.StateGet("mapping_contract", "utxos"))
-	fmt.Printf("%s: %s\n\n", "tx_spends", ct.StateGet("mapping_contract", "tx_spends"))
-	fmt.Printf("%s: %s\n\n", "supply", ct.StateGet("mapping_contract", "supply"))
-	fmt.Printf("%s: %s\n\n", "blocklist", ct.StateGet("mapping_contract", "blocklist"))
+	printKeys(
+		&ct,
+		contractId,
+		[]string{
+			"balhive:milo-hpr",
+			"balhive:vaultec",
+			"supply",
+		},
+	)
 
 	fmt.Println("Return value:", result.Ret)
 }
@@ -373,17 +375,17 @@ func TestRegisterKey(t *testing.T) {
 	fmt.Println("Return value:", result.Ret)
 }
 
-const rawBlocks = `{"blocks":"04000020e25bdb1dac9e52ab73217048889ca6aabb013c8c75cf20a8cdbba1eb00000000593f41d586ab3ca38b2fef4247e4c1e67a25cbc057284f34f113b9d0318cd7705af21c69ffff001d1adeb3890000002056f01934cb217451b4cfc0de2659cb21d05574f9b498e2e50f7cb9220000000007c163714629200295224756e7738ee85ed86fa5a89a2a1bfd48a5b65107596e3cf71c69ffff001dc4463eff","latest_fee":1}`
+const rawBlocks = `{"blocks":"00c0fa213b04801d1b66efcf8f41290a675777893f5c6ac158a585654263ba0900000000fdf6162d92eee3af012f1ddab30a401bb371a0da32371d185fc25eb3655fd6d013575469ffff001db80220f80000002002883f9d7847a35a0d371cd11bf95c0f9d252ed41f46dde04172bf0c000000003d2af3ae86b3638665e6214df4dc12712fd7486348c3c319cedb3c69bc8a4ddac45b5469ffff001d1adfdc74","latest_fee":1}`
 
 func TestAddBlocks(t *testing.T) {
 	ct := test_utils.NewContractTest()
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
-	ct.StateSet(contractId, "last_block_height", "4782781")
+	ct.StateSet(contractId, "last_block_height", "116087")
 	ct.StateSet(
 		contractId,
-		"block4782781",
-		"0000002076bd5abaaf4f9b70901c84c29ce5211e85d0f5e2dc6be53619193b500007acadb1928b7931a92288bfd3ab925391b4913d7ebad46f92067399a5541d57aa6ed1c69ffff001df352048d",
+		"block116087",
+		"00c0a520165303733ee5b0561d46da9dcce685fd12a807d64472931c46d5920c00000000c96f929654fc44fb69783b6cc4f2340ad85de5b10c5047836561901299ed23d162525469ffff001dda00dd53",
 	)
 	// ct.StateSet("mapping_contract", "supply", `{}`)
 
@@ -431,6 +433,7 @@ func TestSeedBlocks(t *testing.T) {
 	ct := test_utils.NewContractTest()
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
+	ct.StateSet(contractId, "last_block_height", "116087")
 
 	result, gasUsed, logs := ct.Call(stateEngine.TxVscCallContract{
 		Self: stateEngine.TxSelf{
@@ -469,7 +472,6 @@ func TestSeedBlocks(t *testing.T) {
 		&ct,
 		contractId,
 		[]string{
-			"tx_spends",
 			"last_block_height",
 			"block4736940",
 		},

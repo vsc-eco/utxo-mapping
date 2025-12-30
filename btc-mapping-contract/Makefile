@@ -19,9 +19,9 @@ else
 $(error Unknown NETWORK: $(NETWORK))
 endif
 
-all: build
+all: main
 
-build:
+main:
 	@echo "Building $@ with $(NETWORK) flags"
 	tinygo build $(CFLAGS) -o $(OUTPUT) $(TARGET)
 
@@ -43,7 +43,7 @@ mainnet:
 strip:
 	wasm-tools strip -o artifacts/main-stripped.wasm $(OUTPUT)
 	wasm-tools strip -o artifacts/testnet3-stripped.wasm $(TESTNET3)
-	wasm-tools strip -o artifacts/testnet3-stripped.wasm $(TESTNET4)
+	wasm-tools strip -o artifacts/testnet4-stripped.wasm $(TESTNET4)
 	wasm-tools strip -o artifacts/mainnet-stripped.wasm $(MAINNET)
 
 clean:
