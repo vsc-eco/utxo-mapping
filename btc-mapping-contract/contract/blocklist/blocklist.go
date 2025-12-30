@@ -20,13 +20,6 @@ type AddBlocksInput struct {
 }
 
 //tinyjson:json
-type AddBlockOutput struct {
-	Success         bool
-	Error           string
-	LastBlockHeight uint32
-}
-
-//tinyjson:json
 type BlockSeedInput struct {
 	BlockHeader string
 	BlockHeight uint32
@@ -36,6 +29,8 @@ const BlockPrefix = "block"
 const lastHeightKey = "last_block_height"
 
 var ErrorLastHeightDNE = fmt.Errorf("last height does not exist")
+
+var ErrorSequenceIncorrect = fmt.Errorf("block sequence incorrect")
 
 func LastHeightFromState() (*uint32, error) {
 	lastHeightString := sdk.StateGetObject(lastHeightKey)
@@ -84,7 +79,7 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, lastHeight *uint32) error {
 
 		lastBlockHash := lastBlockHeader.BlockHash()
 		if !blockHeader.PrevBlock.IsEqual(&lastBlockHash) {
-			return fmt.Errorf("block sequence incorrect")
+			return ErrorSequenceIncorrect
 		}
 		blockHeight := *lastHeight + 1
 
@@ -95,16 +90,14 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, lastHeight *uint32) error {
 	return nil
 }
 
-func HandleSeedBlocks(seedInput *string, networkMode string) (uint32, error) {
+func HandleSeedBlocks(seedInput *string, allowReseed bool) (uint32, error) {
 	lastHeight, err := LastHeightFromState()
 	if err != nil {
 		if err != ErrorLastHeightDNE {
 			return 0, err
 		}
-	} else {
-		if networkMode != "testnet" {
-			return 0, fmt.Errorf("blocks already seeded, last height: %d", *lastHeight)
-		}
+	} else if !allowReseed {
+		return 0, fmt.Errorf("blocks already seeded, last height: %d", *lastHeight)
 	}
 
 	var blockSeedData BlockSeedInput
