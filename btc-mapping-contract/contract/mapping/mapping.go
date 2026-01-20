@@ -1,7 +1,7 @@
 package mapping
 
 import (
-	"contract-template/sdk"
+	"btc-mapping-contract/sdk"
 	"encoding/hex"
 	"fmt"
 	"strconv"
@@ -123,6 +123,7 @@ func (cs *ContractState) allocateFunds(recipient string, amount int64) error {
 	return nil
 }
 
+// TODO: make last output an actual error object
 func (cs *ContractState) determineReturnInfo(metadata *AddressMetadata) (string, NetworkName, string) {
 	// fallback is typically the system address, which should never fail to be created
 	// if it does, defaults on a "blind faith" send to the sender's destination
@@ -193,6 +194,7 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) (int64, MappingResult
 			// Create UTXO entry
 			observedUtxoKey := fmt.Sprintf("%s:%d", utxo.TxId, utxo.Vout)
 			// proceed if this output has already been observed
+			// TODO: error or some type of acknowledgement here?
 			alreadyObserved := sdk.StateGetObject(observedPrefix + observedUtxoKey)
 			if *alreadyObserved != "" {
 				continue
@@ -267,42 +269,6 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) (int64, MappingResult
 						Success:     true,
 					}
 					continue
-				}
-
-				// CASE: swap failed
-				// TODO: replace with getting fee from swap output
-				feeTaken := int64(0)
-				returnAmount := utxo.Amount - feeTaken
-
-				outAddress, outNetwork, returnErr := ms.determineReturnInfo(metadata)
-				switch outNetwork {
-				case Vsc:
-					ms.allocateFunds(outAddress, returnAmount)
-				case Btc:
-					unmapInstructions := UnmappingInputData{
-						Amount:              returnAmount,
-						RecipientBtcAddress: outAddress,
-					}
-
-					err := ms.HandleUnmap(&unmapInstructions)
-					if err != nil {
-						// TODO: handle case where unmap fails
-					}
-				}
-
-				var errMsg string
-				if len(returnErr) > 0 {
-					errMsg = fmt.Sprintf("swap failed: %s, return error: %s", *swapResult, errMsg)
-				} else {
-					errMsg = fmt.Sprintf("swap failed: %s", *swapResult)
-				}
-
-				results[i] = &MappingResult{
-					Instruction:   metadata.Instruction,
-					Success:       false,
-					Error:         errMsg,
-					ReturnedTo:    outAddress,
-					ReturnNetwork: outNetwork,
 				}
 			}
 

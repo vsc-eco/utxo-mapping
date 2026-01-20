@@ -138,16 +138,24 @@
       "type": "array",
       "items": {
         "type": "array",
-        "items": {
-          "type": "string",
-          "contentEncoding": "base64",
-          "description": "Base64-encoded byte array"
-        },
+        "prefixItems": [
+          {
+            "type": "integer",
+            "description": "Internal ID"
+          },
+          {
+            "type": "integer",
+            "description": "Amount in satoshis"
+          },
+          {
+            "type": "integer",
+            "description": "Observed bit"
+          }
+        ],
         "minItems": 3,
-        "maxItems": 3,
-        "description": "Tuple of 3 base64-encoded byte arrays"
+        "maxItems": 3
       },
-      "description": "Registry of UTXOs as array of [3][]byte (each []byte serialized as base64)"
+      "description": "Registry of UTXOs as array of [internal_id, amount, observed_bit]"
     },
     "account_balance_map": {
       "type": "object",
@@ -207,7 +215,7 @@
       "properties": {
         "blocks": {
           "type": "string",
-          "description": "Block data"
+          "description": "Sequence of block headers appended to each other in order."
         },
         "latest_fee": {
           "type": "integer",
@@ -253,6 +261,58 @@
         }
       },
       "required": ["block_header", "block_height"],
+      "additionalProperties": false
+    },
+    "network_name": {
+      "type": "string",
+      "description": "Network name identifier"
+    },
+    "mapping_result": {
+      "type": "object",
+      "properties": {
+        "instruction": {
+          "type": "string",
+          "description": "Raw URL search params instruction that was processed"
+        },
+        "success": {
+          "type": "boolean",
+          "description": "Whether the mapping operation succeeded"
+        },
+        "error": {
+          "type": "string",
+          "description": "Error message if operation failed (omitted if empty)"
+        },
+        "returned_to": {
+          "type": "string",
+          "description": "Address funds were returned to (omitted if empty)"
+        },
+        "return_network": {
+          "$ref": "#/$defs/network_name",
+          "description": "Network funds were returned on (omitted if empty)"
+        }
+      },
+      "required": ["instruction", "success"],
+      "additionalProperties": false
+    },
+    "mapping_results": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/mapping_result"
+      },
+      "description": "Array of mapping results"
+    },
+    "public_keys": {
+      "type": "object",
+      "properties": {
+        "primary_public_key": {
+          "type": "string",
+          "description": "Primary public key or (when used as a return value) status message for changes to primary public key (omitted if empty)"
+        },
+        "backup_public_key": {
+          "type": "string",
+          "description": "Backup public key or (when used as a return value) status message for changes to backup public key (omitted if empty)"
+        }
+      },
       "additionalProperties": false
     }
   }

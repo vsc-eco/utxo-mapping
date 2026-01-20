@@ -1,8 +1,8 @@
 package blocklist
 
 import (
+	"btc-mapping-contract/sdk"
 	"bytes"
-	"contract-template/sdk"
 	"encoding/hex"
 	"fmt"
 	"strconv"
@@ -25,7 +25,7 @@ type BlockSeedInput struct {
 	BlockHeight uint32
 }
 
-const BlockPrefix = "block"
+const BlockPrefix = "block/"
 const lastHeightKey = "last_block_height"
 
 var ErrorLastHeightDNE = fmt.Errorf("last height does not exist")
@@ -72,10 +72,16 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, lastHeight *uint32) error {
 		return err
 	}
 	var lastBlockHeader wire.BlockHeader
-	lastBlockHeader.BtcDecode(bytes.NewReader(lastBlockBytes[:]), wire.ProtocolVersion, wire.LatestEncoding)
+	err = lastBlockHeader.BtcDecode(bytes.NewReader(lastBlockBytes[:]), wire.ProtocolVersion, wire.LatestEncoding)
+	if err != nil {
+		return fmt.Errorf("error decoding block header: %w", err)
+	}
 	for _, headerBytes := range rawHeaders {
 		var blockHeader wire.BlockHeader
-		blockHeader.BtcDecode(bytes.NewReader(headerBytes[:]), wire.ProtocolVersion, wire.LatestEncoding)
+		err = blockHeader.BtcDecode(bytes.NewReader(headerBytes[:]), wire.ProtocolVersion, wire.LatestEncoding)
+		if err != nil {
+			return fmt.Errorf("error decoding block header: %w", err)
+		}
 
 		lastBlockHash := lastBlockHeader.BlockHash()
 		if !blockHeader.PrevBlock.IsEqual(&lastBlockHash) {

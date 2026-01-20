@@ -1,8 +1,8 @@
 package mapping
 
 import (
+	"btc-mapping-contract/sdk"
 	"bytes"
-	"contract-template/sdk"
 	"encoding/hex"
 	"fmt"
 
@@ -79,6 +79,7 @@ func (cs *ContractState) estimateFee(numInputs int64, amount, inputAmount int64)
 func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint32, int64, error) {
 	// approximate size of including a new PSWSH input (base tx size plus signature)
 	// slight overestimate (+1 at the end) to make sure there's enough balance
+	// TODO: remove?
 	const P2WSHAPPROXINPUTSIZE = 40 + 1 + (72+68+3)/4 + 1
 
 	inputs := []uint32{}

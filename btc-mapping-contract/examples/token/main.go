@@ -1,7 +1,7 @@
 package main
 
 import (
-	"contract-template/sdk"
+	"btc-mapping-contract/sdk"
 	"strconv"
 	"strings"
 )
