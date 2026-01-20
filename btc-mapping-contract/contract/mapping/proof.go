@@ -1,9 +1,9 @@
 package mapping
 
 import (
+	"btc-mapping-contract/contract/blocklist"
+	"btc-mapping-contract/sdk"
 	"bytes"
-	"contract-template/contract/blocklist"
-	"contract-template/sdk"
 	"encoding/hex"
 	"fmt"
 

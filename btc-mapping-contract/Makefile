@@ -7,6 +7,10 @@ BASEFLAGS = -gc=custom -scheduler=none -panic=trap -no-debug -target=wasm-unknow
 TESTNET3FLAGS = -ldflags="-X 'main.NetworkMode=testnet3'"
 TESTNET4FLAGS = -ldflags="-X 'main.NetworkMode=testnet4'"
 
+TINYJSON 		:= tinyjson
+TINYJSON_FLAGS 	:= -snake_case -no_std_marshalers
+CONTRACTS_DIR	:= contract
+
 NETWORK ?= testnet4
 
 ifeq ($(NETWORK),testnet3)
@@ -41,10 +45,43 @@ mainnet:
 	tinygo build $(CFLAGS) -o $(MAINNET) $(TARGET)
 
 strip:
-	wasm-tools strip -o artifacts/main-stripped.wasm $(OUTPUT)
-	wasm-tools strip -o artifacts/testnet3-stripped.wasm $(TESTNET3)
-	wasm-tools strip -o artifacts/testnet4-stripped.wasm $(TESTNET4)
-	wasm-tools strip -o artifacts/mainnet-stripped.wasm $(MAINNET)
+	@for file in artifacts/*.wasm; do \
+		case "$$file" in \
+			*"-stripped.wasm") \
+				continue ;; \
+			*) \
+				base=$${file%.wasm}; \
+				wasm-tools strip -o "$${base}-stripped.wasm" "$$file"; \
+				echo "Stripped $$file -> $${base}-stripped.wasm" ;; \
+		esac; \
+	done
+
+tinyjson:
+	@set +e; \
+	echo "Searching for //tinyjson:json directives..."; \
+	find $(CONTRACTS_DIR) -type f -name '*.go' -print0 | \
+	xargs -0 grep -l '^//tinyjson:json$$' | \
+	xargs -n1 dirname | sort -u | while read dir; do \
+		name=$$(basename "$$dir"); \
+		out="$$dir/$${name}_tinyjson.go"; \
+		echo "Processing $$dir"; \
+		\
+		# Check if output exists and is up to date \
+		if [ -f "$$out" ]; then \
+			newer=0; \
+			for f in "$$dir"/*.go; do \
+				if [ "$$f" -nt "$$out" ]; then newer=1; break; fi; \
+			done; \
+			if [ "$$newer" -eq 0 ]; then \
+				echo "  ✓ $$out is up to date, skipping"; \
+				continue; \
+			fi; \
+		fi; \
+		\
+		(cd "$$dir" && \
+			$(TINYJSON) $(TINYJSON_FLAGS) .) || \
+		echo "⚠️  tinyjson failed for $$dir (continuing)"; \
+	done
 
 clean:
 	rm -rf artifacts/*.wasm

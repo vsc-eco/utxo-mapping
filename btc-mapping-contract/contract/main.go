@@ -17,12 +17,12 @@
 package main
 
 import (
-	"contract-template/contract/blocklist"
-	"contract-template/contract/mapping"
-	_ "contract-template/sdk" // ensure sdk is imported
+	"btc-mapping-contract/contract/blocklist"
+	"btc-mapping-contract/contract/mapping"
+	_ "btc-mapping-contract/sdk" // ensure sdk is imported
 	"fmt"
 
-	"contract-template/sdk"
+	"btc-mapping-contract/sdk"
 
 	"github.com/CosmWasm/tinyjson"
 )
@@ -42,7 +42,7 @@ func checkAuth() {
 		adminAddress = oracleAddress
 	}
 	if sdk.GetEnv().Sender.Address.String() != adminAddress {
-		sdk.Abort("[1] no permission")
+		sdk.Abort("1: no permission")
 	}
 }
 
@@ -52,10 +52,10 @@ func SeedBlocks(blockSeedInput *string) *string {
 
 	newLastHeight, err := blocklist.HandleSeedBlocks(blockSeedInput, mapping.IsTestnet(NetworkMode))
 	if err != nil {
-		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
+		sdk.Abort(fmt.Sprintf("1: %s", err.Error()))
 	}
 
-	outMsg := fmt.Sprintf("[0] last height: %d", newLastHeight)
+	outMsg := fmt.Sprintf("0: last height: %d", newLastHeight)
 	return &outMsg
 }
 
@@ -66,18 +66,18 @@ func AddBlocks(addBlocksInput *string) *string {
 	var addBlocksObj blocklist.AddBlocksInput
 	err := tinyjson.Unmarshal([]byte(*addBlocksInput), &addBlocksObj)
 	if err != nil {
-		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
+		sdk.Abort(fmt.Sprintf("1: %s", err.Error()))
 	}
 
 	blockHeaders, err := blocklist.DivideHeaderList(&addBlocksObj.Blocks)
 	if err != nil {
-		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
+		sdk.Abort(fmt.Sprintf("1: %s", err.Error()))
 	}
 
 	// pointer to last height to be modified in the function
 	lastHeight, err := blocklist.LastHeightFromState()
 	if err != nil {
-		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
+		sdk.Abort(fmt.Sprintf("1: %s", err.Error()))
 	}
 
 	initialLastHeight := *lastHeight
@@ -89,10 +89,10 @@ func AddBlocks(addBlocksInput *string) *string {
 			sdk.Abort(fmt.Sprintf("error adding blocks: %s", err.Error()))
 		} else {
 			blocksAdded := *lastHeight - initialLastHeight
-			exitMsg = fmt.Sprintf("[1] error adding blocks: %s, %d blocks added before encountering error", err.Error(), blocksAdded)
+			exitMsg = fmt.Sprintf("1: error adding blocks: %s, %d blocks added before encountering error", err.Error(), blocksAdded)
 		}
 	} else {
-		exitMsg = fmt.Sprintf("[0] last height: %d", *lastHeight)
+		exitMsg = fmt.Sprintf("0: last height: %d", *lastHeight)
 	}
 
 	blocklist.LastHeightToState(lastHeight)
@@ -114,30 +114,33 @@ func Map(incomingTx *string) *string {
 	var mapInstructions mapping.MappingInputData
 	err := tinyjson.Unmarshal([]byte(*incomingTx), &mapInstructions)
 	if err != nil {
-		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
+		sdk.Abort(fmt.Sprintf("1: %s", err.Error()))
 	}
 
 	publicKeys := mapping.PublicKeys{
 		PrimaryPubKey: *sdk.StateGetObject(primaryPublicKeyStateKey),
 		BackupPubKey:  *sdk.StateGetObject(backupPublicKeyStateKey),
 	}
+	if publicKeys.PrimaryPubKey == "" {
+		sdk.Abort("1: no registered public key")
+	}
 
 	contractState, err := mapping.InitializeMappingState(&publicKeys, NetworkMode, mapInstructions.Instructions...)
 	if err != nil {
-		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
+		sdk.Abort(fmt.Sprintf("1: %s", err.Error()))
 	}
 
 	err = contractState.HandleMap(mapInstructions.TxData)
 	if err != nil {
-		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
+		sdk.Abort(fmt.Sprintf("1: %s", err.Error()))
 	}
 
 	err = contractState.SaveToState()
 	if err != nil {
-		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
+		sdk.Abort(fmt.Sprintf("1: %s", err.Error()))
 	}
 
-	exitMsg := "[0]"
+	exitMsg := "0"
 	return &exitMsg
 }
 
@@ -148,30 +151,30 @@ func Unmap(tx *string) *string {
 		BackupPubKey:  *sdk.StateGetObject(backupPublicKeyStateKey),
 	}
 	if publicKeys.PrimaryPubKey == "" {
-		sdk.Abort("No registered public key")
+		sdk.Abort("1: no registered public key")
 	}
 
 	var unmapInstructions mapping.UnmappingInputData
 	err := tinyjson.Unmarshal([]byte(*tx), &unmapInstructions)
 	if err != nil {
-		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
+		sdk.Abort(fmt.Sprintf("1: %s", err.Error()))
 	}
 
 	contractState, err := mapping.IntializeContractState(&publicKeys, NetworkMode)
 	if err != nil {
-		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
+		sdk.Abort(fmt.Sprintf("1: %s", err.Error()))
 	}
 
 	err = contractState.HandleUnmap(&unmapInstructions)
 	if err != nil {
-		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
+		sdk.Abort(fmt.Sprintf("1: %s", err.Error()))
 	}
 	err = contractState.SaveToState()
 	if err != nil {
-		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
+		sdk.Abort(fmt.Sprintf("1: %s", err.Error()))
 	}
 
-	exitMsg := "[0]"
+	exitMsg := "0:"
 	return &exitMsg
 }
 
@@ -185,10 +188,10 @@ func Transfer(tx *string) *string {
 
 	err = mapping.HandleTrasfer(&transferInstructions)
 	if err != nil {
-		sdk.Abort(fmt.Sprintf("[1] %s", err.Error()))
+		sdk.Abort(fmt.Sprintf("1: %s", err.Error()))
 	}
 
-	exitMsg := "[0]"
+	exitMsg := "0"
 	return &exitMsg
 }
 
@@ -206,36 +209,34 @@ func RegisterPublicKey(keyStr *string) *string {
 		sdk.Abort(fmt.Sprintf("error unmarshalling keys: %s", err.Error()))
 	}
 
-	result := mapping.PublicKeys{
-		PrimaryPubKey: "unchanged",
-		BackupPubKey:  "unchanged",
-	}
+	resultMsg := "0"
 
 	if keys.PrimaryPubKey != "" {
+		resultMsg += ":"
 		existingPrimary := sdk.StateGetObject(primaryPublicKeyStateKey)
 		if *existingPrimary == "" || mapping.IsTestnet(NetworkMode) {
 			sdk.StateSetObject(primaryPublicKeyStateKey, keys.PrimaryPubKey)
-			result.PrimaryPubKey = "set primary key"
+			resultMsg += fmt.Sprintf(" set primary key to: %s", keys.PrimaryPubKey)
 		} else {
-			result.PrimaryPubKey = fmt.Sprintf("primary key already registered: %s", *existingPrimary)
+			resultMsg += fmt.Sprintf(" primary key already registered: %s", *existingPrimary)
 		}
 	}
 
 	if keys.BackupPubKey != "" {
+		if len(resultMsg) > 1 {
+			resultMsg += ","
+		} else {
+			resultMsg += ":"
+		}
 		existingBackup := sdk.StateGetObject(backupPublicKeyStateKey)
 		if *existingBackup == "" || mapping.IsTestnet(NetworkMode) {
 			sdk.StateSetObject(backupPublicKeyStateKey, keys.BackupPubKey)
-			result.BackupPubKey = "set backup key"
+			resultMsg += fmt.Sprintf(" set backup key to: %s", keys.BackupPubKey)
 		} else {
-			result.BackupPubKey = fmt.Sprintf("backup key already registered: %s", *existingBackup)
+			resultMsg += fmt.Sprintf(" backup key already registered: %s", *existingBackup)
 		}
 	}
 
-	resultBytes, err := tinyjson.Marshal(result)
-	if err != nil {
-		sdk.Abort(fmt.Sprintf("error marshalling result: %s", err.Error()))
-	}
-	resultMsg := "[0] " + string(resultBytes)
 	return &resultMsg
 }
 
@@ -248,6 +249,6 @@ func CreateKeyPair(_ *string) *string {
 
 	keyId := mapping.TssKeyName
 	sdk.TssCreateKey(keyId, "ecdsa")
-	exitMsg := "[0] " + keyId
+	exitMsg := "0: " + keyId
 	return &exitMsg
 }

@@ -1,7 +1,7 @@
 package mapping
 
 import (
-	"contract-template/sdk"
+	"btc-mapping-contract/sdk"
 	"crypto/sha256"
 	"fmt"
 	"net/url"

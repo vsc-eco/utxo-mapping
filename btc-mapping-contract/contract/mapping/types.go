@@ -6,13 +6,13 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 )
 
-const balancePrefix = "bal"
-const observedPrefix = "observed_txs"
-const utxoPrefix = "utxos"
+const balancePrefix = "bal/"
+const observedPrefix = "observed_txs/"
+const utxoPrefix = "utxos/"
 const utxoRegistryKey = "utxo_registry"
 const utxoLastIdKey = "utxo_id"
 const txSpendsRegistryKey = "tx_spend_registry"
-const txSpendsPrefix = "tx_spend"
+const txSpendsPrefix = "tx-spend/"
 const supplyKey = "supply"
 
 const TssKeyName string = "main"
@@ -116,9 +116,6 @@ type AddressMetadata struct {
 }
 
 //tinyjson:json
-type AccountBalanceMap map[string]int64
-
-//tinyjson:json
 type SystemSupply struct {
 	ActiveSupply int64
 	UserSupply   int64
@@ -145,17 +142,18 @@ type MappingState struct {
 //
 //tinyjson:json
 type DexInstruction struct {
-	Type          string         `json:"type"`
-	Version       string         `json:"version"`
-	AssetIn       string         `json:"asset_in"`
-	AssetOut      string         `json:"asset_out"`
-	Recipient     string         `json:"recipient"`
-	SlippageBps   *int           `json:"slippage_bps,omitempty"`
-	MinAmountOut  *int64         `json:"min_amount_out,omitempty"`
-	Beneficiary   *string        `json:"beneficiary,omitempty"`
-	RefBps        *int           `json:"ref_bps,omitempty"`
-	ReturnAddress *ReturnAddress `json:"return_address,omitempty"`
-	Metadata      map[string]any `json:"metadata,omitempty"`
+	Type          string            `json:"type"`
+	Version       string            `json:"version"`
+	AssetIn       string            `json:"asset_in"`
+	AssetOut      string            `json:"asset_out"`
+	Recipient     string            `json:"recipient"`
+	SlippageBps   *int              `json:"slippage_bps,omitempty"`
+	MinAmountOut  *int64            `json:"min_amount_out,omitempty"`
+	Beneficiary   *string           `json:"beneficiary,omitempty"`
+	RefBps        *int              `json:"ref_bps,omitempty"`
+	ReturnAddress *ReturnAddress    `json:"return_address,omitempty"`
+	Metadata      map[string]string `json:"metadata,omitempty"`
+	AmountIn      int64             `json:"amount_in"`
 }
 
 type ReturnAddress struct {

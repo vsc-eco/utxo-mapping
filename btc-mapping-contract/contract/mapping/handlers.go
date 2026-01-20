@@ -1,8 +1,8 @@
 package mapping
 
 import (
+	"btc-mapping-contract/sdk"
 	"bytes"
-	"contract-template/sdk"
 	"encoding/hex"
 	"fmt"
 	"slices"
@@ -47,6 +47,7 @@ func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 	// removes this tx from utxo spends if present
 	ms.updateUtxoSpends(msgTx.TxID())
 
+	// TODO: return mapping results for each relevenat address as part of contract output, or at least log them
 	_, _, err = ms.processUtxos(relevantOutputs)
 	if err != nil {
 		return fmt.Errorf("error processing utxos: %w", err)
@@ -72,7 +73,7 @@ func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) error {
 		return fmt.Errorf("error getting input utxos: %w", err)
 	}
 
-	sdk.Log(fmt.Sprintf("inputids: %v, totalinputamt: %d", inputUtxoIds, totalInputAmt))
+	// sdk.Log(fmt.Sprintf("inputids: %v, totalinputamt: %d", inputUtxoIds, totalInputAmt))
 
 	inputUtxos, err := getInputUtxos(inputUtxoIds)
 	if err != nil {
