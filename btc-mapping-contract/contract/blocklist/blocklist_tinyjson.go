@@ -15,7 +15,7 @@ var (
 	_ tinyjson.Marshaler
 )
 
-func tinyjson2d7d9c89DecodeContractTemplateContractBlocklist(in *jlexer.Lexer, out *BlockSeedInput) {
+func tinyjson2d7d9c89DecodeBtcMappingContractContractBlocklist(in *jlexer.Lexer, out *BlockSeedInput) {
 	isTopLevel := in.IsStart()
 	if in.IsNull() {
 		if isTopLevel {
@@ -48,7 +48,7 @@ func tinyjson2d7d9c89DecodeContractTemplateContractBlocklist(in *jlexer.Lexer, o
 		in.Consumed()
 	}
 }
-func tinyjson2d7d9c89EncodeContractTemplateContractBlocklist(out *jwriter.Writer, in BlockSeedInput) {
+func tinyjson2d7d9c89EncodeBtcMappingContractContractBlocklist(out *jwriter.Writer, in BlockSeedInput) {
 	out.RawByte('{')
 	first := true
 	_ = first
@@ -67,14 +67,14 @@ func tinyjson2d7d9c89EncodeContractTemplateContractBlocklist(out *jwriter.Writer
 
 // MarshalTinyJSON supports tinyjson.Marshaler interface
 func (v BlockSeedInput) MarshalTinyJSON(w *jwriter.Writer) {
-	tinyjson2d7d9c89EncodeContractTemplateContractBlocklist(w, v)
+	tinyjson2d7d9c89EncodeBtcMappingContractContractBlocklist(w, v)
 }
 
 // UnmarshalTinyJSON supports tinyjson.Unmarshaler interface
 func (v *BlockSeedInput) UnmarshalTinyJSON(l *jlexer.Lexer) {
-	tinyjson2d7d9c89DecodeContractTemplateContractBlocklist(l, v)
+	tinyjson2d7d9c89DecodeBtcMappingContractContractBlocklist(l, v)
 }
-func tinyjson2d7d9c89DecodeContractTemplateContractBlocklist1(in *jlexer.Lexer, out *AddBlocksInput) {
+func tinyjson2d7d9c89DecodeBtcMappingContractContractBlocklist1(in *jlexer.Lexer, out *AddBlocksInput) {
 	isTopLevel := in.IsStart()
 	if in.IsNull() {
 		if isTopLevel {
@@ -107,7 +107,7 @@ func tinyjson2d7d9c89DecodeContractTemplateContractBlocklist1(in *jlexer.Lexer, 
 		in.Consumed()
 	}
 }
-func tinyjson2d7d9c89EncodeContractTemplateContractBlocklist1(out *jwriter.Writer, in AddBlocksInput) {
+func tinyjson2d7d9c89EncodeBtcMappingContractContractBlocklist1(out *jwriter.Writer, in AddBlocksInput) {
 	out.RawByte('{')
 	first := true
 	_ = first
@@ -126,10 +126,10 @@ func tinyjson2d7d9c89EncodeContractTemplateContractBlocklist1(out *jwriter.Write
 
 // MarshalTinyJSON supports tinyjson.Marshaler interface
 func (v AddBlocksInput) MarshalTinyJSON(w *jwriter.Writer) {
-	tinyjson2d7d9c89EncodeContractTemplateContractBlocklist1(w, v)
+	tinyjson2d7d9c89EncodeBtcMappingContractContractBlocklist1(w, v)
 }
 
 // UnmarshalTinyJSON supports tinyjson.Unmarshaler interface
 func (v *AddBlocksInput) UnmarshalTinyJSON(l *jlexer.Lexer) {
-	tinyjson2d7d9c89DecodeContractTemplateContractBlocklist1(l, v)
+	tinyjson2d7d9c89DecodeBtcMappingContractContractBlocklist1(l, v)
 }

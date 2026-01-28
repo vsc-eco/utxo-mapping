@@ -55,7 +55,7 @@ func SeedBlocks(blockSeedInput *string) *string {
 		sdk.Abort(fmt.Sprintf("1: %s", err.Error()))
 	}
 
-	outMsg := fmt.Sprintf("0: last height: %d", newLastHeight)
+	outMsg := fmt.Sprintf("last height: %d", newLastHeight)
 	return &outMsg
 }
 
@@ -92,7 +92,7 @@ func AddBlocks(addBlocksInput *string) *string {
 			exitMsg = fmt.Sprintf("1: error adding blocks: %s, %d blocks added before encountering error", err.Error(), blocksAdded)
 		}
 	} else {
-		exitMsg = fmt.Sprintf("0: last height: %d", *lastHeight)
+		exitMsg = fmt.Sprintf("last height: %d", *lastHeight)
 	}
 
 	blocklist.LastHeightToState(lastHeight)
@@ -111,7 +111,7 @@ func AddBlocks(addBlocksInput *string) *string {
 
 //go:wasmexport map
 func Map(incomingTx *string) *string {
-	var mapInstructions mapping.MappingInputData
+	var mapInstructions mapping.MappingParams
 	err := tinyjson.Unmarshal([]byte(*incomingTx), &mapInstructions)
 	if err != nil {
 		sdk.Abort(fmt.Sprintf("1: %s", err.Error()))
@@ -140,8 +140,7 @@ func Map(incomingTx *string) *string {
 		sdk.Abort(fmt.Sprintf("1: %s", err.Error()))
 	}
 
-	exitMsg := "0"
-	return &exitMsg
+	return mapping.StrPtr("0")
 }
 
 //go:wasmexport unmap
@@ -154,7 +153,7 @@ func Unmap(tx *string) *string {
 		sdk.Abort("1: no registered public key")
 	}
 
-	var unmapInstructions mapping.UnmappingInputData
+	var unmapInstructions mapping.SendParams
 	err := tinyjson.Unmarshal([]byte(*tx), &unmapInstructions)
 	if err != nil {
 		sdk.Abort(fmt.Sprintf("1: %s", err.Error()))
@@ -174,13 +173,14 @@ func Unmap(tx *string) *string {
 		sdk.Abort(fmt.Sprintf("1: %s", err.Error()))
 	}
 
-	exitMsg := "0:"
-	return &exitMsg
+	return mapping.StrPtr("0")
 }
 
+// Transfers funds from the Caller (immediate caller of the contract)
+//
 //go:wasmexport transfer
 func Transfer(tx *string) *string {
-	var transferInstructions mapping.TransferInputData
+	var transferInstructions mapping.SendParams
 	err := tinyjson.Unmarshal([]byte(*tx), &transferInstructions)
 	if err != nil {
 		sdk.Abort(err.Error())
@@ -191,8 +191,25 @@ func Transfer(tx *string) *string {
 		sdk.Abort(fmt.Sprintf("1: %s", err.Error()))
 	}
 
-	exitMsg := "0"
-	return &exitMsg
+	return mapping.StrPtr("0")
+}
+
+// Draws funds from the Sender (original user who sent the transaction)
+//
+//go:wasmexport draw
+func Draw(tx *string) *string {
+	var drawInstructions mapping.SendParams
+	err := tinyjson.Unmarshal([]byte(*tx), &drawInstructions)
+	if err != nil {
+		sdk.Abort(err.Error())
+	}
+
+	err = mapping.HandleDraw(&drawInstructions)
+	if err != nil {
+		sdk.Abort(fmt.Sprintf("1: %s", err.Error()))
+	}
+
+	return mapping.StrPtr("0")
 }
 
 //go:wasmexport register_public_key
@@ -249,6 +266,5 @@ func CreateKeyPair(_ *string) *string {
 
 	keyId := mapping.TssKeyName
 	sdk.TssCreateKey(keyId, "ecdsa")
-	exitMsg := "0: " + keyId
-	return &exitMsg
+	return mapping.StrPtr("key created, id: " + keyId)
 }
