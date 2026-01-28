@@ -57,7 +57,7 @@ func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 }
 
 // Returns: raw tx hex to be broadcast
-func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) error {
+func (cs *ContractState) HandleUnmap(instructions *SendParams) error {
 	amount := instructions.Amount
 	env := sdk.GetEnv()
 
@@ -89,7 +89,7 @@ func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) error {
 	signingData, tx, btcFee, err := cs.createSpendTransaction(
 		inputUtxos,
 		totalInputAmt,
-		instructions.RecipientBtcAddress,
+		instructions.Address,
 		changeAddress,
 		amount,
 	)
@@ -153,7 +153,26 @@ func (cs *ContractState) HandleUnmap(instructions *UnmappingInputData) error {
 	return nil
 }
 
-func HandleTrasfer(instructions *TransferInputData) error {
+func HandleTrasfer(instructions *SendParams) error {
+	amount := instructions.Amount
+	env := sdk.GetEnv()
+	callerBal, err := checkCaller(env, amount)
+	if err != nil {
+		return err
+	}
+
+	recipientBal, err := getAccBal(instructions.Address)
+	if err != nil {
+		return err
+	}
+
+	setAccBal(env.Caller.String(), callerBal-amount)
+	setAccBal(instructions.Address, recipientBal+amount)
+
+	return nil
+}
+
+func HandleDraw(instructions *SendParams) error {
 	amount := instructions.Amount
 	env := sdk.GetEnv()
 	senderBal, err := checkSender(env, amount)
@@ -161,13 +180,13 @@ func HandleTrasfer(instructions *TransferInputData) error {
 		return err
 	}
 
-	recipientBal, err := getAccBal(instructions.RecipientVscAddress)
+	recipientBal, err := getAccBal(instructions.Address)
 	if err != nil {
 		return err
 	}
 
 	setAccBal(env.Sender.Address.String(), senderBal-amount)
-	setAccBal(instructions.RecipientVscAddress, recipientBal+amount)
+	setAccBal(instructions.Address, recipientBal+amount)
 
 	return nil
 }

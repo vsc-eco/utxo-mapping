@@ -266,7 +266,6 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) (int64, MappingResult
 					// swap succeeded
 					results[i] = &MappingResult{
 						Instruction: metadata.Instruction,
-						Success:     true,
 					}
 					continue
 				}

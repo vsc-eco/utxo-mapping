@@ -1,6 +1,7 @@
 package current_test
 
 import (
+	"btc-mapping-contract/contract/mapping"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -10,24 +11,21 @@ import (
 	"vsc-node/modules/db/vsc/contracts"
 	stateEngine "vsc-node/modules/state-processing"
 
+	"github.com/CosmWasm/tinyjson"
 	"github.com/stretchr/testify/assert"
 
-	btcMapping "github.com/vsc-eco/utxo-mapping/btc-mapping-contract"
+	btcMapping "btc-mapping-contract"
 )
 
 const rawInstruction = `{"tx_data":{"block_height":114810,"raw_tx_hex":"02000000000101ff34ce5f34ad7c5ff9eac34c24953f10c2c1bd2cd87fd20bfaf654e030dd5da10000000000fdffffff0288130000000000002200202a0ce40846879b42fa7739eb15cdab77ca01b7817a97879b1f58feb52e44478cf38c07000000000022512021fa9598255a3c65b217132475dfd5c979a874721ca45d728db8eeb13b80a66c0247304402204a1fd9f399bc46960e410ac4e55653c8ea9f64508779ec0bdb8e388afa2180db02202a9ac46b41e32cbf985a8b2742764596b027599a7e252358fa4a8da03aa887b70121035d96c7175fb6ca59eb5299a1cb83acf5e24a44e3ef811923a4ff408981929ba179c00100","merkle_proof_hex":"b699e12d1185403c486cff27b27623076f1f0813bef11d20b1d06a377b9aa1e0cca5dd25fadecb3b1f78cc782ff691e15d0d20cedff223cd69c53ceb0faa6b1c5d8d4647f5b9a7e4842d057f02dc8945aa7505a7d3d9150056b2fdc32f778c311e17834d3d8f0b8db75d21e734977dfd815024d63afcfe389f8d47f4f678f1ae73a2d4e3f73a3bc9f11a0f96843653f15e592645b99cf9c30ca5176951fbbbe1e7c842da4f7dfd4794108ac3b74b14670665be1e519a203f429dbea7086cf908082350445bf369d984f9cfb603c65cfda7c769e628d39558402e47de34db8c64","tx_index":118},"instructions":["deposit_to=hive:milo-hpr"]}`
 
-func printKeys(ct *test_utils.ContractTest, contractId string, keys []string) {
-	for _, key := range keys {
-		fmt.Printf("%s: %s\n", key, ct.StateGet(contractId, key))
-	}
-}
+var ContractWasm = btcMapping.MainWasm
 
 func TestMapping(t *testing.T) {
 
 	ct := test_utils.NewContractTest()
 	contractId := "mapping_contract"
-	ct.RegisterContract(contractId, "hive:milo-hpr", btcMapping.MainWasm)
+	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 	ct.StateSet(contractId, "observed_txs", `{}`)
 	ct.StateSet(contractId, "utxo_registry", `[]`)
 	ct.StateSet(
@@ -64,15 +62,7 @@ func TestMapping(t *testing.T) {
 		fmt.Println("error:", r.Err)
 	}
 
-	if len(r.Logs) > 0 {
-		fmt.Println("console logs: ==================================================")
-		for _, logArray := range r.Logs {
-			for _, log := range logArray {
-				fmt.Println(log)
-			}
-		}
-		fmt.Printf("================================================================\n")
-	}
+	dumpLogs(t, r.Logs)
 
 	assert.True(t, r.Success)                               // assert contract execution success
 	if assert.LessOrEqual(t, r.GasUsed, uint(1000000000)) { // assert this call uses no more than 10M WASM gas
@@ -80,19 +70,7 @@ func TestMapping(t *testing.T) {
 	}
 	assert.GreaterOrEqual(t, len(r.Logs), 0) // assert at least 1 log emitted
 
-	printKeys(
-		&ct,
-		contractId,
-		[]string{
-			"balhive:milo-hpr",
-			"observed_txs95af4aafb228696204ed86003e9ac6b904d6493d4311eda90ac34875c4ebab9a:0",
-			"utxo_registry",
-			"utxos0",
-			"utxo_id",
-			"supply",
-			"last_block_height",
-		},
-	)
+	logStateDiff(t, r.StateDiff)
 
 	fmt.Println("Return value:", r.Ret)
 }
@@ -161,15 +139,7 @@ func TestUnmapping(t *testing.T) {
 		Intents: []contracts.Intent{},
 	})
 
-	if len(r.Logs) > 0 {
-		fmt.Println("console logs: ==================================================")
-		for _, logArray := range r.Logs {
-			for _, log := range logArray {
-				fmt.Println(log)
-			}
-		}
-		fmt.Printf("================================================================\n")
-	}
+	dumpLogs(t, r.Logs)
 
 	if r.Err != "" {
 		fmt.Println("error:", r.Err)
@@ -204,11 +174,7 @@ func TestUnmapping(t *testing.T) {
 		keysToPrint = append(keysToPrint, "tx_spend"+txSpend)
 	}
 
-	printKeys(
-		&ct,
-		contractId,
-		keysToPrint,
-	)
+	logStateDiff(t, r.StateDiff)
 
 	fmt.Println("Return value:", r.Ret)
 }
@@ -247,6 +213,15 @@ func TestTransfer(t *testing.T) {
 	)
 	ct.StateSet(contractId, "pubkey", `0332e9f22cfa2f6233c059c4d54700e3d00df3d7f55e3ea16207b860360446634f`)
 
+	transferDetails := mapping.SendParams{
+		Amount:  8000,
+		Address: "hive:vaultec",
+	}
+	payload, err := tinyjson.Marshal(transferDetails)
+	if err != nil {
+		t.Fatal("err marhsaling payload:", err.Error())
+	}
+
 	r := ct.Call(stateEngine.TxVscCallContract{
 		Self: stateEngine.TxSelf{
 			TxId:                 "sometxid",
@@ -259,11 +234,9 @@ func TestTransfer(t *testing.T) {
 		},
 		ContractId: contractId,
 		Action:     "transfer",
-		Payload: json.RawMessage(
-			[]byte(`{"amount":8000,"recipient_vsc_address":"hive:vaultec"}`),
-		),
-		RcLimit: 10000,
-		Intents: []contracts.Intent{},
+		Payload:    payload,
+		RcLimit:    10000,
+		Intents:    []contracts.Intent{},
 	})
 	if r.Err != "" {
 		fmt.Println("error:", r.Err)
@@ -273,15 +246,7 @@ func TestTransfer(t *testing.T) {
 		fmt.Println("gas used:", r.GasUsed)
 	}
 
-	printKeys(
-		&ct,
-		contractId,
-		[]string{
-			"balhive:milo-hpr",
-			"balhive:vaultec",
-			"supply",
-		},
-	)
+	logStateDiff(t, r.StateDiff)
 
 	fmt.Println("Return value:", r.Ret)
 }
@@ -308,20 +273,19 @@ func TestCreateKey(t *testing.T) {
 		Intents:    []contracts.Intent{},
 	})
 	if r.Err != "" {
-		fmt.Println("error:", r.Err)
+		fmt.Println("error:", r.Err, "errMsg:", r.ErrMsg)
 	}
 	assert.True(t, r.Success)                        // assert contract execution success
 	assert.LessOrEqual(t, r.GasUsed, uint(10000000)) // assert this call uses no more than 10M WASM gas
 
-	printKeys(
-		&ct,
-		contractId,
-		[]string{
-			"tx_spends",
-		},
-	)
-
 	fmt.Println("Return value:", r.Ret)
+
+	dumpLogs(t, r.Logs)
+	logStateDiff(t, r.StateDiff)
+
+	fmt.Println("tss keys:", ct.Tss.Keys.Keys)
+	fmt.Println("tss commitments:", ct.Tss.Commitments.Commitments)
+	fmt.Println("tss requests:", ct.Tss.Requests.Requests)
 }
 
 const inputPubKey = `{"primary_public_key": "pubkey", "backup_public_key": "backupkey"}`
@@ -363,14 +327,7 @@ func TestRegisterKey(t *testing.T) {
 	assert.True(t, r.Success)                        // assert contract execution success
 	assert.LessOrEqual(t, r.GasUsed, uint(10000000)) // assert this call uses no more than 10M WASM gas
 
-	printKeys(
-		&ct,
-		contractId,
-		[]string{
-			"pubkey",
-			"backupkey",
-		},
-	)
+	logStateDiff(t, r.StateDiff)
 
 	fmt.Println("Return value:", r.Ret)
 }
@@ -412,17 +369,7 @@ func TestAddBlocks(t *testing.T) {
 	assert.True(t, r.Success)                          // assert contract execution success
 	assert.LessOrEqual(t, r.GasUsed, uint(1000000000)) // assert this call uses no more than 10M WASM gas
 
-	printKeys(
-		&ct,
-		contractId,
-		[]string{
-			"tx_spends",
-			"supply",
-			"last_block_height",
-			"block4782782",
-			"block4782783",
-		},
-	)
+	logStateDiff(t, r.StateDiff)
 
 	fmt.Println("Return value:", r.Ret)
 }
@@ -455,27 +402,12 @@ func TestSeedBlocks(t *testing.T) {
 		fmt.Println("error:", r.Err)
 	}
 
-	if len(r.Logs) > 0 {
-		fmt.Println("console logs:")
-		for _, logArray := range r.Logs {
-			for _, log := range logArray {
-				fmt.Println(log)
-			}
-		}
-		fmt.Println()
-	}
+	dumpLogs(t, r.Logs)
 
 	assert.True(t, r.Success)                          // assert contract execution success
 	assert.LessOrEqual(t, r.GasUsed, uint(1000000000)) // assert this call uses no more than 10M WASM gas
 
-	printKeys(
-		&ct,
-		contractId,
-		[]string{
-			"last_block_height",
-			"block4736940",
-		},
-	)
+	logStateDiff(t, r.StateDiff)
 
 	fmt.Println("Return value:", r.Ret)
 }
@@ -507,15 +439,7 @@ func TestLogging(t *testing.T) {
 
 	fmt.Println("logs:", r.Logs)
 
-	if len(r.Logs) > 0 {
-		fmt.Println("console logs: ==================================================")
-		for _, logArray := range r.Logs {
-			for _, log := range logArray {
-				fmt.Println(log)
-			}
-		}
-		fmt.Printf("================================================================\n")
-	}
+	dumpLogs(t, r.Logs)
 
 	if r.Err != "" {
 		fmt.Println("error:", r.Err)

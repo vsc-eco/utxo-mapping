@@ -5,10 +5,10 @@ import (
 	"fmt"
 )
 
-//go:embed artifacts
+//go:embed bin
 var artifactsFS embed.FS
 
-const artifactsDir = "artifacts"
+const artifactsDir = "bin"
 
 // Pre-loaded byte arrays (nil if file doesn't exist at package init)
 var (

@@ -124,14 +124,7 @@ func createSimpleP2WSHAddress(pubKeyBytes []byte, tag []byte, network *chaincfg.
 }
 
 func checkSender(env sdk.Env, amount int64) (int64, error) {
-	activeAuths := env.Sender.RequiredAuths
-	hasRequiredAuth := false
-	for _, auth := range activeAuths {
-		if auth == env.Sender.Address {
-			hasRequiredAuth = true
-			break
-		}
-	}
+	hasRequiredAuth := slices.Contains(env.Sender.RequiredAuths, env.Sender.Address)
 	if !hasRequiredAuth {
 		return 0, fmt.Errorf("active auth required to send funds")
 	}
@@ -145,6 +138,23 @@ func checkSender(env sdk.Env, amount int64) (int64, error) {
 		return 0, fmt.Errorf("sender balance insufficient. has %d, needs %d", senderBal, amount)
 	}
 	return senderBal, nil
+}
+
+func checkCaller(env sdk.Env, amount int64) (int64, error) {
+	hasRequiredAuth := slices.Contains(env.Sender.RequiredAuths, env.Sender.Address)
+	if !hasRequiredAuth {
+		return 0, fmt.Errorf("active auth required to send funds")
+	}
+
+	callerBal, err := getAccBal(env.Caller.String())
+	if err != nil {
+		return 0, err
+	}
+
+	if callerBal < amount {
+		return 0, fmt.Errorf("caller balance insufficient. has %d, needs %d", callerBal, amount)
+	}
+	return callerBal, nil
 }
 
 func packUtxo(internalId uint32, amount int64, confirmed uint8) [3]int64 {
@@ -188,4 +198,8 @@ func IsTestnet(networkName string) bool {
 	}
 
 	return slices.Contains(testnets, networkName)
+}
+
+func StrPtr(s string) *string {
+	return &s
 }

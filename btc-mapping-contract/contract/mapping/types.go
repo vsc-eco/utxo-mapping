@@ -32,10 +32,20 @@ const backupCSVBlocks = 4320 // ~1 month
 const routerContracId = "INSERT_ROUTER_ID_HERE"
 
 //tinyjson:json
-type MappingInputData struct {
+type MappingParams struct {
 	TxData *VerificationRequest
 	// strings should be valid URL search params, to be decoded later
 	Instructions []string
+}
+
+//tinyjson:json
+type MappingResults []*MappingResult
+
+//tinyjson:json
+type MappingResult struct {
+	Instruction    string      `json:"instruction"`
+	DepositAddress string      `json:"deposit_address,omitempty"`
+	Depositnetwork NetworkName `json:"deposit_network,omitempty"`
 }
 
 //tinyjson:json
@@ -52,16 +62,12 @@ type AccountInfo struct {
 	Address    string // Caip10address (bitcoin address they can recieve funds at)
 }
 
+// address should be Magi for internal transfers and BTC for unmaps
+//
 //tinyjson:json
-type UnmappingInputData struct {
-	Amount              int64
-	RecipientBtcAddress string
-}
-
-//tinyjson:json
-type TransferInputData struct {
-	Amount              int64
-	RecipientVscAddress string
+type SendParams struct {
+	Amount  int64
+	Address string
 }
 
 //tinyjson:json
@@ -162,18 +168,6 @@ type ReturnAddress struct {
 }
 
 const BtcAssetValue string = "BTC"
-
-//tinyjson:json
-type MappingResults []*MappingResult
-
-//tinyjson:json
-type MappingResult struct {
-	Instruction   string      `json:"instruction"`
-	Success       bool        `json:"success"`
-	Error         string      `json:"error,omitempty"`
-	ReturnedTo    string      `json:"returned_to,omitempty"`
-	ReturnNetwork NetworkName `json:"return_network,omitempty"`
-}
 
 //tinyjson:json
 type PublicKeys struct {
