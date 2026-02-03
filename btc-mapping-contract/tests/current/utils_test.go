@@ -16,7 +16,7 @@ var txId int64 = 0
 func dumpLogs(t *testing.T, logs map[string]contract_session.LogOutput) {
 	t.Helper()
 	for name, output := range logs {
-		if len(output.TssOps) > 0 {
+		if len(output.Logs) > 0 {
 			log.Println("logs for", name)
 		}
 		for _, log := range output.Logs {

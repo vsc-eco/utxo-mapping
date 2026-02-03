@@ -112,17 +112,6 @@ func (cs *ContractState) updateUtxoSpends(txId string) error {
 	return nil
 }
 
-// attempts to return funds to the checkAddress, falls back on sending to dex account
-// returns the address it returns funds to
-func (cs *ContractState) allocateFunds(recipient string, amount int64) error {
-	recipientBal, err := getAccBal(recipient)
-	if err != nil {
-		return err
-	}
-	setAccBal(recipient, recipientBal+amount)
-	return nil
-}
-
 // TODO: make last output an actual error object
 func (cs *ContractState) determineReturnInfo(metadata *AddressMetadata) (string, NetworkName, string) {
 	// fallback is typically the system address, which should never fail to be created
@@ -179,16 +168,15 @@ func (cs *ContractState) determineReturnInfo(metadata *AddressMetadata) (string,
 	}
 }
 
-func (ms *MappingState) processUtxos(relevantUtxos []Utxo) (int64, MappingResults, error) {
+func (ms *MappingState) processUtxos(relevantUtxos []Utxo) contractError {
 	totalMapped := int64(0)
 	env := sdk.GetEnv()
 
-	results := make(MappingResults, len(relevantUtxos))
 	// create new utxos entries for all of the relevant outputs in the incoming transaction
-	for i, utxo := range relevantUtxos {
+	for _, utxo := range relevantUtxos {
 		_, addrs, _, err := txscript.ExtractPkScriptAddrs(utxo.PkScript, ms.NetworkParams)
 		if err != nil {
-			return 0, nil, err
+			return newTypedError("", err)
 		}
 		if metadata, ok := ms.AddressRegistry[addrs[0].EncodeAddress()]; ok {
 			// Create UTXO entry
@@ -206,7 +194,7 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) (int64, MappingResult
 			ms.UtxoList = append(ms.UtxoList, packUtxo(utxoInternalId, utxo.Amount, 1))
 			utxoJson, err := tinyjson.Marshal(utxo)
 			if err != nil {
-				return 0, nil, err
+				return newTypedError("", err)
 			}
 
 			sdk.StateSetObject(fmt.Sprintf("%s%x", utxoPrefix, utxoInternalId), string(utxoJson))
@@ -214,14 +202,21 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) (int64, MappingResult
 			// set observed
 			sdk.StateSetObject(observedPrefix+observedUtxoKey, "1")
 
-			if metadata.Type == MapDeposit {
+			switch metadata.Type {
+			case MapDeposit:
 				// increment balance for recipient account (vsc account not btc account)
 				// alread verified that this addresss is valid on VSC
-				ms.allocateFunds(metadata.Recipient, utxo.Amount)
-			} else if metadata.Type == MapSwap {
+				incAccBalance(metadata.Recipient, utxo.Amount)
+				// TODO: add from addresses
+				sdk.Log(createDepositLog(Deposit{
+					to:     metadata.Recipient,
+					from:   []string{},
+					amount: utxo.Amount,
+				}))
+			case MapSwap:
 				ok := metadata.Params.Has(swapAssetOut)
 				if !ok {
-					return 0, nil, fmt.Errorf("asset out required to execute a swap")
+					return &[2]string{"", "asset out required to execute a swap"}
 				}
 				assetOut := metadata.Params.Get(swapAssetOut)
 
@@ -234,9 +229,10 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) (int64, MappingResult
 				}
 				instrJson, err := tinyjson.Marshal(instruction)
 				if err != nil {
-					return 0, nil, fmt.Errorf("error marshalling swap instruction: %w", err)
+					return &[2]string{"", "error marshalling swap instruction: " + err.Error()}
 				}
 
+				// TODO: update to new intets system
 				options := sdk.ContractCallOptions{
 					Intents: []sdk.Intent{
 						{
@@ -252,26 +248,24 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) (int64, MappingResult
 				// increment the balance of the sender, since that's the only account that can authorize
 				// the intents for the swap and is calling the swap
 				sender := env.Sender.Address.String()
-				senderBal, err := getAccBal(sender)
+				err = incAccBalance(sender, utxo.Amount)
 				if err != nil {
-					return 0, nil, fmt.Errorf("error getting sender account balance: %w", err)
+					return &[2]string{errorStateAccess, "error getting sender account balance: " + err.Error()}
 				}
-				setAccBal(sender, senderBal+utxo.Amount)
 
 				// call swap contract
-				swapResult := sdk.ContractCall(routerContracId, "execute", string(instrJson), &options)
-
-				// TODO: replace with check for success
-				if *swapResult == "" {
-					// swap succeeded
-					results[i] = &MappingResult{
-						Instruction: metadata.Instruction,
-					}
-					continue
+				swapResultStr := sdk.ContractCall(routerContracId, "execute", string(instrJson), &options)
+				var swapResult SwapResult
+				err = tinyjson.Unmarshal([]byte(*swapResultStr), &swapResult)
+				if err != nil {
+					return newTypedError(errorJson, err)
 				}
+				// TODO: add log
+			default:
+				// should never happen
+				continue
 			}
-
-			// TODO: check cases for when this should increment
+			// This increments in all cases, since BTC is always mapped onto VSC
 			totalMapped += utxo.Amount
 		}
 	}
@@ -281,5 +275,5 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) (int64, MappingResult
 		ms.Supply.UserSupply += totalMapped
 	}
 
-	return totalMapped, results, nil
+	return nil
 }

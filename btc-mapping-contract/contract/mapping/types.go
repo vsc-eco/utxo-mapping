@@ -18,18 +18,35 @@ const supplyKey = "supply"
 const TssKeyName string = "main"
 
 // Instruction URL search param keys
-const depositKey = "deposit_to"
-const swapAssetOut = "swap_asset_out"
-const swapNetworkOut = "swap_network_out"
-const swapRecipientKey = "swap_to"
-const returnAddressKey = "return_address"
-const returnNetworkKey = "return_network"
+const (
+	depositKey       = "deposit_to"
+	swapAssetOut     = "swap_asset_out"
+	swapNetworkOut   = "swap_network_out"
+	swapRecipientKey = "swap_to"
+	returnAddressKey = "return_address"
+	returnNetworkKey = "return_network"
+)
 
 // Address Creation
 const backupCSVBlocks = 4320 // ~1 month
 
 // contract IDs
 const routerContracId = "INSERT_ROUTER_ID_HERE"
+
+// Errors
+const (
+	errorJson        = "json_error"
+	errorStateAccess = "state_access_error"
+)
+
+// Logs
+const (
+	logDelimiter      = "|"
+	logKeyDelimiter   = "="
+	logArrayDelimiter = ","
+)
+
+type contractError *[2]string
 
 //tinyjson:json
 type MappingParams struct {
@@ -38,14 +55,10 @@ type MappingParams struct {
 	Instructions []string
 }
 
-//tinyjson:json
-type MappingResults []*MappingResult
-
-//tinyjson:json
-type MappingResult struct {
-	Instruction    string      `json:"instruction"`
-	DepositAddress string      `json:"deposit_address,omitempty"`
-	Depositnetwork NetworkName `json:"deposit_network,omitempty"`
+type Deposit struct {
+	to     string
+	from   []string
+	amount int64
 }
 
 //tinyjson:json
@@ -160,6 +173,22 @@ type DexInstruction struct {
 	ReturnAddress *ReturnAddress    `json:"return_address,omitempty"`
 	Metadata      map[string]string `json:"metadata,omitempty"`
 	AmountIn      int64             `json:"amount_in"`
+}
+
+//tinyjson:json
+type PoolInfo struct {
+	Asset0   string `json:"asset0"`
+	Asset1   string `json:"asset1"`
+	Reserve0 uint64 `json:"reserve0"`
+	Reserve1 uint64 `json:"reserve1"`
+	Fee      uint64 `json:"fee"`
+	TotalLp  uint64 `json:"total_lp"`
+}
+
+//tinyjson:json
+type SwapResult struct {
+	AmountOut uint64   `json:"amount_out"`
+	PoolState PoolInfo `json:"pool_state"` // Current pool state after swap
 }
 
 type ReturnAddress struct {

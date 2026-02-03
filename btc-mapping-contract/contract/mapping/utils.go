@@ -182,6 +182,15 @@ func setAccBal(vscAcc string, newBal int64) {
 	sdk.StateSetObject(balancePrefix+vscAcc, strconv.FormatInt(newBal, 10))
 }
 
+func incAccBalance(vscAcc string, amount int64) error {
+	bal, err := getAccBal(vscAcc)
+	if err != nil {
+		return err
+	}
+	setAccBal(vscAcc, bal+amount)
+	return nil
+}
+
 func (cs *ContractState) getNetwork(s string) (Network, error) {
 	networkName := NetworkName(strings.ToLower(s))
 	network, ok := cs.NetworkOptions[networkName]
@@ -202,4 +211,17 @@ func IsTestnet(networkName string) bool {
 
 func StrPtr(s string) *string {
 	return &s
+}
+
+func newTypedError(symbol string, msg error) contractError {
+	return &[2]string{symbol, msg.Error()}
+}
+
+func createDepositLog(d Deposit) string {
+	fields := make([]string, 4)
+	fields[0] = "deposit"
+	fields[1] = fmt.Sprintf("t%s%s", logKeyDelimiter, d.to)
+	fields[2] = fmt.Sprintf("f%s%s", logKeyDelimiter, strings.Join(d.from, logArrayDelimiter))
+	fields[3] = fmt.Sprintf("a%s%d", logKeyDelimiter, d.amount)
+	return strings.Join(fields, logDelimiter)
 }

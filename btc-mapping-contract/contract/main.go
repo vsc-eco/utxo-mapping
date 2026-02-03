@@ -268,3 +268,29 @@ func CreateKeyPair(_ *string) *string {
 	sdk.TssCreateKey(keyId, "ecdsa")
 	return mapping.StrPtr("key created, id: " + keyId)
 }
+
+//go:wasmexport test_endpoint
+func TestEndpoint(input *string) *string {
+	env := sdk.GetEnv()
+	sdk.Log(fmt.Sprintf("sender intents: %v", env.SenderIntents))
+	sdk.Log(fmt.Sprintf("caller intents: %v", env.CallerIntents))
+	if env.Caller == env.Sender.Address {
+		r := sdk.ContractCall("mapping_contract_2", "test_endpoint", *input+"a", &sdk.ContractCallOptions{
+			Intents: []sdk.Intent{{
+				Type: "transfer.allow",
+				Args: map[string]string{
+					"limit": "100.000",
+					"token": "hive",
+				},
+			},
+			},
+		})
+		if r != nil {
+			sdk.Log(*r)
+		}
+	}
+
+	// sdk.EphemStateGetObject()
+
+	return &env.ContractId
+}
