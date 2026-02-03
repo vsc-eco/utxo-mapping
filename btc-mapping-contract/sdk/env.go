@@ -1,7 +1,9 @@
 package sdk
 
+//tinyjson:json
 type EnvMap map[string]any
 
+//tinyjson:json
 type Env struct {
 	ContractId string `json:"contract.id"`
 
@@ -24,5 +26,6 @@ type Env struct {
 	//Proper RC payer support is not implemented yet.
 	Payer Address `json:"msg.payer"`
 
-	Intents []Intent `json:"intents"`
+	CallerIntents []Intent `json:"intents.caller"`
+	SenderIntents []Intent `json:"intents.sender"`
 }

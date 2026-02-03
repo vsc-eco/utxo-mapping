@@ -1,11 +1,7 @@
 ROOT_DIR 		:= $(abspath .)
-BIN_DIR			:= $(ROOT_DIR)/bin
+BIN_DIR			:= bin
 
-TARGET = $(ROOT_DIR)/contract/main.go
-OUTPUT = $(BIN_DIR)/main.wasm
-TESTNET3 = $(BIN_DIR)/testnet3.wasm
-TESTNET4 = $(BIN_DIR)/testnet4.wasm
-MAINNET = $(BIN_DIR)/mainnet.wasm
+TARGET = contract/main.go
 BASEFLAGS = -gc=custom -scheduler=none -panic=trap -no-debug -target=wasm-unknown
 TESTNET3FLAGS = -ldflags="-X 'main.NetworkMode=testnet3'"
 TESTNET4FLAGS = -ldflags="-X 'main.NetworkMode=testnet4'"
@@ -13,6 +9,15 @@ TESTNET4FLAGS = -ldflags="-X 'main.NetworkMode=testnet4'"
 TINYJSON		:= tinyjson
 TINYJSON_FLAGS 	:= -snake_case -no_std_marshalers
 CONTRACTS_DIR	:= contract
+
+TINYGO_IMAGE := tinygo/tinygo:0.39.0
+WORKDIR      := /work
+DOCKER_TINYGO = docker run --rm \
+	-e HOME=/tmp \
+	-v $(CURDIR):$(WORKDIR) \
+	-w $(WORKDIR) \
+	$(TINYGO_IMAGE) \
+	tinygo
 
 NETWORK ?= testnet4
 FILTER ?= .
@@ -27,36 +32,37 @@ ifneq ($(RUN_ARGS),)
 endif
 $(eval $(RUN_ARGS):;@:)
 
-ifeq ($(NETWORK),testnet3)
-CFLAGS = $(BASEFLAGS) $(TESTNET3FLAGS)
-else ifeq ($(NETWORK),testnet4)
-CFLAGS = $(BASEFLAGS) $(TESTNET4FLAGS)
-else ifeq ($(NETWORK),mainnet)
-CFLAGS = $(BASEFLAGS)
-else
-$(error Unknown NETWORK: $(NETWORK))
-endif
+CFLAGS = $(BASEFLAGS) $(call netflags,$(NETWORK))
 
-all: main
+netflags = \
+	$(if $(filter testnet3,$1),$(TESTNET3FLAGS), \
+	$(if $(filter testnet4,$1),$(TESTNET4FLAGS), \
+	$(if $(filter mainnet,$1),, \
+	$(error Unknown NETWORK: $1))))
 
-main:
+all: dev
+
+pull-tinygo:
+	docker pull $(TINYGO_IMAGE)
+
+dev:
 	@echo "Building $@ with $(NETWORK) flags"
-	tinygo build $(CFLAGS) -o $(OUTPUT) $(TARGET)
+	tinygo build $(CFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
 
 testnet3: NETWORK ?= testnet3
 testnet3:
 	@echo "Building $@ with $(NETWORK) flags"
-	tinygo build $(CFLAGS) -o $(TESTNET3) $(TARGET)
+	tinygo build $(CFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
 
 testnet4: NETWORK ?= testnet4
 testnet4:
 	@echo "Building $@ with $(NETWORK) flags"
-	tinygo build $(CFLAGS) -o $(TESTNET4) $(TARGET)
+	tinygo build $(CFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
 
 mainnet: NETWORK ?= mainnet
 mainnet:
 	@echo "Building $@ with $(NETWORK) flags"
-	tinygo build $(CFLAGS) -o $(MAINNET) $(TARGET)
+	tinygo build $(CFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
 
 strip:
 	@for file in $(BIN_DIR)/*.wasm; do \
@@ -82,7 +88,7 @@ tinyjson:
 	fi; \
 	\
 	# Find all directories containing files with tinyjson tags \
-	find $(CONTRACTS_DIR) -type f -name '*.go' -print0 | \
+	find $(ROOT_DIR) -type f -name '*.go' -print0 | \
 	xargs -0 grep -l '^//tinyjson:json$$' | \
 	xargs -n1 dirname | \
 	sort -u | \
@@ -133,7 +139,26 @@ tinyjson:
 			continue; \
 		fi; \
 		\
-		if (cd $$dir && $(TINYJSON) $(TINYJSON_FLAGS) -pkg); then \
+		# Get the original package name \
+		original_pkg=$$(awk '/^package / {print $$2; exit}' "$$src"); \
+		\
+		if [ -z "$$original_pkg" ]; then \
+			echo "  ⚠️  Could not determine package name in $$src"; \
+			continue; \
+		fi; \
+		\
+		if (mkdir -p "$$dir/.tinyjson-tmp" && \
+			find "$$dir" -maxdepth 1 -name '*.go' ! -name '*_tinyjson.go' ! -name '*_test.go' -exec cp {} "$$dir/.tinyjson-tmp/" \; && \
+			cd "$$dir/.tinyjson-tmp" && \
+			for f in *.go; do \
+				awk '/^package / {sub(/package .*/, "package tinyjson")} {print}' "$$f" > "$$f.tmp" && mv "$$f.tmp" "$$f"; \
+			done && \
+			$(TINYJSON) $(TINYJSON_FLAGS) -pkg -output_filename "$${original_pkg}_tinyjson.go" && \
+			for f in *_tinyjson.go; do \
+				[ -f "$$f" ] && sed "s/package tinyjson/package $$original_pkg/" "$$f" > "../$$f"; \
+			done && \
+			cd .. && \
+			rm -rf .tinyjson-tmp); then \
 			echo "  ✅  tinyjson created for $$dir" ; \
 		else \
 			echo "  ⚠️  tinyjson failed for $$dir (continuing)"; \

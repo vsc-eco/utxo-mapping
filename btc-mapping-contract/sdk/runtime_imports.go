@@ -22,6 +22,15 @@ func stateGetObject(key *string) *string
 //go:wasmimport sdk db.rm_object
 func stateDeleteObject(key *string) *string
 
+//go:wasmimport sdk ephem_db.set_object
+func ephemStateSetObject(key *string, value *string) *string
+
+//go:wasmimport sdk ephem_db.get_object
+func ephemStateGetObject(contractId *string, key *string) *string
+
+//go:wasmimport sdk ephem_db.rm_object
+func ephemStateDeleteObject(key *string) *string
+
 //go:wasmimport sdk system.get_env
 func getEnv(arg *string) *string
 

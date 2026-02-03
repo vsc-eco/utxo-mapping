@@ -12,13 +12,13 @@ const artifactsDir = "bin"
 
 // Pre-loaded byte arrays (nil if file doesn't exist at package init)
 var (
-	MainWasm     []byte
+	DevWasm      []byte
 	Testnet4Wasm []byte
 	Testnet3Wasm []byte
 )
 
 func init() {
-	MainWasm, _ = loadWasmFile("main.wasm")
+	DevWasm, _ = loadWasmFile("dev.wasm")
 	Testnet4Wasm, _ = loadWasmFile("testnet4.wasm")
 	Testnet3Wasm, _ = loadWasmFile("testnet4.wasm")
 }

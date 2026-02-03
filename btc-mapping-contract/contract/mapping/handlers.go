@@ -48,9 +48,9 @@ func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 	ms.updateUtxoSpends(msgTx.TxID())
 
 	// TODO: return mapping results for each relevenat address as part of contract output, or at least log them
-	_, _, err = ms.processUtxos(relevantOutputs)
-	if err != nil {
-		return fmt.Errorf("error processing utxos: %w", err)
+	typedErr := ms.processUtxos(relevantOutputs)
+	if typedErr != nil {
+		return fmt.Errorf("error processing utxos: %s", typedErr[1])
 	}
 
 	return nil
