@@ -36,7 +36,7 @@ func logStateDiff(t *testing.T, sdm map[string]contract_session.StateDiff) {
 	for name, sd := range sdm {
 		log.Println("state diff for", name)
 		for del := range sd.Deletions {
-			fmt.Printf("    %s\n", del)
+			fmt.Printf("    %*s:\n", 16, del)
 		}
 		for key, diff := range sd.KeyDiff {
 			fmt.Printf("    %*s: %s -> %s\n", 16, key, diff.Previous, diff.Current)
