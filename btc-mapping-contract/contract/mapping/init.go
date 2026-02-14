@@ -1,6 +1,7 @@
 package mapping
 
 import (
+	ce "btc-mapping-contract/contract/contracterrors"
 	"btc-mapping-contract/sdk"
 	"crypto/sha256"
 	"fmt"
@@ -27,7 +28,7 @@ func IntializeContractState(publicKeys *PublicKeys, networkMode string) (*Contra
 	if len(*utxoState) > 0 {
 		err := tinyjson.Unmarshal([]byte(*utxoState), &utxos)
 		if err != nil {
-			return nil, fmt.Errorf("error unmarshaling utxo registry: %w", err)
+			return nil, ce.NewContractError(ce.ErrJson, "error unmarshaling utxo registry: "+err.Error())
 		}
 	}
 
@@ -37,7 +38,7 @@ func IntializeContractState(publicKeys *PublicKeys, networkMode string) (*Contra
 		if *lastUtxoIdHex == "" {
 			lastUtxoId = 0
 		} else {
-			return nil, fmt.Errorf("error fetching last utxo internal id: %w", err)
+			return nil, ce.NewContractError(ce.ErrStateAccess, "error fetching last utxo internal id: "+err.Error())
 		}
 	}
 
@@ -46,7 +47,7 @@ func IntializeContractState(publicKeys *PublicKeys, networkMode string) (*Contra
 	if len(*txSpendsState) > 0 {
 		err := tinyjson.Unmarshal([]byte(*txSpendsState), &txSpends)
 		if err != nil {
-			return nil, fmt.Errorf("error unmarshaling txspends registry: %w", err)
+			return nil, ce.NewContractError(ce.ErrStateAccess, "error unmarshaling txspends registry: "+err.Error())
 		}
 	}
 
@@ -55,7 +56,7 @@ func IntializeContractState(publicKeys *PublicKeys, networkMode string) (*Contra
 	if len(*supplyState) > 0 {
 		err := tinyjson.Unmarshal([]byte(*supplyState), &supply)
 		if err != nil {
-			return nil, fmt.Errorf("error unmarshaling supply: %w", err)
+			return nil, ce.NewContractError(ce.ErrStateAccess, "error unmarshalling supply: "+err.Error())
 		}
 	}
 
@@ -80,7 +81,7 @@ func InitializeMappingState(publicKeys *PublicKeys, networkMode string, instruct
 		var err error
 		registry, err = contractState.parseInstructions(publicKeys, instructions, contractState.NetworkParams)
 		if err != nil {
-			return nil, fmt.Errorf("error unmarshaling address registry: %w", err)
+			return nil, ce.WrapContractError(ce.ErrStateAccess, err, "error unmarshalling address registry")
 		}
 	}
 
@@ -111,11 +112,10 @@ func (cs *ContractState) parseInstructions(
 		if params.Has(depositKey) {
 			recipient = params.Get(depositKey)
 			if !cs.NetworkOptions[Vsc].ValidateAddress(recipient) {
-				return nil, fmt.Errorf(
-					"bad instruction '%s': address '%s' invalid on network '%s'",
-					instr,
-					recipient,
-					Vsc,
+				return nil, ce.NewContractError(
+					ce.ErrInput,
+					"address \""+recipient+"\" invalid on network \""+string(Vsc)+"\"",
+					"bad instruction \""+instr+"\"",
 				)
 			}
 			mappingType = MapDeposit
@@ -127,7 +127,11 @@ func (cs *ContractState) parseInstructions(
 			}
 			mappingType = MapSwap
 			if !recipientNetwork.ValidateAddress(recipient) {
-				return nil, fmt.Errorf("bad instruction '%s': address '%s' invalid on network '%s'", instr, recipient, recipientNetwork.Name())
+				return nil, ce.NewContractError(
+					ce.ErrInput,
+					"address \""+recipient+"\" invalid on network \""+string(recipientNetwork.Name())+"\"",
+					"bad instruction \""+instr+"\"",
+				)
 			}
 		}
 		if recipient != "" {
@@ -158,7 +162,7 @@ func (cs *ContractState) parseInstructions(
 func (cs *ContractState) SaveToState() error {
 	utxosJson, err := tinyjson.Marshal(cs.UtxoList)
 	if err != nil {
-		return err
+		return ce.NewContractError(ce.ErrJson, "error marshaling utxo listings: "+err.Error())
 	}
 	sdk.StateSetObject(utxoRegistryKey, string(utxosJson))
 
@@ -166,13 +170,13 @@ func (cs *ContractState) SaveToState() error {
 
 	txSpendsJson, err := tinyjson.Marshal(cs.TxSpendsList)
 	if err != nil {
-		return err
+		return ce.NewContractError(ce.ErrJson, "error marshaling tx spends: "+err.Error())
 	}
 	sdk.StateSetObject(txSpendsRegistryKey, string(txSpendsJson))
 
 	supplyJson, err := tinyjson.Marshal(cs.Supply)
 	if err != nil {
-		return err
+		return ce.NewContractError(ce.ErrJson, "error marshaling supply: "+err.Error())
 	}
 	sdk.StateSetObject(supplyKey, string(supplyJson))
 
@@ -193,7 +197,7 @@ func SupplyFromState() (*SystemSupply, error) {
 	if len(*supplyState) > 0 {
 		err := tinyjson.Unmarshal([]byte(*supplyState), &supply)
 		if err != nil {
-			return nil, err
+			return nil, ce.NewContractError(ce.ErrStateAccess, "error unmarshalling supply: "+err.Error())
 		}
 	}
 

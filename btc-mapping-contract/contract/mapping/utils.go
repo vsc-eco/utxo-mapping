@@ -1,6 +1,7 @@
 package mapping
 
 import (
+	ce "btc-mapping-contract/contract/contracterrors"
 	"btc-mapping-contract/sdk"
 	"crypto/sha256"
 	"encoding/hex"
@@ -123,38 +124,97 @@ func createSimpleP2WSHAddress(pubKeyBytes []byte, tag []byte, network *chaincfg.
 	return address, script, nil
 }
 
-func checkSender(env sdk.Env, amount int64) (int64, error) {
-	hasRequiredAuth := slices.Contains(env.Sender.RequiredAuths, env.Sender.Address)
-	if !hasRequiredAuth {
-		return 0, fmt.Errorf("active auth required to send funds")
+func checkAuth(env sdk.Env) error {
+	if !slices.Contains(env.Sender.RequiredAuths, env.Sender.Address) {
+		return ce.NewContractError(ce.ErrNoPermission, "active auth required to send funds")
 	}
+	return nil
+}
 
-	senderBal, err := getAccBal(env.Sender.Address.String())
+func checkSender(env sdk.Env, amount int64) (int64, int64, error) {
+	senderAddress := env.Sender.Address.String()
+	senderBal, err := getAccBal(senderAddress)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	if senderBal < amount {
-		return 0, fmt.Errorf("sender balance insufficient. has %d, needs %d", senderBal, amount)
+		return 0, 0, ce.NewContractError(
+			ce.ErrBalance,
+			"sender balance "+strconv.FormatInt(senderBal, 10)+" insufficient needs "+strconv.FormatInt(amount, 10),
+		)
 	}
-	return senderBal, nil
+
+	intentAmount := int64(0)
+	//check sender's intents
+	for _, intent := range env.SenderIntents {
+		if intent.Type != intentTransferType {
+			continue
+		}
+		if contractId, ok := intent.Args[intentContractTokenKey]; ok && contractId == env.ContractId {
+			if amount, ok := intent.Args[intentAmountKey]; ok {
+				clean := strings.Replace(amount, ".", "", 1)
+				intentAmount, err = strconv.ParseInt(clean, 10, 64)
+				if err != nil {
+					return 0, 0, ce.NewContractError(ce.ErrIntent, "invalid intent amount")
+				}
+			}
+		}
+	}
+
+	expenditure, err := getAccExpenditure(env.ContractId, senderAddress)
+	if err != nil {
+		return 0, 0, ce.WrapContractError(ce.ErrIntent, err, "error fetching previous token expenditure")
+	}
+	remaining := intentAmount - expenditure
+	if remaining < amount {
+		return 0, 0, ce.NewContractError(ce.ErrIntent, "insufficient intent remaining to cover spend")
+	}
+
+	return senderBal, expenditure, nil
 }
 
-func checkCaller(env sdk.Env, amount int64) (int64, error) {
-	hasRequiredAuth := slices.Contains(env.Sender.RequiredAuths, env.Sender.Address)
-	if !hasRequiredAuth {
-		return 0, fmt.Errorf("active auth required to send funds")
-	}
-
-	callerBal, err := getAccBal(env.Caller.String())
+func checkCaller(env sdk.Env, amount int64) (int64, int64, error) {
+	callerAddress := env.Caller.String()
+	callerBal, err := getAccBal(callerAddress)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	if callerBal < amount {
-		return 0, fmt.Errorf("caller balance insufficient. has %d, needs %d", callerBal, amount)
+		return 0, 0, ce.NewContractError(
+			ce.ErrBalance,
+			fmt.Sprintf("caller balance insufficient has %d needs %d", callerBal, amount),
+		)
 	}
-	return callerBal, nil
+
+	intentAmount := int64(0)
+	//check caller's intents
+	for _, intent := range env.CallerIntents {
+		if intent.Type != intentTransferType {
+			continue
+		}
+		if contractId, ok := intent.Args[intentContractTokenKey]; ok && contractId == env.ContractId {
+			if amount, ok := intent.Args[intentAmountKey]; ok {
+				clean := strings.Replace(amount, ".", "", 1)
+				intentAmount, err = strconv.ParseInt(clean, 10, 64)
+				if err != nil {
+					return 0, 0, ce.NewContractError(ce.ErrIntent, "invalid intent amount")
+				}
+			}
+		}
+	}
+
+	expenditure, err := getAccExpenditure(env.ContractId, callerAddress)
+	if err != nil {
+		return 0, 0, ce.WrapContractError(ce.ErrIntent, err, "error fetching previous token limit")
+	}
+	remaining := intentAmount - expenditure
+	if remaining < amount {
+		return 0, 0, ce.NewContractError(ce.ErrIntent, "insufficient intent remaining to cover spend")
+	}
+
+	return callerBal, expenditure, nil
 }
 
 func packUtxo(internalId uint32, amount int64, confirmed uint8) [3]int64 {
@@ -191,13 +251,36 @@ func incAccBalance(vscAcc string, amount int64) error {
 	return nil
 }
 
+// gets the amount spent so far in this transaction
+func getAccExpenditure(contractId, vscAcc string) (int64, error) {
+	balString := sdk.EphemStateGetObject(contractId, intentLimitPrefix+vscAcc)
+	if *balString == "" {
+		return 0, nil
+	}
+	bal, err := strconv.ParseInt(*balString, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	return bal, nil
+}
+
+// sets the amount spent so far in this transaction
+func setAccExpenditure(vscAcc string, newBal int64) {
+	sdk.EphemStateSetObject(balancePrefix+vscAcc, strconv.FormatInt(newBal, 10))
+}
+
+func deduct(vscAcc string, amount, balance, expenditure int64) {
+	setAccBal(vscAcc, balance-amount)
+	setAccExpenditure(vscAcc, expenditure+amount)
+}
+
 func (cs *ContractState) getNetwork(s string) (Network, error) {
 	networkName := NetworkName(strings.ToLower(s))
 	network, ok := cs.NetworkOptions[networkName]
 	if ok {
 		return network, nil
 	}
-	return nil, fmt.Errorf("Invalid network")
+	return nil, ce.NewContractError(ce.ErrInput, "invalid network \""+s+"\"")
 }
 
 func IsTestnet(networkName string) bool {
@@ -211,10 +294,6 @@ func IsTestnet(networkName string) bool {
 
 func StrPtr(s string) *string {
 	return &s
-}
-
-func newTypedError(symbol string, msg error) contractError {
-	return &[2]string{symbol, msg.Error()}
 }
 
 func createDepositLog(d Deposit) string {

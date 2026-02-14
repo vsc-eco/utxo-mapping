@@ -64,17 +64,6 @@ func tssSignKey(keyId *string, msgId *string) *string
 //go:wasmimport sdk tss.get_key
 func tssGetKey(keyId *string) *string
 
-// var envMap = []string{
-// 	"contract.id",
-// 	"tx.origin",
-// 	"tx.id",
-// 	"tx.index",
-// 	"tx.op_index",
-// 	"block.id",
-// 	"block.height",
-// 	"block.timestamp",
-// }
-
 //go:wasmimport env abort
 func abort(msg, file *string, line, column *int32)
 

@@ -4,8 +4,11 @@ import (
 	"btc-mapping-contract/sdk"
 	"bytes"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
+
+	ce "btc-mapping-contract/contract/contracterrors"
 
 	"github.com/CosmWasm/tinyjson"
 	"github.com/btcsuite/btcd/wire"
@@ -28,34 +31,34 @@ type BlockSeedInput struct {
 const BlockPrefix = "block/"
 const lastHeightKey = "last_block_height"
 
-var ErrorLastHeightDNE = fmt.Errorf("last height does not exist")
+var ErrorLastHeightDNE = errors.New("last height does not exist")
 
-var ErrorSequenceIncorrect = fmt.Errorf("block sequence incorrect")
+var ErrorSequenceIncorrect = errors.New("block sequence incorrect")
 
-func LastHeightFromState() (*uint32, error) {
+func LastHeightFromState() (uint32, error) {
 	lastHeightString := sdk.StateGetObject(lastHeightKey)
 	if *lastHeightString == "" {
-		return nil, ErrorLastHeightDNE
+		return 0, ErrorLastHeightDNE
 	}
 	lastHeight, err := strconv.ParseUint(*lastHeightString, 10, 32)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	lastHeight32 := uint32(lastHeight)
-	return &lastHeight32, nil
+	return lastHeight32, nil
 }
 
-func LastHeightToState(lastHeight *uint32) {
-	sdk.StateSetObject(lastHeightKey, fmt.Sprintf("%d", *lastHeight))
+func LastHeightToState(lastHeight uint32) {
+	sdk.StateSetObject(lastHeightKey, strconv.FormatUint(uint64(lastHeight), 10))
 }
 
 func DivideHeaderList(blocksHex *string) ([]BlockHeaderBytes, error) {
 	blockBytes, err := hex.DecodeString(*blocksHex)
 	if err != nil {
-		return nil, err
+		return nil, ce.WrapContractError(ce.ErrInvalidHex, err)
 	}
 	if len(blockBytes)%80 != 0 {
-		return nil, fmt.Errorf("incorrect block length")
+		return nil, ce.NewContractError(ce.ErrInput, "incorrect block length")
 	}
 
 	blockHeaders := make([]BlockHeaderBytes, len(blockBytes)/80)
@@ -65,35 +68,40 @@ func DivideHeaderList(blocksHex *string) ([]BlockHeaderBytes, error) {
 	return blockHeaders, nil
 }
 
-func HandleAddBlocks(rawHeaders []BlockHeaderBytes, lastHeight *uint32) error {
-	lastBlockHex := sdk.StateGetObject(BlockPrefix + fmt.Sprintf("%d", *lastHeight))
+func HandleAddBlocks(rawHeaders []BlockHeaderBytes) (uint32, uint32, error) {
+	lastHeight, err := LastHeightFromState()
+	initialLastHeight := lastHeight
+	if err != nil {
+		return 0, 0, ce.WrapContractError(ce.ErrStateAccess, err)
+	}
+	lastBlockHex := sdk.StateGetObject(BlockPrefix + fmt.Sprintf("%d", lastHeight))
 	lastBlockBytes, err := hex.DecodeString(*lastBlockHex)
 	if err != nil {
-		return err
+		return 0, 0, ce.WrapContractError(ce.ErrInvalidHex, err)
 	}
 	var lastBlockHeader wire.BlockHeader
 	err = lastBlockHeader.BtcDecode(bytes.NewReader(lastBlockBytes[:]), wire.ProtocolVersion, wire.LatestEncoding)
 	if err != nil {
-		return fmt.Errorf("error decoding block header: %w", err)
+		return 0, 0, ce.NewContractError(ce.ErrInput, "error decoding block header: "+err.Error())
 	}
 	for _, headerBytes := range rawHeaders {
 		var blockHeader wire.BlockHeader
 		err = blockHeader.BtcDecode(bytes.NewReader(headerBytes[:]), wire.ProtocolVersion, wire.LatestEncoding)
 		if err != nil {
-			return fmt.Errorf("error decoding block header: %w", err)
+			return 0, 0, ce.NewContractError(ce.ErrInput, "error decoding block header: "+err.Error())
 		}
 
 		lastBlockHash := lastBlockHeader.BlockHash()
 		if !blockHeader.PrevBlock.IsEqual(&lastBlockHash) {
-			return ErrorSequenceIncorrect
+			return 0, 0, ErrorSequenceIncorrect
 		}
-		blockHeight := *lastHeight + 1
+		blockHeight := lastHeight + 1
 
 		sdk.StateSetObject(BlockPrefix+fmt.Sprintf("%d", blockHeight), hex.EncodeToString(headerBytes[:]))
-		*lastHeight = blockHeight
+		lastHeight = blockHeight
 		lastBlockHeader = blockHeader
 	}
-	return nil
+	return lastHeight, lastHeight - initialLastHeight, nil
 }
 
 func HandleSeedBlocks(seedInput *string, allowReseed bool) (uint32, error) {
@@ -103,20 +111,23 @@ func HandleSeedBlocks(seedInput *string, allowReseed bool) (uint32, error) {
 			return 0, err
 		}
 	} else if !allowReseed {
-		return 0, fmt.Errorf("blocks already seeded, last height: %d", *lastHeight)
+		return 0, ce.NewContractError(ce.ErrInitialization, "blocks already seeded last height "+strconv.FormatUint(uint64(lastHeight), 10))
 	}
 
 	var blockSeedData BlockSeedInput
 	err = tinyjson.Unmarshal([]byte(*seedInput), &blockSeedData)
 	if err != nil {
-		return 0, err
+		return 0, ce.WrapContractError(ce.ErrJson, err)
 	}
 
-	if lastHeight == nil || *lastHeight < blockSeedData.BlockHeight {
+	if lastHeight == 0 || lastHeight < blockSeedData.BlockHeight {
 		sdk.StateSetObject(BlockPrefix+fmt.Sprintf("%d", blockSeedData.BlockHeight), blockSeedData.BlockHeader)
 		sdk.StateSetObject(lastHeightKey, fmt.Sprintf("%d", blockSeedData.BlockHeight))
 		return blockSeedData.BlockHeight, nil
 	}
 
-	return 0, fmt.Errorf("last height >= input block height. last height; %d", *lastHeight)
+	return 0, ce.NewContractError(
+		ce.ErrInput,
+		fmt.Sprintf("last height >= input block height. last height: %d", lastHeight),
+	)
 }

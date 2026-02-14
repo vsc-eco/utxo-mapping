@@ -2,6 +2,7 @@ package mapping
 
 import (
 	"btc-mapping-contract/contract/blocklist"
+	ce "btc-mapping-contract/contract/contracterrors"
 	"btc-mapping-contract/sdk"
 	"bytes"
 	"encoding/hex"
@@ -34,7 +35,7 @@ func verifyTransaction(req *VerificationRequest, rawTxBytes []byte) error {
 	calculatedHash := tx.TxHash()
 
 	if !verifyMerkleProof(calculatedHash, req.TxIndex, merkleProof, blockHeader.MerkleRoot) {
-		return fmt.Errorf("transaction cannot be validated, failed to reconstruct proof")
+		return ce.NewContractError(ce.ErrInput, "transaction cannot be validated, failed to reconstruct proof")
 	}
 	return nil
 }
@@ -45,7 +46,7 @@ func merkleProofFromHex(proofHex string) ([]chainhash.Hash, error) {
 		return nil, err
 	}
 	if len(proofBytes)%32 != 0 {
-		return nil, fmt.Errorf("invalid proof format")
+		return nil, ce.NewContractError(ce.ErrInput, "invalid proof format")
 	}
 	proof := make([]chainhash.Hash, len(proofBytes)/32)
 	for i := 0; i < len(proofBytes); i += 32 {
@@ -78,3 +79,11 @@ func verifyMerkleProof(
 
 	return currentHash.IsEqual(&merkleRoot)
 }
+
+// if index%2 == 0 {
+// 	copy(combined[:32], currentHash[:])
+// 	copy(combined[32:], siblingHash[:])
+// } else {
+// 	copy(combined[:32], siblingHash[:])
+// 	copy(combined[32:], currentHash[:])
+// }

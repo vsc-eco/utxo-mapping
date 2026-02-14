@@ -1,10 +1,12 @@
 package mapping
 
 import (
+	ce "btc-mapping-contract/contract/contracterrors"
 	"btc-mapping-contract/sdk"
 	"bytes"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 
 	"github.com/CosmWasm/tinyjson"
 	"github.com/btcsuite/btcd/btcutil"
@@ -27,7 +29,7 @@ func calcVscFee(amount int64) (int64, error) {
 	percentageFee := int64(float64(amount) * feeRate)
 	finalFee := max(minFee, percentageFee)
 	if finalFee >= amount {
-		return 0, fmt.Errorf("transaction too small to cover fee.")
+		return 0, ce.NewContractError(ce.ErrBalance, "transaction too small to cover fee")
 	}
 	return finalFee, nil
 }
@@ -36,10 +38,10 @@ func getInputUtxos(registryEntries []uint32) ([]*Utxo, error) {
 	result := make([]*Utxo, len(registryEntries))
 	for i, internalId := range registryEntries {
 		utxo := Utxo{}
-		utxoJson := sdk.StateGetObject(fmt.Sprintf("%s%x", utxoPrefix, internalId))
+		utxoJson := sdk.StateGetObject(utxoPrefix + strconv.FormatUint(uint64(internalId), 16))
 		err := tinyjson.Unmarshal([]byte(*utxoJson), &utxo)
 		if err != nil {
-			return nil, err
+			return nil, ce.WrapContractError(ce.ErrStateAccess, err, "error unmarshalling saved utxo")
 		}
 		result[i] = &utxo
 	}
@@ -143,7 +145,7 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint32, int64, error) 
 		}
 	}
 	// this really should never happen
-	return nil, 0, fmt.Errorf("Total available balance insufficient to complete transaction")
+	return nil, 0, ce.NewContractError(ce.ErrBalance, "total available balance insufficient to complete transaction")
 }
 
 func (cs *ContractState) calculateSegwitFee(baseSize int64, witnessScripts map[int][]byte) int64 {
@@ -200,10 +202,13 @@ func (cs *ContractState) createSpendTransaction(
 	}
 
 	// sdk.Log(fmt.Sprintf("witness scripts created %v", witnessScripts))
-
 	destAddr, err := btcutil.DecodeAddress(destAddress, cs.NetworkParams)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, 0, ce.WrapContractError(
+			ce.ErrInput,
+			err,
+			"error decoding destination btc address ["+destAddress+"]",
+		)
 	}
 
 	// Create output script for destination

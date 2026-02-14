@@ -10,6 +10,8 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+
+	ce "btc-mapping-contract/contract/contracterrors"
 )
 
 func isForVscAcc(
@@ -19,7 +21,7 @@ func isForVscAcc(
 ) (string, bool, error) {
 	_, addrs, _, err := txscript.ExtractPkScriptAddrs(txOut.PkScript, network)
 	if err != nil {
-		return "", false, fmt.Errorf("coult not extract pkscript address: %w", err)
+		return "", false, ce.WrapContractError(ce.ErrInput, err, "could not extract pkscript address")
 	}
 	// should always being exactly length 1 for P2SH an P2WSH addresses
 	for _, addr := range addrs {
@@ -31,6 +33,7 @@ func isForVscAcc(
 	return "", false, nil
 }
 
+// gets all outputs pertaining to a vsc address
 func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) ([]Utxo, error) {
 	outputsForVsc := make([]Utxo, len(ms.AddressRegistry))
 	i := 0
@@ -38,7 +41,11 @@ func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) ([]Utxo, error) {
 	for index, txOut := range msgTx.TxOut {
 		if addr, ok, err := isForVscAcc(txOut, ms.AddressRegistry, ms.NetworkParams); ok {
 			if err != nil {
-				return nil, err
+				return nil, ce.WrapContractError(
+					ce.ErrInput,
+					err,
+					"error extracting address from output in bitcoin transaction",
+				)
 			}
 
 			utxo := Utxo{
@@ -65,7 +72,7 @@ func (cs *ContractState) updateUtxoSpends(txId string) error {
 	var utxoSpend SigningData
 	err := tinyjson.Unmarshal([]byte(*utxoSpendJson), &utxoSpend)
 	if err != nil {
-		return fmt.Errorf("error unmarshalling utxo spend json: %w", err)
+		return ce.NewContractError(ce.ErrJson, "error unmarshalling utxo spend json: "+err.Error())
 	}
 
 	// not the most efficient but there should never be more than a few of these
@@ -83,7 +90,7 @@ func (cs *ContractState) updateUtxoSpends(txId string) error {
 			utxoJson := sdk.StateGetObject(fmt.Sprintf("%s%x", utxoPrefix, internalId))
 			err := tinyjson.Unmarshal([]byte(*utxoJson), &utxo)
 			if err != nil {
-				return err
+				return ce.NewContractError(ce.ErrStateAccess, "error unmarshalling saved utxo: "+err.Error())
 			}
 			unconfirmedUtxos = append(unconfirmedUtxos, unconfirmedUtxo{indexInRegistry: i, utxo: &utxo})
 		}
@@ -168,7 +175,7 @@ func (cs *ContractState) determineReturnInfo(metadata *AddressMetadata) (string,
 	}
 }
 
-func (ms *MappingState) processUtxos(relevantUtxos []Utxo) contractError {
+func (ms *MappingState) processUtxos(relevantUtxos []Utxo) error {
 	totalMapped := int64(0)
 	env := sdk.GetEnv()
 
@@ -176,7 +183,7 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) contractError {
 	for _, utxo := range relevantUtxos {
 		_, addrs, _, err := txscript.ExtractPkScriptAddrs(utxo.PkScript, ms.NetworkParams)
 		if err != nil {
-			return newTypedError("", err)
+			return ce.WrapContractError("", err)
 		}
 		if metadata, ok := ms.AddressRegistry[addrs[0].EncodeAddress()]; ok {
 			// Create UTXO entry
@@ -194,7 +201,7 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) contractError {
 			ms.UtxoList = append(ms.UtxoList, packUtxo(utxoInternalId, utxo.Amount, 1))
 			utxoJson, err := tinyjson.Marshal(utxo)
 			if err != nil {
-				return newTypedError("", err)
+				return ce.NewContractError(ce.ErrJson, "error marshalling utxo: "+err.Error())
 			}
 
 			sdk.StateSetObject(fmt.Sprintf("%s%x", utxoPrefix, utxoInternalId), string(utxoJson))
@@ -216,7 +223,7 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) contractError {
 			case MapSwap:
 				ok := metadata.Params.Has(swapAssetOut)
 				if !ok {
-					return &[2]string{"", "asset out required to execute a swap"}
+					return ce.NewContractError("", "asset out required to execute a swap")
 				}
 				assetOut := metadata.Params.Get(swapAssetOut)
 
@@ -229,7 +236,7 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) contractError {
 				}
 				instrJson, err := tinyjson.Marshal(instruction)
 				if err != nil {
-					return &[2]string{"", "error marshalling swap instruction: " + err.Error()}
+					return ce.NewContractError(ce.ErrJson, "error marshalling swap instruction: "+err.Error())
 				}
 
 				// TODO: update to new intets system
@@ -250,15 +257,15 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) contractError {
 				sender := env.Sender.Address.String()
 				err = incAccBalance(sender, utxo.Amount)
 				if err != nil {
-					return &[2]string{errorStateAccess, "error getting sender account balance: " + err.Error()}
+					return ce.NewContractError(ce.ErrStateAccess, "error getting sender account balance: "+err.Error())
 				}
 
 				// call swap contract
-				swapResultStr := sdk.ContractCall(routerContracId, "execute", string(instrJson), &options)
+				swapResultStr := sdk.ContractCall(routerContractId, "execute", string(instrJson), &options)
 				var swapResult SwapResult
 				err = tinyjson.Unmarshal([]byte(*swapResultStr), &swapResult)
 				if err != nil {
-					return newTypedError(errorJson, err)
+					return ce.WrapContractError(ce.ErrJson, err)
 				}
 				// TODO: add log
 			default:

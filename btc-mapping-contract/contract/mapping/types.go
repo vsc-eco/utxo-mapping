@@ -31,13 +31,7 @@ const (
 const backupCSVBlocks = 4320 // ~1 month
 
 // contract IDs
-const routerContracId = "INSERT_ROUTER_ID_HERE"
-
-// Errors
-const (
-	errorJson        = "json_error"
-	errorStateAccess = "state_access_error"
-)
+const routerContractId = "INSERT_ROUTER_ID_HERE"
 
 // Logs
 const (
@@ -46,7 +40,12 @@ const (
 	logArrayDelimiter = ","
 )
 
-type contractError *[2]string
+const (
+	intentTransferType     = "transfer.allow"
+	intentContractTokenKey = "contract_token"
+	intentAmountKey        = "amount"
+	intentLimitPrefix      = "limit/"
+)
 
 //tinyjson:json
 type MappingParams struct {

@@ -10,19 +10,21 @@ import (
 	"github.com/CosmWasm/tinyjson"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+
+	ce "btc-mapping-contract/contract/contracterrors"
 )
 
 func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 	rawTx, err := hex.DecodeString(txData.RawTxHex)
 	if err != nil {
-		return err
+		return ce.WrapContractError("", err)
 	}
 	proofBytes, err := hex.DecodeString(txData.MerkleProofHex)
 	if err != nil {
 		return err
 	}
 	if len(proofBytes)%32 != 0 {
-		return fmt.Errorf("Invalid proof strcuture")
+		return ce.NewContractError(ce.ErrInput, "invalid proof structure")
 	}
 	merkleProof := make([]chainhash.Hash, len(proofBytes)/32)
 	for i := 0; i < len(proofBytes); i += 32 {
@@ -38,19 +40,19 @@ func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 		return err
 	}
 
-	// gets all outputs the address of which is specified in the instructions
+	// gets all outputs the address of which is specified in the deposit instructions
 	relevantOutputs, err := ms.indexOutputs(&msgTx)
 	if err != nil {
-		return fmt.Errorf("error indexing outputs: %w", err)
+		return ce.Prepend(err, "error indexing outputs")
 	}
 
 	// removes this tx from utxo spends if present
 	ms.updateUtxoSpends(msgTx.TxID())
 
 	// TODO: return mapping results for each relevenat address as part of contract output, or at least log them
-	typedErr := ms.processUtxos(relevantOutputs)
-	if typedErr != nil {
-		return fmt.Errorf("error processing utxos: %s", typedErr[1])
+	err = ms.processUtxos(relevantOutputs)
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -58,8 +60,12 @@ func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 
 // Returns: raw tx hex to be broadcast
 func (cs *ContractState) HandleUnmap(instructions *SendParams) error {
-	amount := instructions.Amount
 	env := sdk.GetEnv()
+	err := checkAuth(env)
+	if err != nil {
+		return err
+	}
+	amount := instructions.Amount
 
 	vscFee, err := calcVscFee(amount)
 	if err != nil {
@@ -70,14 +76,14 @@ func (cs *ContractState) HandleUnmap(instructions *SendParams) error {
 
 	inputUtxoIds, totalInputAmt, err := cs.getInputUtxoIds(amount)
 	if err != nil {
-		return fmt.Errorf("error getting input utxos: %w", err)
+		return ce.Prepend(err, "error getting input utxos")
 	}
 
 	// sdk.Log(fmt.Sprintf("inputids: %v, totalinputamt: %d", inputUtxoIds, totalInputAmt))
 
 	inputUtxos, err := getInputUtxos(inputUtxoIds)
 	if err != nil {
-		return fmt.Errorf("error getting input utxos: %w", err)
+		return ce.Prepend(err, "error getting input utxos")
 	}
 
 	changeAddress, _, err := createP2WSHAddressWithBackup(
@@ -102,7 +108,7 @@ func (cs *ContractState) HandleUnmap(instructions *SendParams) error {
 	finalAmt := amount + vscFee + btcFee
 
 	// check whether sender has enough balance to cover transaction
-	senderBal, err := checkSender(env, finalAmt)
+	senderBal, expenditure, err := checkSender(env, finalAmt)
 	if err != nil {
 		return err
 	}
@@ -114,7 +120,7 @@ func (cs *ContractState) HandleUnmap(instructions *SendParams) error {
 	for _, utxo := range unconfirmedUtxos {
 		utxoJson, err := tinyjson.Marshal(utxo)
 		if err != nil {
-			return fmt.Errorf("error marhalling utxo json: %w", err)
+			return ce.NewContractError(ce.ErrJson, fmt.Sprintf("error marhalling utxo: %s", err.Error()))
 		}
 		// create utxo entry
 		internalId := cs.UtxoNextId
@@ -137,14 +143,14 @@ func (cs *ContractState) HandleUnmap(instructions *SendParams) error {
 
 	signingDataJson, err := tinyjson.Marshal(signingData)
 	if err != nil {
-		return fmt.Errorf("error marshalling signing data: %w", err)
+		return ce.NewContractError(ce.ErrJson, fmt.Sprintf("error marshalling signing data: %s", err.Error()))
 	}
 
 	// use this key, then increment
 	sdk.StateSetObject(txSpendsPrefix+tx.TxID(), string(signingDataJson))
 	cs.TxSpendsList = append(cs.TxSpendsList, tx.TxID())
 
-	setAccBal(env.Sender.Address.String(), senderBal-finalAmt)
+	deduct(env.Sender.Address.String(), finalAmt, senderBal, expenditure)
 
 	cs.Supply.ActiveSupply -= finalAmt
 	cs.Supply.UserSupply -= finalAmt
@@ -154,9 +160,14 @@ func (cs *ContractState) HandleUnmap(instructions *SendParams) error {
 }
 
 func HandleTrasfer(instructions *SendParams) error {
-	amount := instructions.Amount
 	env := sdk.GetEnv()
-	callerBal, err := checkCaller(env, amount)
+	err := checkAuth(env)
+	if err != nil {
+		return err
+	}
+	amount := instructions.Amount
+
+	callerBal, expenditure, err := checkCaller(env, amount)
 	if err != nil {
 		return err
 	}
@@ -166,16 +177,21 @@ func HandleTrasfer(instructions *SendParams) error {
 		return err
 	}
 
-	setAccBal(env.Caller.String(), callerBal-amount)
+	deduct(env.Caller.String(), amount, callerBal, expenditure)
 	setAccBal(instructions.Address, recipientBal+amount)
 
 	return nil
 }
 
 func HandleDraw(instructions *SendParams) error {
-	amount := instructions.Amount
 	env := sdk.GetEnv()
-	senderBal, err := checkSender(env, amount)
+	err := checkAuth(env)
+	if err != nil {
+		return err
+	}
+	amount := instructions.Amount
+
+	senderBal, expenditure, err := checkSender(env, amount)
 	if err != nil {
 		return err
 	}
@@ -185,7 +201,7 @@ func HandleDraw(instructions *SendParams) error {
 		return err
 	}
 
-	setAccBal(env.Sender.Address.String(), senderBal-amount)
+	deduct(env.Sender.Address.String(), amount, senderBal, expenditure)
 	setAccBal(instructions.Address, recipientBal+amount)
 
 	return nil

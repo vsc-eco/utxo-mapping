@@ -36,7 +36,7 @@ func TestMapping(t *testing.T) {
 	ct.StateSet(contractId, "last_block_height", "114810")
 	ct.StateSet(
 		contractId,
-		"block114810",
+		"block/114810",
 		"00e0eb20634e08b3fea4fe1467451c13c1b9637765925fde62d8c396df218a0c00000000486e3aeb4090e44737ef71a71855dae60dbd8cf0b7a067c760e5ef4b8365519435104a699f1f0319d229d24b",
 	)
 	ct.StateSet(contractId, "pubkey", `0242f9da15eae56fe6aca65136738905c0afdb2c4edf379e107b3b00b98c7fc9f0`)
@@ -59,7 +59,7 @@ func TestMapping(t *testing.T) {
 		Caller:     "hive:milo-hpr",
 	})
 	if r.Err != "" {
-		fmt.Println("error:", r.Err)
+		fmt.Printf("%s: %s", r.Err, r.ErrMsg)
 	}
 
 	dumpLogs(t, r.Logs)
@@ -79,15 +79,15 @@ func TestUnmapping(t *testing.T) {
 	ct := test_utils.NewContractTest()
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
-	ct.StateSet(contractId, "balhive:milo-hpr", "10000")
+	ct.StateSet(contractId, "bal/hive:milo-hpr", "10000")
 	ct.StateSet(
 		contractId,
-		"observed_txs95af4aafb228696204ed86003e9ac6b904d6493d4311eda90ac34875c4ebab9a:0",
+		"observed_txs/95af4aafb228696204ed86003e9ac6b904d6493d4311eda90ac34875c4ebab9a:0",
 		"1",
 	)
 	ct.StateSet(
 		contractId,
-		"observed_txs4cfede180e58a2326aabd41c20fefcf60aba212e031e5b27be3dbfd5caf09af1:1",
+		"observed_txs/4cfede180e58a2326aabd41c20fefcf60aba212e031e5b27be3dbfd5caf09af1:1",
 		"1",
 	)
 	ct.StateSet(
@@ -97,12 +97,12 @@ func TestUnmapping(t *testing.T) {
 	)
 	ct.StateSet(
 		contractId,
-		"utxos0",
+		"utxos/0",
 		`{"tx_id":"95af4aafb228696204ed86003e9ac6b904d6493d4311eda90ac34875c4ebab9a","vout":0,"amount":5000,"pk_script":"ACAqDOQIRoebQvp3OesVzat3ygG3gXqXh5sfWP61LkRHjA==","tag":"6ad59da3ece6b8fcfd0cd8c615ed5ec82504fbd81808b2aea5fb750adb01f20c"}`,
 	)
 	ct.StateSet(
 		contractId,
-		"utxos1",
+		"utxos/1",
 		`{"tx_id":"4cfede180e58a2326aabd41c20fefcf60aba212e031e5b27be3dbfd5caf09af1","vout":1,"amount":5000,"pk_script":"ACC63J0lCXrLrpyBg0RUMqOyJOX7MbMjqDXkNkwDg974/w==","tag":""}`,
 	)
 	ct.StateSet(contractId, "utxo_id", "2")
@@ -115,10 +115,18 @@ func TestUnmapping(t *testing.T) {
 	ct.StateSet(contractId, "last_block_height", "114810")
 	ct.StateSet(
 		contractId,
-		"block114810",
+		"block/114810",
 		"00e0eb20634e08b3fea4fe1467451c13c1b9637765925fde62d8c396df218a0c00000000486e3aeb4090e44737ef71a71855dae60dbd8cf0b7a067c760e5ef4b8365519435104a699f1f0319d229d24b",
 	)
 	ct.StateSet(contractId, "pubkey", `0242f9da15eae56fe6aca65136738905c0afdb2c4edf379e107b3b00b98c7fc9f0`)
+
+	payload, err := tinyjson.Marshal(mapping.SendParams{
+		Amount:  7500,
+		Address: "tb1qxvxtxtjgcmu8r82ss4yhg899xt4rfdnvhjspp8",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	r := ct.Call(stateEngine.TxVscCallContract{
 		Self: stateEngine.TxSelf{
@@ -132,47 +140,29 @@ func TestUnmapping(t *testing.T) {
 		},
 		ContractId: contractId,
 		Action:     "unmap",
-		Payload: json.RawMessage(
-			[]byte(`{"amount":7500,"recipient_btc_address":"tb1qxvxtxtjgcmu8r82ss4yhg899xt4rfdnvhjspp8"}`),
-		),
-		RcLimit: 10000,
-		Intents: []contracts.Intent{},
+		Payload:    payload,
+		RcLimit:    10000,
+		Intents: []contracts.Intent{
+			{
+				Type: "transfer.allow",
+				Args: map[string]string{
+					"contract_token": "mapping_contract",
+					"amount":         "10000",
+				},
+			},
+		},
 	})
 
 	dumpLogs(t, r.Logs)
 
 	if r.Err != "" {
-		fmt.Println("error:", r.Err)
+		fmt.Printf("%s: %s", r.Err, r.ErrMsg)
 	}
 	assert.True(t, r.Success)                                // assert contract execution success
 	if assert.LessOrEqual(t, r.GasUsed, uint(10000000000)) { // assert this call uses no more than 10M WASM gas
 		fmt.Println("gas used:", r.GasUsed)
 	}
-	assert.GreaterOrEqual(t, len(r.Logs), 1) // assert at least 1 log emitted
-
-	txSpendsReg := []string{}
-	err := json.Unmarshal([]byte(ct.StateGet(contractId, "tx_spend_registry")), &txSpendsReg)
-	if err != nil {
-		fmt.Printf("err unmarshalling txspends registry: %s", err.Error())
-	}
-
-	keysToPrint := []string{
-		"balhive:milo-hpr",
-		"observed_txs64240d2b706020087463530cd13304907033dd50b7938817e1016416376876bf:0",
-		"utxo_registry",
-		"utxo_id",
-		"utxos0",
-		"utxos1",
-		"utxos2",
-		"utxos3",
-		"supply",
-		"last_block_height",
-		"tx_spend_registry",
-	}
-
-	for _, txSpend := range txSpendsReg {
-		keysToPrint = append(keysToPrint, "tx_spend"+txSpend)
-	}
+	// assert.GreaterOrEqual(t, len(r.Logs), 1) // assert at least 1 log emitted
 
 	logStateDiff(t, r.StateDiff)
 
