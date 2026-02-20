@@ -15,7 +15,8 @@ const txSpendsRegistryKey = "tx_spend_registry"
 const txSpendsPrefix = "tx-spend/"
 const supplyKey = "supply"
 
-const TssKeyName string = "main"
+const TssKeyName = "main"
+const RouterContractIdKey = "routerid"
 
 // Instruction URL search param keys
 const (
@@ -30,9 +31,6 @@ const (
 // Address Creation
 const backupCSVBlocks = 4320 // ~1 month
 
-// contract IDs
-const routerContractId = "INSERT_ROUTER_ID_HERE"
-
 // Logs
 const (
 	logDelimiter      = "|"
@@ -41,10 +39,11 @@ const (
 )
 
 const (
-	intentTransferType     = "transfer.allow"
-	intentContractTokenKey = "contract_token"
-	intentAmountKey        = "amount"
-	intentLimitPrefix      = "limit/"
+	intentTransferType      = "transfer.allow"
+	intentContractIdKey     = "contract_id"
+	intentLimitKey          = "limit"
+	intentTokenKey          = "token"
+	intentExpenditurePrefix = "total/"
 )
 
 //tinyjson:json
@@ -77,9 +76,10 @@ type AccountInfo struct {
 // address should be Magi for internal transfers and BTC for unmaps
 //
 //tinyjson:json
-type SendParams struct {
-	Amount  int64
-	Address string
+type TransferParams struct {
+	Amount int64  `json:"amount"`
+	To     string `json:"to"`
+	From   string `json:"from,omitempty"`
 }
 
 //tinyjson:json
@@ -201,4 +201,9 @@ const BtcAssetValue string = "BTC"
 type PublicKeys struct {
 	PrimaryPubKey string `json:"primary_public_key,omitempty"`
 	BackupPubKey  string `json:"backup_public_key,omitempty"`
+}
+
+//tinyjson:json
+type RouterContract struct {
+	ContractId string `json:"router_contract"`
 }

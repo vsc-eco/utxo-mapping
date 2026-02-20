@@ -178,6 +178,7 @@ func (cs *ContractState) determineReturnInfo(metadata *AddressMetadata) (string,
 func (ms *MappingState) processUtxos(relevantUtxos []Utxo) error {
 	totalMapped := int64(0)
 	env := sdk.GetEnv()
+	routerId := ""
 
 	// create new utxos entries for all of the relevant outputs in the incoming transaction
 	for _, utxo := range relevantUtxos {
@@ -221,9 +222,17 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) error {
 					amount: utxo.Amount,
 				}))
 			case MapSwap:
+				// get router id and check it only if there is a swap in the tx
+				if routerId == "" {
+					routerId := sdk.StateGetObject(RouterContractIdKey)
+					if *routerId == "" {
+						return ce.NewContractError(ce.ErrInitialization, "router contract not initialized")
+					}
+				}
+
 				ok := metadata.Params.Has(swapAssetOut)
 				if !ok {
-					return ce.NewContractError("", "asset out required to execute a swap")
+					return ce.NewContractError(ce.ErrInput, "asset out required to execute a swap")
 				}
 				assetOut := metadata.Params.Get(swapAssetOut)
 
@@ -261,7 +270,7 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) error {
 				}
 
 				// call swap contract
-				swapResultStr := sdk.ContractCall(routerContractId, "execute", string(instrJson), &options)
+				swapResultStr := sdk.ContractCall(routerId, "execute", string(instrJson), &options)
 				var swapResult SwapResult
 				err = tinyjson.Unmarshal([]byte(*swapResultStr), &swapResult)
 				if err != nil {

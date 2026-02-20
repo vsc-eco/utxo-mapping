@@ -149,6 +149,13 @@ func HiveDraw(amount int64, asset Asset) {
 	hiveDraw(&amt, &as)
 }
 
+func HiveDrawFrom(from Address, amount int64, asset Asset) {
+	frm := from.String()
+	amt := strconv.FormatInt(amount, 10)
+	as := asset.String()
+	hiveDrawFrom(&frm, &amt, &as)
+}
+
 // Transfer assets from the contract to another account.
 func HiveTransfer(to Address, amount int64, asset Asset) {
 	toaddr := to.String()

@@ -43,6 +43,9 @@ func getBalance(arg1 *string, arg2 *string) *string
 //go:wasmimport sdk hive.draw
 func hiveDraw(arg1 *string, arg2 *string) *string
 
+//go:wasmimport sdk hive.draw_from
+func hiveDrawFrom(arg1 *string, arg2 *string, arg3 *string) *string
+
 //go:wasmimport sdk hive.transfer
 func hiveTransfer(arg1 *string, arg2 *string, arg3 *string) *string
 

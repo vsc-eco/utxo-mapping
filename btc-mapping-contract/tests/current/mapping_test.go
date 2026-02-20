@@ -21,7 +21,7 @@ const rawInstruction = `{"tx_data":{"block_height":114810,"raw_tx_hex":"02000000
 
 var ContractWasm = btcMapping.DevWasm
 
-func TestMapping(t *testing.T) {
+func TestMap(t *testing.T) {
 
 	ct := test_utils.NewContractTest()
 	contractId := "mapping_contract"
@@ -75,7 +75,7 @@ func TestMapping(t *testing.T) {
 	fmt.Println("Return value:", r.Ret)
 }
 
-func TestUnmapping(t *testing.T) {
+func TestUnmap(t *testing.T) {
 	ct := test_utils.NewContractTest()
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
@@ -120,9 +120,9 @@ func TestUnmapping(t *testing.T) {
 	)
 	ct.StateSet(contractId, "pubkey", `0242f9da15eae56fe6aca65136738905c0afdb2c4edf379e107b3b00b98c7fc9f0`)
 
-	payload, err := tinyjson.Marshal(mapping.SendParams{
-		Amount:  7500,
-		Address: "tb1qxvxtxtjgcmu8r82ss4yhg899xt4rfdnvhjspp8",
+	payload, err := tinyjson.Marshal(mapping.TransferParams{
+		Amount: 7500,
+		To:     "tb1qxvxtxtjgcmu8r82ss4yhg899xt4rfdnvhjspp8",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -146,8 +146,9 @@ func TestUnmapping(t *testing.T) {
 			{
 				Type: "transfer.allow",
 				Args: map[string]string{
-					"contract_token": "mapping_contract",
-					"amount":         "10000",
+					"contract_id": "mapping_contract",
+					"limit":       "10000",
+					"token":       "btc",
 				},
 			},
 		},
@@ -203,9 +204,9 @@ func TestTransfer(t *testing.T) {
 	)
 	ct.StateSet(contractId, "pubkey", `0332e9f22cfa2f6233c059c4d54700e3d00df3d7f55e3ea16207b860360446634f`)
 
-	transferDetails := mapping.SendParams{
-		Amount:  8000,
-		Address: "hive:vaultec",
+	transferDetails := mapping.TransferParams{
+		Amount: 8000,
+		To:     "hive:vaultec",
 	}
 	payload, err := tinyjson.Marshal(transferDetails)
 	if err != nil {
