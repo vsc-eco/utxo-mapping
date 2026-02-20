@@ -53,9 +53,11 @@ func printKeys(t *testing.T, ct *test_utils.ContractTest, contractId string, key
 
 func basicSelf(t *testing.T, caller string) *state_engine.TxSelf {
 	t.Helper()
+	thisTx := txId
+	txId++
 	return &state_engine.TxSelf{
-		TxId:                 strconv.FormatInt(txId, 10),
-		BlockId:              strconv.FormatInt(txId, 10),
+		TxId:                 strconv.FormatInt(thisTx, 10),
+		BlockId:              strconv.FormatInt(thisTx, 10),
 		Index:                0,
 		OpIndex:              0,
 		Timestamp:            time.Now().String(),

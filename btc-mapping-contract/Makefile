@@ -19,6 +19,17 @@ DOCKER_TINYGO = docker run --rm \
 	$(TINYGO_IMAGE) \
 	tinygo
 
+TINYGO_CMD = tinygo
+
+ifdef USE_DOCKER
+    TINYGO_CMD = docker run --rm \
+        -u $(shell id -u):$(shell id -g) \
+        -v $(CURDIR):$(WORKDIR) \
+        -w $(WORKDIR) \
+        $(TINYGO_IMAGE) \
+        tinygo
+endif
+
 NETWORK ?= testnet4
 FILTER ?= .
 
@@ -47,22 +58,22 @@ pull-tinygo:
 
 dev:
 	@echo "Building $@ with $(NETWORK) flags"
-	tinygo build $(CFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
+	$(TINYGO_CMD) build $(CFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
 
 testnet3: NETWORK ?= testnet3
 testnet3:
 	@echo "Building $@ with $(NETWORK) flags"
-	tinygo build $(CFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
+	$(TINYGO_CMD) build $(CFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
 
 testnet4: NETWORK ?= testnet4
 testnet4:
 	@echo "Building $@ with $(NETWORK) flags"
-	tinygo build $(CFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
+	$(TINYGO_CMD) build $(CFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
 
 mainnet: NETWORK ?= mainnet
 mainnet:
 	@echo "Building $@ with $(NETWORK) flags"
-	tinygo build $(CFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
+	$(TINYGO_CMD) build $(CFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
 
 strip:
 	@for file in $(BIN_DIR)/*.wasm; do \

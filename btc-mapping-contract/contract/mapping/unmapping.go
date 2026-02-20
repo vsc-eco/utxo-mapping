@@ -5,7 +5,6 @@ import (
 	"btc-mapping-contract/sdk"
 	"bytes"
 	"encoding/hex"
-	"fmt"
 	"strconv"
 
 	"github.com/CosmWasm/tinyjson"
@@ -306,7 +305,7 @@ func (cs *ContractState) createSpendTransaction(
 }
 
 func indexUnconfimedOutputs(tx *wire.MsgTx, changeAddress string, network *chaincfg.Params) ([]*Utxo, error) {
-	sdk.Log(fmt.Sprintf("len tx.txOut: %d", len(tx.TxOut)))
+	// sdk.Log(fmt.Sprintf("len tx.txOut: %d", len(tx.TxOut)))
 
 	// 1 output will be to the destination, the others will be to change address
 	utxos := make([]*Utxo, len(tx.TxOut)-1)
@@ -318,7 +317,7 @@ func indexUnconfimedOutputs(tx *wire.MsgTx, changeAddress string, network *chain
 			return nil, err
 		}
 		if addrs[0].EncodeAddress() == changeAddress {
-			sdk.Log(fmt.Sprintf("utxo amt to change address: %d", txOut.Value))
+			// sdk.Log(fmt.Sprintf("utxo amt to change address: %d", txOut.Value))
 			utxo := Utxo{
 				TxId:     tx.TxID(),
 				Vout:     uint32(index),

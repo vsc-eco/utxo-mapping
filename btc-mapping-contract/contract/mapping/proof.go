@@ -64,26 +64,21 @@ func verifyMerkleProof(
 	currentHash := txHash
 	index := txIndex
 
+	var combined [64]byte
+
 	for _, siblingHash := range proof {
-		var combined []byte
 		if index%2 == 0 {
-			combined = append(currentHash[:], siblingHash[:]...)
+			copy(combined[:32], currentHash[:])
+			copy(combined[32:], siblingHash[:])
 		} else {
-			combined = append(siblingHash[:], currentHash[:]...)
+			copy(combined[:32], siblingHash[:])
+			copy(combined[32:], currentHash[:])
 		}
 
-		hash := chainhash.DoubleHashH(combined)
+		hash := chainhash.DoubleHashH(combined[:])
 		currentHash = hash
 		index = index / 2
 	}
 
 	return currentHash.IsEqual(&merkleRoot)
 }
-
-// if index%2 == 0 {
-// 	copy(combined[:32], currentHash[:])
-// 	copy(combined[32:], siblingHash[:])
-// } else {
-// 	copy(combined[:32], siblingHash[:])
-// 	copy(combined[32:], currentHash[:])
-// }

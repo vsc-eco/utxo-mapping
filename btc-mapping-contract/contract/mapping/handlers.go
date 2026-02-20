@@ -59,7 +59,7 @@ func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 }
 
 // Returns: raw tx hex to be broadcast
-func (cs *ContractState) HandleUnmap(instructions *SendParams) error {
+func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	env := sdk.GetEnv()
 	err := checkAuth(env)
 	if err != nil {
@@ -95,7 +95,7 @@ func (cs *ContractState) HandleUnmap(instructions *SendParams) error {
 	signingData, tx, btcFee, err := cs.createSpendTransaction(
 		inputUtxos,
 		totalInputAmt,
-		instructions.Address,
+		instructions.To,
 		changeAddress,
 		amount,
 	)
@@ -108,7 +108,7 @@ func (cs *ContractState) HandleUnmap(instructions *SendParams) error {
 	finalAmt := amount + vscFee + btcFee
 
 	// check whether sender has enough balance to cover transaction
-	senderBal, expenditure, err := checkSender(env, finalAmt)
+	err = checkAndDeductBalance(env, env.Sender.Address.String(), finalAmt)
 	if err != nil {
 		return err
 	}
@@ -150,8 +150,6 @@ func (cs *ContractState) HandleUnmap(instructions *SendParams) error {
 	sdk.StateSetObject(txSpendsPrefix+tx.TxID(), string(signingDataJson))
 	cs.TxSpendsList = append(cs.TxSpendsList, tx.TxID())
 
-	deduct(env.Sender.Address.String(), finalAmt, senderBal, expenditure)
-
 	cs.Supply.ActiveSupply -= finalAmt
 	cs.Supply.UserSupply -= finalAmt
 	cs.Supply.FeeSupply += vscFee
@@ -159,7 +157,8 @@ func (cs *ContractState) HandleUnmap(instructions *SendParams) error {
 	return nil
 }
 
-func HandleTrasfer(instructions *SendParams) error {
+// handles a transfer where funds are drawn from the caller
+func HandleTrasfer(instructions *TransferParams) error {
 	env := sdk.GetEnv()
 	err := checkAuth(env)
 	if err != nil {
@@ -167,42 +166,43 @@ func HandleTrasfer(instructions *SendParams) error {
 	}
 	amount := instructions.Amount
 
-	callerBal, expenditure, err := checkCaller(env, amount)
+	err = checkAndDeductBalance(env, env.Caller.String(), amount)
 	if err != nil {
 		return err
 	}
 
-	recipientBal, err := getAccBal(instructions.Address)
+	recipientBal, err := getAccBal(instructions.To)
 	if err != nil {
 		return err
 	}
 
-	deduct(env.Caller.String(), amount, callerBal, expenditure)
-	setAccBal(instructions.Address, recipientBal+amount)
+	setAccBal(instructions.To, recipientBal+amount)
 
 	return nil
 }
 
-func HandleDraw(instructions *SendParams) error {
+// handles a transfer where funds are drawn from the sender
+func HandleDraw(instructions *TransferParams) error {
 	env := sdk.GetEnv()
 	err := checkAuth(env)
 	if err != nil {
 		return err
 	}
+	if instructions.From != env.Sender.Address.String() {
+		return ce.NewContractError(ce.ErrInput, "must transfer from caller or sender")
+	}
 	amount := instructions.Amount
 
-	senderBal, expenditure, err := checkSender(env, amount)
+	err = checkAndDeductBalance(env, env.Sender.Address.String(), amount)
 	if err != nil {
 		return err
 	}
 
-	recipientBal, err := getAccBal(instructions.Address)
+	recipientBal, err := getAccBal(instructions.To)
 	if err != nil {
 		return err
 	}
-
-	deduct(env.Sender.Address.String(), amount, senderBal, expenditure)
-	setAccBal(instructions.Address, recipientBal+amount)
+	setAccBal(instructions.To, recipientBal+amount)
 
 	return nil
 }

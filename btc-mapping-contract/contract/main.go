@@ -56,7 +56,7 @@ func checkAdmin() {
 	}
 }
 
-//go:wasmexport seed_blocks
+//go:wasmexport seedBlocks
 func SeedBlocks(blockSeedInput *string) *string {
 	checkAdmin()
 
@@ -69,7 +69,7 @@ func SeedBlocks(blockSeedInput *string) *string {
 	return &outMsg
 }
 
-//go:wasmexport add_blocks
+//go:wasmexport addBlocks
 func AddBlocks(addBlocksInput *string) *string {
 	checkAdmin()
 
@@ -160,16 +160,16 @@ func Unmap(tx *string) *string {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInitialization, ce.MsgNoPublicKey))
 	}
 
-	var unmapInstructions mapping.SendParams
+	var unmapInstructions mapping.TransferParams
 	err := tinyjson.Unmarshal([]byte(*tx), &unmapInstructions)
 	if err != nil {
 		ce.CustomAbort(
 			ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput),
 		)
 	}
-	if len(unmapInstructions.Address) < 26 {
+	if len(unmapInstructions.To) < 26 {
 		ce.CustomAbort(
-			ce.NewContractError(ce.ErrInput, "invalid address ["+unmapInstructions.Address+"]"),
+			ce.NewContractError(ce.ErrInput, "invalid address ["+unmapInstructions.To+"]"),
 		)
 	}
 
@@ -195,7 +195,7 @@ func Unmap(tx *string) *string {
 //
 //go:wasmexport transfer
 func Transfer(tx *string) *string {
-	var transferInstructions mapping.SendParams
+	var transferInstructions mapping.TransferParams
 	err := tinyjson.Unmarshal([]byte(*tx), &transferInstructions)
 	if err != nil {
 		ce.CustomAbort(
@@ -213,9 +213,9 @@ func Transfer(tx *string) *string {
 
 // Draws funds from the Sender (original user who sent the transaction)
 //
-//go:wasmexport draw
-func Draw(tx *string) *string {
-	var drawInstructions mapping.SendParams
+//go:wasmexport transferFrom
+func TransferFrom(tx *string) *string {
+	var drawInstructions mapping.TransferParams
 	err := tinyjson.Unmarshal([]byte(*tx), &drawInstructions)
 	if err != nil {
 		ce.CustomAbort(
@@ -231,7 +231,7 @@ func Draw(tx *string) *string {
 	return mapping.StrPtr("0")
 }
 
-//go:wasmexport register_public_key
+//go:wasmexport registerPublicKey
 func RegisterPublicKey(keyStr *string) *string {
 	env := sdk.GetEnv()
 	// leave this as owner always
@@ -277,7 +277,7 @@ func RegisterPublicKey(keyStr *string) *string {
 	return mapping.StrPtr(resultBuilder.String())
 }
 
-//go:wasmexport create_key_pair
+//go:wasmexport createKeyPair
 func CreateKeyPair(_ *string) *string {
 	// leave this as owner always
 	if sdk.GetEnv().Sender.Address.String() != *sdk.GetEnvKey("contract.owner") {
@@ -289,4 +289,37 @@ func CreateKeyPair(_ *string) *string {
 	keyId := mapping.TssKeyName
 	sdk.TssCreateKey(keyId, "ecdsa")
 	return mapping.StrPtr("key created, id: " + keyId)
+}
+
+//go:wasmexport registerRouter
+func RegisterRouter(input *string) *string {
+	env := sdk.GetEnv()
+	// leave this as owner always
+	if env.Sender.Address.String() != *sdk.GetEnvKey("contract.owner") {
+		ce.CustomAbort(
+			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
+		)
+	}
+
+	var router mapping.RouterContract
+	err := tinyjson.Unmarshal([]byte(*input), &router)
+	if err != nil {
+		ce.CustomAbort(
+			ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput),
+		)
+	}
+
+	var resultBuilder strings.Builder
+
+	if router.ContractId != "" {
+		existingPrimary := sdk.StateGetObject(mapping.RouterContractIdKey)
+		if *existingPrimary == "" || mapping.IsTestnet(NetworkMode) {
+			sdk.StateSetObject(mapping.RouterContractIdKey, router.ContractId)
+			resultBuilder.WriteString("set router contract ID to: " + router.ContractId)
+		} else {
+			resultBuilder.WriteString("router contract ID already registered: " + *existingPrimary)
+		}
+	}
+
+	return mapping.StrPtr(resultBuilder.String())
 }

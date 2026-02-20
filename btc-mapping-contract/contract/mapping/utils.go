@@ -131,90 +131,93 @@ func checkAuth(env sdk.Env) error {
 	return nil
 }
 
-func checkSender(env sdk.Env, amount int64) (int64, int64, error) {
-	senderAddress := env.Sender.Address.String()
-	senderBal, err := getAccBal(senderAddress)
-	if err != nil {
-		return 0, 0, err
-	}
-
-	if senderBal < amount {
-		return 0, 0, ce.NewContractError(
-			ce.ErrBalance,
-			"sender balance "+strconv.FormatInt(senderBal, 10)+" insufficient needs "+strconv.FormatInt(amount, 10),
-		)
-	}
-
-	intentAmount := int64(0)
-	//check sender's intents
-	for _, intent := range env.SenderIntents {
-		if intent.Type != intentTransferType {
-			continue
-		}
-		if contractId, ok := intent.Args[intentContractTokenKey]; ok && contractId == env.ContractId {
-			if amount, ok := intent.Args[intentAmountKey]; ok {
-				clean := strings.Replace(amount, ".", "", 1)
-				intentAmount, err = strconv.ParseInt(clean, 10, 64)
-				if err != nil {
-					return 0, 0, ce.NewContractError(ce.ErrIntent, "invalid intent amount")
-				}
-			}
-		}
-	}
-
-	expenditure, err := getAccExpenditure(env.ContractId, senderAddress)
-	if err != nil {
-		return 0, 0, ce.WrapContractError(ce.ErrIntent, err, "error fetching previous token expenditure")
-	}
-	remaining := intentAmount - expenditure
-	if remaining < amount {
-		return 0, 0, ce.NewContractError(ce.ErrIntent, "insufficient intent remaining to cover spend")
-	}
-
-	return senderBal, expenditure, nil
+func buildIntentError(remaining int64, amount int64, address string) error {
+	return ce.NewContractError(
+		ce.ErrIntent,
+		"insufficient intent ("+
+			strconv.FormatInt(remaining, 10)+
+			") remaining to cover spend ("+
+			strconv.FormatInt(amount, 10)+
+			") for "+
+			address,
+	)
 }
 
-func checkCaller(env sdk.Env, amount int64) (int64, int64, error) {
+// checks the balance and intents of the account to determine if the amount can be spent, then spends it
+func checkAndDeductBalance(env sdk.Env, account string, amount int64) error {
 	callerAddress := env.Caller.String()
-	callerBal, err := getAccBal(callerAddress)
+	senderAddress := env.Sender.Address.String()
+	bal, err := getAccBal(account)
 	if err != nil {
-		return 0, 0, err
+		return ce.NewContractError(ce.ErrStateAccess, "could not fetch balance for account ("+account+")")
 	}
-
-	if callerBal < amount {
-		return 0, 0, ce.NewContractError(
+	if bal < amount {
+		return ce.NewContractError(
 			ce.ErrBalance,
-			fmt.Sprintf("caller balance insufficient has %d needs %d", callerBal, amount),
+			"sender balance "+strconv.FormatInt(bal, 10)+" insufficient needs "+strconv.FormatInt(amount, 10),
 		)
 	}
-
-	intentAmount := int64(0)
-	//check caller's intents
-	for _, intent := range env.CallerIntents {
-		if intent.Type != intentTransferType {
-			continue
-		}
-		if contractId, ok := intent.Args[intentContractTokenKey]; ok && contractId == env.ContractId {
-			if amount, ok := intent.Args[intentAmountKey]; ok {
-				clean := strings.Replace(amount, ".", "", 1)
-				intentAmount, err = strconv.ParseInt(clean, 10, 64)
-				if err != nil {
-					return 0, 0, ce.NewContractError(ce.ErrIntent, "invalid intent amount")
+	switch account {
+	case senderAddress:
+		intentAmount := int64(0)
+		//check sender's intents
+		for _, intent := range env.SenderIntents {
+			if intent.Type != intentTransferType {
+				continue
+			}
+			if contractId, ok := intent.Args[intentContractIdKey]; ok && contractId == env.ContractId {
+				// sdk.Log("found intent for this contract: " + fmt.Sprintf("%v", intent))
+				if amount, ok := intent.Args[intentLimitKey]; ok {
+					intentAmount, err = strconv.ParseInt(amount, 10, 64)
+					if err != nil {
+						return ce.WrapContractError(ce.ErrIntent, err, "invalid intent amount")
+					}
+					break
 				}
 			}
 		}
-	}
 
-	expenditure, err := getAccExpenditure(env.ContractId, callerAddress)
-	if err != nil {
-		return 0, 0, ce.WrapContractError(ce.ErrIntent, err, "error fetching previous token limit")
-	}
-	remaining := intentAmount - expenditure
-	if remaining < amount {
-		return 0, 0, ce.NewContractError(ce.ErrIntent, "insufficient intent remaining to cover spend")
-	}
+		expenditure, err := getAccExpenditure(env.ContractId, senderAddress)
+		if err != nil {
+			return ce.WrapContractError(ce.ErrStateAccess, err, "error fetching previous token expenditure")
+		}
+		remaining := intentAmount - expenditure
+		if remaining < amount {
+			return buildIntentError(remaining, amount, senderAddress)
+		}
 
-	return callerBal, expenditure, nil
+		// write deducted balance and track spend
+		setAccBal(account, bal-amount)
+		setAccExpenditure(account, expenditure+amount)
+		return nil
+	case callerAddress:
+		intentAmount := int64(0)
+		//check caller's intents
+		for _, intent := range env.CallerIntents {
+			if intent.Type != intentTransferType {
+				continue
+			}
+			if contractId, ok := intent.Args[intentContractIdKey]; ok && contractId == env.ContractId {
+				// sdk.Log("found intent for this contract: " + intent.Args[intentLimitKey] + " " + intent.Args["token"])
+				if amount, ok := intent.Args[intentLimitKey]; ok {
+					clean := strings.Replace(amount, ".", "", 1)
+					intentAmount, err = strconv.ParseInt(clean, 10, 64)
+					if err != nil {
+						return ce.NewContractError(ce.ErrIntent, "invalid intent amount")
+					}
+				}
+			}
+		}
+
+		if intentAmount < amount {
+			return buildIntentError(intentAmount, amount, account)
+		}
+		// write deducted balance and track spend
+		setAccBal(account, bal-amount)
+		return nil
+	default:
+		return ce.NewContractError(ce.ErrIntent, account+" is not the sender or caller")
+	}
 }
 
 func packUtxo(internalId uint32, amount int64, confirmed uint8) [3]int64 {
@@ -253,7 +256,7 @@ func incAccBalance(vscAcc string, amount int64) error {
 
 // gets the amount spent so far in this transaction
 func getAccExpenditure(contractId, vscAcc string) (int64, error) {
-	balString := sdk.EphemStateGetObject(contractId, intentLimitPrefix+vscAcc)
+	balString := sdk.EphemStateGetObject(contractId, intentExpenditurePrefix+vscAcc)
 	if *balString == "" {
 		return 0, nil
 	}
@@ -269,10 +272,10 @@ func setAccExpenditure(vscAcc string, newBal int64) {
 	sdk.EphemStateSetObject(balancePrefix+vscAcc, strconv.FormatInt(newBal, 10))
 }
 
-func deduct(vscAcc string, amount, balance, expenditure int64) {
-	setAccBal(vscAcc, balance-amount)
-	setAccExpenditure(vscAcc, expenditure+amount)
-}
+// func deduct(vscAcc string, amount, balance, expenditure int64) {
+// 	setAccBal(vscAcc, balance-amount)
+// 	setAccExpenditure(vscAcc, expenditure+amount)
+// }
 
 func (cs *ContractState) getNetwork(s string) (Network, error) {
 	networkName := NetworkName(strings.ToLower(s))
