@@ -31,10 +31,6 @@ import (
 	"github.com/CosmWasm/tinyjson"
 )
 
-const oracleAddress = "did:vsc:oracle:btc"
-const primaryPublicKeyStateKey = "pubkey"
-const backupPublicKeyStateKey = "backupkey"
-
 // passed via ldflags, will compile for testnet when set to "testnet"
 var NetworkMode string
 
@@ -43,7 +39,7 @@ func checkAdmin() {
 	if constants.IsTestnet(NetworkMode) {
 		adminAddress = *sdk.GetEnvKey("contract.owner")
 	} else {
-		adminAddress = oracleAddress
+		adminAddress = constants.OracleAddress
 	}
 	if sdk.GetEnv().Caller.String() != sdk.GetEnv().Sender.Address.String() {
 		ce.CustomAbort(
@@ -126,8 +122,8 @@ func Map(incomingTx *string) *string {
 	}
 
 	publicKeys := mapping.PublicKeys{
-		PrimaryPubKey: *sdk.StateGetObject(primaryPublicKeyStateKey),
-		BackupPubKey:  *sdk.StateGetObject(backupPublicKeyStateKey),
+		PrimaryPubKey: *sdk.StateGetObject(constants.PrimaryPublicKeyStateKey),
+		BackupPubKey:  *sdk.StateGetObject(constants.BackupPublicKeyStateKey),
 	}
 	if publicKeys.PrimaryPubKey == "" {
 		ce.CustomAbort(
@@ -156,8 +152,8 @@ func Map(incomingTx *string) *string {
 //go:wasmexport unmap
 func Unmap(tx *string) *string {
 	publicKeys := mapping.PublicKeys{
-		PrimaryPubKey: *sdk.StateGetObject(primaryPublicKeyStateKey),
-		BackupPubKey:  *sdk.StateGetObject(backupPublicKeyStateKey),
+		PrimaryPubKey: *sdk.StateGetObject(constants.PrimaryPublicKeyStateKey),
+		BackupPubKey:  *sdk.StateGetObject(constants.BackupPublicKeyStateKey),
 	}
 	if publicKeys.PrimaryPubKey == "" {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInitialization, ce.MsgNoPublicKey))
@@ -279,9 +275,9 @@ func RegisterPublicKey(keyStr *string) *string {
 		if err != nil {
 			ce.CustomAbort(ce.Prepend(err, "error registering primary public key"))
 		}
-		existingPrimary := sdk.StateGetObject(primaryPublicKeyStateKey)
+		existingPrimary := sdk.StateGetObject(constants.PrimaryPublicKeyStateKey)
 		if *existingPrimary == "" || constants.IsTestnet(NetworkMode) {
-			sdk.StateSetObject(primaryPublicKeyStateKey, keys.PrimaryPubKey)
+			sdk.StateSetObject(constants.PrimaryPublicKeyStateKey, keys.PrimaryPubKey)
 			resultBuilder.WriteString("set primary key to: " + keys.PrimaryPubKey)
 		} else {
 			resultBuilder.WriteString("primary key already registered: " + *existingPrimary)
@@ -296,9 +292,9 @@ func RegisterPublicKey(keyStr *string) *string {
 		if resultBuilder.Len() > 0 {
 			resultBuilder.WriteString(", ")
 		}
-		existingBackup := sdk.StateGetObject(backupPublicKeyStateKey)
+		existingBackup := sdk.StateGetObject(constants.BackupPublicKeyStateKey)
 		if *existingBackup == "" || constants.IsTestnet(NetworkMode) {
-			sdk.StateSetObject(backupPublicKeyStateKey, keys.BackupPubKey)
+			sdk.StateSetObject(constants.BackupPublicKeyStateKey, keys.BackupPubKey)
 			resultBuilder.WriteString("set backup key to: " + keys.BackupPubKey)
 		} else {
 			resultBuilder.WriteString("backup key already registered: " + *existingBackup)
