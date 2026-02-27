@@ -238,7 +238,7 @@ func unpackUtxo(utxo [3]int64) (uint32, int64, uint8) {
 }
 
 func getAccBal(vscAcc string) (int64, error) {
-	balString := sdk.StateGetObject(balancePrefix + vscAcc)
+	balString := sdk.StateGetObject(BalancePrefix + vscAcc)
 	if *balString == "" {
 		return 0, nil
 	}
@@ -251,7 +251,7 @@ func getAccBal(vscAcc string) (int64, error) {
 
 // sets account balance to number (in base 10)
 func setAccBal(vscAcc string, newBal int64) {
-	sdk.StateSetObject(balancePrefix+vscAcc, strconv.FormatInt(newBal, 10))
+	sdk.StateSetObject(BalancePrefix+vscAcc, strconv.FormatInt(newBal, 10))
 }
 
 func incAccBalance(vscAcc string, amount int64) error {
@@ -282,7 +282,7 @@ func getAccExpenditure(contractId, vscAcc string) (int64, error) {
 
 // sets the amount spent so far in this transaction
 func setAccExpenditure(vscAcc string, newBal int64) {
-	sdk.EphemStateSetObject(balancePrefix+vscAcc, strconv.FormatInt(newBal, 10))
+	sdk.EphemStateSetObject(BalancePrefix+vscAcc, strconv.FormatInt(newBal, 10))
 }
 
 // func deduct(vscAcc string, amount, balance, expenditure int64) {
@@ -356,9 +356,9 @@ func safeSubtract64(a, b int64) (int64, error) {
 }
 
 func getUtxoKey(id uint32) string {
-	return utxoPrefix + strconv.FormatUint(uint64(id), 16)
+	return UtxoPrefix + strconv.FormatUint(uint64(id), 16)
 }
 
-func joinIdVout(utxo Utxo) string {
-	return utxo.TxId + ":" + strconv.FormatUint(uint64(utxo.Vout), 10)
+func getObservedKey(utxo Utxo) string {
+	return ObservedPrefix + utxo.TxId + ":" + strconv.FormatUint(uint64(utxo.Vout), 10)
 }

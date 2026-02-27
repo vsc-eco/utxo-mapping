@@ -3,6 +3,10 @@ package constants
 const TssKeyName = "main"
 const RouterContractIdKey = "routerid"
 
+const OracleAddress = "did:vsc:oracle:btc"
+const PrimaryPublicKeyStateKey = "pubkey"
+const BackupPublicKeyStateKey = "backupkey"
+
 const BlockPrefix = "block-"
 
 const (

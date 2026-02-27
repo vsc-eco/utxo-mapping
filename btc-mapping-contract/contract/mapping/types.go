@@ -6,14 +6,14 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 )
 
-const balancePrefix = "bal-"
-const observedPrefix = "otx-"
-const utxoPrefix = "utxo-"
-const utxoRegistryKey = "utxor"
-const utxoLastIdKey = "utxoid"
-const txSpendsRegistryKey = "txspdr"
-const txSpendsPrefix = "txspd-"
-const supplyKey = "sply"
+const BalancePrefix = "bal-"
+const ObservedPrefix = "otx-"
+const UtxoPrefix = "utxo-"
+const UtxoRegistryKey = "utxor"
+const UtxoLastIdKey = "utxoid"
+const TxSpendsRegistryKey = "txspdr"
+const TxSpendsPrefix = "txspd-"
+const SupplyKey = "sply"
 
 // Instruction URL search param keys
 const (

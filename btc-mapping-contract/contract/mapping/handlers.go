@@ -138,7 +138,7 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 
 		// sdk.Log(fmt.Sprintf("appending utxo with internal id: %d, amount: %d", internalId, utxo.Amount))
 		cs.UtxoList = append(cs.UtxoList, utxoLookup)
-		sdk.StateSetObject(utxoPrefix+strconv.FormatUint(uint64(internalId), 16), string(utxoJson))
+		sdk.StateSetObject(UtxoPrefix+strconv.FormatUint(uint64(internalId), 16), string(utxoJson))
 	}
 
 	for _, inputId := range inputUtxoIds {
@@ -155,7 +155,7 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	}
 
 	// use this key, then increment
-	sdk.StateSetObject(txSpendsPrefix+tx.TxID(), string(signingDataJson))
+	sdk.StateSetObject(TxSpendsPrefix+tx.TxID(), string(signingDataJson))
 	cs.TxSpendsList = append(cs.TxSpendsList, tx.TxID())
 
 	// update supply

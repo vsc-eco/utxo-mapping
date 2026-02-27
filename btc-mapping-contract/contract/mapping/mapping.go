@@ -64,7 +64,7 @@ func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) ([]Utxo, error) {
 }
 
 func (cs *ContractState) updateUtxoSpends(txId string) error {
-	utxoSpendJson := sdk.StateGetObject(txSpendsPrefix + txId)
+	utxoSpendJson := sdk.StateGetObject(TxSpendsPrefix + txId)
 	if len(*utxoSpendJson) < 1 {
 		return nil
 	}
@@ -107,7 +107,7 @@ func (cs *ContractState) updateUtxoSpends(txId string) error {
 		}
 	}
 
-	sdk.StateDeleteObject(txSpendsPrefix + txId)
+	sdk.StateDeleteObject(TxSpendsPrefix + txId)
 	for i, val := range cs.TxSpendsList {
 		if val == txId {
 			// swap with the last element and shorten
@@ -132,10 +132,10 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) error {
 		}
 		if metadata, ok := ms.AddressRegistry[addrs[0].EncodeAddress()]; ok {
 			// Create UTXO entry
-			observedUtxoKey := joinIdVout(utxo)
+			observedUtxoKey := getObservedKey(utxo)
 			// proceed if this output has already been observed
 			// TODO: error or some type of acknowledgement here?
-			alreadyObserved := sdk.StateGetObject(observedPrefix + observedUtxoKey)
+			alreadyObserved := sdk.StateGetObject(observedUtxoKey)
 			if *alreadyObserved != "" {
 				continue
 			}
@@ -152,7 +152,7 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) error {
 			sdk.StateSetObject(getUtxoKey(utxoInternalId), string(utxoJson))
 
 			// set observed
-			sdk.StateSetObject(observedPrefix+observedUtxoKey, "1")
+			sdk.StateSetObject(observedUtxoKey, "1")
 
 			switch metadata.Type {
 			case MapDeposit:

@@ -31,14 +31,14 @@ type BlockSeedInput struct {
 	BlockHeight uint32
 }
 
-const lastHeightKey = "lsthgt"
+const LastHeightKey = "lsthgt"
 
 var ErrorLastHeightDNE = errors.New("last height does not exist")
 
 var ErrorSequenceIncorrect = errors.New("block sequence incorrect")
 
 func LastHeightFromState() (uint32, error) {
-	lastHeightString := sdk.StateGetObject(lastHeightKey)
+	lastHeightString := sdk.StateGetObject(LastHeightKey)
 	if *lastHeightString == "" {
 		return 0, ErrorLastHeightDNE
 	}
@@ -51,7 +51,7 @@ func LastHeightFromState() (uint32, error) {
 }
 
 func LastHeightToState(lastHeight uint32) {
-	sdk.StateSetObject(lastHeightKey, strconv.FormatUint(uint64(lastHeight), 10))
+	sdk.StateSetObject(LastHeightKey, strconv.FormatUint(uint64(lastHeight), 10))
 }
 
 func DivideHeaderList(blocksHex *string) ([]BlockHeaderBytes, error) {
@@ -157,7 +157,7 @@ func HandleSeedBlocks(seedInput *string, allowReseed bool) (uint32, error) {
 			constants.BlockPrefix+strconv.FormatInt(int64(blockSeedData.BlockHeight), 10),
 			blockSeedData.BlockHeader,
 		)
-		sdk.StateSetObject(lastHeightKey, strconv.FormatInt(int64(blockSeedData.BlockHeight), 10))
+		sdk.StateSetObject(LastHeightKey, strconv.FormatInt(int64(blockSeedData.BlockHeight), 10))
 		return blockSeedData.BlockHeight, nil
 	}
 
