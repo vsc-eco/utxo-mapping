@@ -3,7 +3,7 @@ package constants
 const TssKeyName = "main"
 const RouterContractIdKey = "routerid"
 
-const BlockPrefix = "block/"
+const BlockPrefix = "block-"
 
 const (
 	Testnet3 string = "testnet3"

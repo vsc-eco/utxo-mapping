@@ -6,13 +6,13 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 )
 
-const balancePrefix = "bal/"
-const observedPrefix = "otx/"
-const utxoPrefix = "utxos/"
+const balancePrefix = "bal-"
+const observedPrefix = "otx-"
+const utxoPrefix = "utxo-"
 const utxoRegistryKey = "utxor"
 const utxoLastIdKey = "utxoid"
 const txSpendsRegistryKey = "txspdr"
-const txSpendsPrefix = "txspd/"
+const txSpendsPrefix = "txspd-"
 const supplyKey = "sply"
 
 // Instruction URL search param keys
@@ -40,7 +40,7 @@ const (
 	intentContractIdKey     = "contract_id"
 	intentLimitKey          = "limit"
 	intentTokenKey          = "token"
-	intentExpenditurePrefix = "total/"
+	intentExpenditurePrefix = "total-"
 )
 
 //tinyjson:json
