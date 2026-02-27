@@ -80,8 +80,6 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		return err
 	}
 
-	sdk.Log("vsc fee: " + strconv.FormatInt(vscFee, 10) + " SATS")
-
 	inputUtxoIds, totalInputAmt, err := cs.getInputUtxoIds(amount)
 	if err != nil {
 		return ce.Prepend(err, "error getting input utxos")
@@ -111,7 +109,7 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		return err
 	}
 
-	sdk.Log("btc fee: " + strconv.FormatInt(btcFee, 10) + " SATS")
+	sdk.Log(createFeeLog(vscFee, btcFee))
 
 	finalAmt := amount + vscFee + btcFee
 

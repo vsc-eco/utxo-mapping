@@ -335,6 +335,35 @@ func createDepositLog(d Deposit) string {
 	return b.String()
 }
 
+func createFeeLog(vscFee, btcFee int64) string {
+	var b strings.Builder
+
+	// 1. Pre-allocate capacity.
+	// "fee|vsc:int64|btc:int64" is usually < 64 bytes.
+	b.Grow(64)
+
+	// 2. Header
+	b.WriteString("fee")
+	b.WriteString(logDelimiter)
+
+	// 3. VSC Fee
+	b.WriteString("vsc")
+	b.WriteString(logKeyDelimiter)
+
+	// Temporary stack buffer for integer conversion (max 20 digits for int64)
+	var buf [20]byte
+	b.Write(strconv.AppendInt(buf[:0], vscFee, 10))
+	b.WriteString(logDelimiter)
+
+	// 4. BTC Fee
+	b.WriteString("btc")
+	b.WriteString(logKeyDelimiter)
+	b.Write(strconv.AppendInt(buf[:0], btcFee, 10))
+
+	// 5. Final String Conversion (1 allocation)
+	return b.String()
+}
+
 func safeAdd64(a, b int64) (int64, error) {
 	if a > 0 && b > math.MaxInt64-a {
 		return 0, errors.New("overflow detected")
