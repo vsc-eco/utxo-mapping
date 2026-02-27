@@ -14,6 +14,8 @@ import (
 	ce "btc-mapping-contract/contract/contracterrors"
 )
 
+const MaxMerkleProofLength = 33 // 2^33 blocks > total BTC supply
+
 func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 	rawTx, err := hex.DecodeString(txData.RawTxHex)
 	if err != nil {
@@ -24,9 +26,12 @@ func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 		return err
 	}
 	if len(proofBytes)%32 != 0 {
-		return ce.NewContractError(ce.ErrInput, "invalid proof structure")
+		return ce.NewContractError(ce.ErrInput, "proof length must be a multiple of 32")
 	}
 	merkleProof := make([]chainhash.Hash, len(proofBytes)/32)
+	if len(merkleProof) > MaxMerkleProofLength {
+		return ce.NewContractError(ce.ErrInput, "proof length exceeds maximum length for total bitcoin supply")
+	}
 	for i := 0; i < len(proofBytes); i += 32 {
 		merkleProof[i/32] = chainhash.Hash(proofBytes[i : i+32])
 	}
@@ -66,6 +71,9 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		return err
 	}
 	amount := instructions.Amount
+	if amount <= 0 {
+		return ce.NewContractError(ce.ErrInput, "amount must be positive")
+	}
 
 	vscFee, err := calcVscFee(amount)
 	if err != nil {
@@ -150,59 +158,72 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	sdk.StateSetObject(txSpendsPrefix+tx.TxID(), string(signingDataJson))
 	cs.TxSpendsList = append(cs.TxSpendsList, tx.TxID())
 
-	cs.Supply.ActiveSupply -= finalAmt
-	cs.Supply.UserSupply -= finalAmt
-	cs.Supply.FeeSupply += vscFee
+	// update supply
+	newActive, err := safeSubtract64(cs.Supply.ActiveSupply, finalAmt)
+	if err != nil {
+		return ce.WrapContractError(ce.ErrArithmetic, err, "error decrementing active supply")
+	}
+	cs.Supply.ActiveSupply = newActive
+
+	newUser, err := safeSubtract64(cs.Supply.UserSupply, finalAmt)
+	if err != nil {
+		return ce.WrapContractError(ce.ErrArithmetic, err, "error decrementing user supply")
+	}
+	cs.Supply.UserSupply = newUser
+
+	newFee, err := safeAdd64(cs.Supply.FeeSupply, vscFee)
+	if err != nil {
+		return ce.WrapContractError(ce.ErrArithmetic, err, "error incrementing fee supply")
+	}
+	cs.Supply.FeeSupply = newFee
 
 	return nil
 }
 
 // handles a transfer where funds are drawn from the caller
-func HandleTrasfer(instructions *TransferParams) error {
+func HandleTransfer(instructions *TransferParams) error {
 	env := sdk.GetEnv()
 	err := checkAuth(env)
 	if err != nil {
 		return err
 	}
 	amount := instructions.Amount
-
-	err = checkAndDeductBalance(env, env.Caller.String(), amount)
-	if err != nil {
-		return err
+	if amount <= 0 {
+		return ce.NewContractError(ce.ErrInput, "amount must be positive")
 	}
 
-	recipientBal, err := getAccBal(instructions.To)
-	if err != nil {
-		return err
+	recipientAddress := sdk.Address(instructions.To)
+	if !recipientAddress.IsValid() {
+		return ce.NewContractError(ce.ErrInput, "invalid recipient address")
 	}
 
-	setAccBal(instructions.To, recipientBal+amount)
-
-	return nil
-}
-
-// handles a transfer where funds are drawn from the sender
-func HandleDraw(instructions *TransferParams) error {
-	env := sdk.GetEnv()
-	err := checkAuth(env)
-	if err != nil {
-		return err
-	}
-	if instructions.From != env.Sender.Address.String() {
+	switch instructions.From {
+	case "":
+		fallthrough
+	case env.Caller.String():
+		err = checkAndDeductBalance(env, env.Caller.String(), amount)
+		if err != nil {
+			return err
+		}
+	case env.Sender.Address.String():
+		err = checkAndDeductBalance(env, env.Sender.Address.String(), amount)
+		if err != nil {
+			return err
+		}
+	default:
 		return ce.NewContractError(ce.ErrInput, "must transfer from caller or sender")
 	}
-	amount := instructions.Amount
-
-	err = checkAndDeductBalance(env, env.Sender.Address.String(), amount)
-	if err != nil {
-		return err
-	}
 
 	recipientBal, err := getAccBal(instructions.To)
 	if err != nil {
 		return err
 	}
-	setAccBal(instructions.To, recipientBal+amount)
+
+	newBal, err := safeAdd64(recipientBal, amount)
+	if err != nil {
+		return ce.WrapContractError(ce.ErrArithmetic, err, "error incremting user balance")
+	}
+	setAccBal(instructions.To, newBal)
 
 	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -187,7 +188,11 @@ func checkAndDeductBalance(env sdk.Env, account string, amount int64) error {
 		}
 
 		// write deducted balance and track spend
-		setAccBal(account, bal-amount)
+		newBal, err := safeSubtract64(bal, amount)
+		if err != nil {
+			return ce.WrapContractError(ce.ErrArithmetic, err, "error incremting user balance")
+		}
+		setAccBal(account, newBal)
 		setAccExpenditure(account, expenditure+amount)
 		return nil
 	case callerAddress:
@@ -213,7 +218,11 @@ func checkAndDeductBalance(env sdk.Env, account string, amount int64) error {
 			return buildIntentError(intentAmount, amount, account)
 		}
 		// write deducted balance and track spend
-		setAccBal(account, bal-amount)
+		newBal, err := safeSubtract64(bal, amount)
+		if err != nil {
+			return ce.WrapContractError(ce.ErrArithmetic, err, "error incremting user balance")
+		}
+		setAccBal(account, newBal)
 		return nil
 	default:
 		return ce.NewContractError(ce.ErrIntent, account+" is not the sender or caller")
@@ -250,7 +259,11 @@ func incAccBalance(vscAcc string, amount int64) error {
 	if err != nil {
 		return err
 	}
-	setAccBal(vscAcc, bal+amount)
+	newBal, err := safeAdd64(bal, amount)
+	if err != nil {
+		return ce.WrapContractError(ce.ErrArithmetic, err, "error incremting user balance")
+	}
+	setAccBal(vscAcc, newBal)
 	return nil
 }
 
@@ -286,15 +299,6 @@ func (cs *ContractState) getNetwork(s string) (Network, error) {
 	return nil, ce.NewContractError(ce.ErrInput, "invalid network \""+s+"\"")
 }
 
-func IsTestnet(networkName string) bool {
-	testnets := []string{
-		Testnet3,
-		Testnet4,
-	}
-
-	return slices.Contains(testnets, networkName)
-}
-
 func StrPtr(s string) *string {
 	return &s
 }
@@ -306,4 +310,24 @@ func createDepositLog(d Deposit) string {
 	fields[2] = fmt.Sprintf("f%s%s", logKeyDelimiter, strings.Join(d.from, logArrayDelimiter))
 	fields[3] = fmt.Sprintf("a%s%d", logKeyDelimiter, d.amount)
 	return strings.Join(fields, logDelimiter)
+}
+
+func safeAdd64(a, b int64) (int64, error) {
+	if a > 0 && b > math.MaxInt64-a {
+		return 0, fmt.Errorf("overflow detected")
+	}
+	if a < 0 && b < math.MinInt64-a {
+		return 0, fmt.Errorf("underflow detected")
+	}
+	return a + b, nil
+}
+
+func safeSubtract64(a, b int64) (int64, error) {
+	if b > 0 && a < math.MinInt64+b {
+		return 0, fmt.Errorf("underflow detected")
+	}
+	if b < 0 && a > math.MaxInt64+b {
+		return 0, fmt.Errorf("overflow detected")
+	}
+	return a - b, nil
 }

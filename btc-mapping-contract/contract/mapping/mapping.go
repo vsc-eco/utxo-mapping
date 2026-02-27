@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 
+	"btc-mapping-contract/contract/constants"
 	ce "btc-mapping-contract/contract/contracterrors"
 )
 
@@ -224,7 +225,7 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) error {
 			case MapSwap:
 				// get router id and check it only if there is a swap in the tx
 				if routerId == "" {
-					routerId := sdk.StateGetObject(RouterContractIdKey)
+					routerId := sdk.StateGetObject(constants.RouterContractIdKey)
 					if *routerId == "" {
 						return ce.NewContractError(ce.ErrInitialization, "router contract not initialized")
 					}

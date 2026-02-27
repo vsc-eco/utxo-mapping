@@ -19,6 +19,8 @@ const (
 	ErrInitialization = ErrorSymbol("contract_not_initialized")
 	ErrIntent         = ErrorSymbol("intent_error")
 	ErrBalance        = ErrorSymbol("insufficient_balance")
+	ErrArithmetic     = ErrorSymbol("overflow_underflow")
+	ErrTransaction    = ErrorSymbol("error_construction_transaction")
 )
 
 const (

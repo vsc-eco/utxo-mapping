@@ -1,7 +1,7 @@
 package mapping
 
 import (
-	"btc-mapping-contract/contract/blocklist"
+	"btc-mapping-contract/contract/constants"
 	ce "btc-mapping-contract/contract/contracterrors"
 	"btc-mapping-contract/sdk"
 	"bytes"
@@ -14,7 +14,7 @@ import (
 
 func verifyTransaction(req *VerificationRequest, rawTxBytes []byte) error {
 	// block header from contract state (input by chain oracle)
-	rawHeaderHex := sdk.StateGetObject(blocklist.BlockPrefix + fmt.Sprintf("%d", req.BlockHeight))
+	rawHeaderHex := sdk.StateGetObject(constants.BlockPrefix + fmt.Sprintf("%d", req.BlockHeight))
 	rawHeaderBytes, err := hex.DecodeString(*rawHeaderHex)
 	if err != nil {
 		return err

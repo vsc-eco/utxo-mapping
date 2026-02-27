@@ -15,9 +15,6 @@ const txSpendsRegistryKey = "tx_spend_registry"
 const txSpendsPrefix = "tx-spend/"
 const supplyKey = "supply"
 
-const TssKeyName = "main"
-const RouterContractIdKey = "routerid"
-
 // Instruction URL search param keys
 const (
 	depositKey       = "deposit_to"
@@ -117,12 +114,6 @@ const (
 )
 
 type NetworkName string
-
-const (
-	Testnet3 string = "testnet3"
-	Testnet4 string = "testnet4"
-	Mainnet  string = "mainnet"
-)
 
 type AddressMetadata struct {
 	Instruction string

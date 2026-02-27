@@ -6,11 +6,15 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 
+	"btc-mapping-contract/contract/constants"
 	ce "btc-mapping-contract/contract/contracterrors"
 
 	"github.com/CosmWasm/tinyjson"
+	"github.com/btcsuite/btcd/blockchain"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
 )
 
@@ -28,7 +32,6 @@ type BlockSeedInput struct {
 	BlockHeight uint32
 }
 
-const BlockPrefix = "block/"
 const lastHeightKey = "last_block_height"
 
 var ErrorLastHeightDNE = errors.New("last height does not exist")
@@ -68,13 +71,24 @@ func DivideHeaderList(blocksHex *string) ([]BlockHeaderBytes, error) {
 	return blockHeaders, nil
 }
 
-func HandleAddBlocks(rawHeaders []BlockHeaderBytes) (uint32, uint32, error) {
+func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32, uint32, error) {
+	var networkParams *chaincfg.Params
+	switch networkMode {
+	case constants.Testnet3:
+		networkParams = &chaincfg.TestNet3Params
+	case constants.Testnet4:
+		networkParams = &chaincfg.TestNet4Params
+	default:
+		networkParams = &chaincfg.MainNetParams
+	}
+
 	lastHeight, err := LastHeightFromState()
-	initialLastHeight := lastHeight
 	if err != nil {
 		return 0, 0, ce.WrapContractError(ce.ErrStateAccess, err)
 	}
-	lastBlockHex := sdk.StateGetObject(BlockPrefix + fmt.Sprintf("%d", lastHeight))
+	initialLastHeight := lastHeight
+
+	lastBlockHex := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatInt(int64(lastHeight), 10))
 	lastBlockBytes, err := hex.DecodeString(*lastBlockHex)
 	if err != nil {
 		return 0, 0, ce.WrapContractError(ce.ErrInvalidHex, err)
@@ -84,20 +98,36 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes) (uint32, uint32, error) {
 	if err != nil {
 		return 0, 0, ce.NewContractError(ce.ErrInput, "error decoding block header: "+err.Error())
 	}
+
+	timeSource := blockchain.NewMedianTime()
+	timeSource.AddTimeSample("local", lastBlockHeader.Timestamp)
+	powLimit := networkParams.PowLimit
+
 	for _, headerBytes := range rawHeaders {
+		// won't happen for 130 years but just in case
+		if lastHeight == math.MaxUint32 {
+			return 0, 0, ce.NewContractError(ce.ErrArithmetic, "bitcoin block height exceeds max possible")
+		}
+		blockHeight := lastHeight + 1
+
 		var blockHeader wire.BlockHeader
 		err = blockHeader.BtcDecode(bytes.NewReader(headerBytes[:]), wire.ProtocolVersion, wire.LatestEncoding)
 		if err != nil {
 			return 0, 0, ce.NewContractError(ce.ErrInput, "error decoding block header: "+err.Error())
+		}
+		if err := blockchain.CheckBlockHeaderSanity(&blockHeader, powLimit, timeSource, blockchain.BFNone); err != nil {
+			return 0, 0, ce.NewContractError(
+				ce.ErrInput,
+				"block "+strconv.FormatUint(uint64(blockHeight), 10)+" failed sanity check: "+err.Error(),
+			)
 		}
 
 		lastBlockHash := lastBlockHeader.BlockHash()
 		if !blockHeader.PrevBlock.IsEqual(&lastBlockHash) {
 			return 0, 0, ErrorSequenceIncorrect
 		}
-		blockHeight := lastHeight + 1
 
-		sdk.StateSetObject(BlockPrefix+fmt.Sprintf("%d", blockHeight), hex.EncodeToString(headerBytes[:]))
+		sdk.StateSetObject(constants.BlockPrefix+fmt.Sprintf("%d", blockHeight), hex.EncodeToString(headerBytes[:]))
 		lastHeight = blockHeight
 		lastBlockHeader = blockHeader
 	}
@@ -121,7 +151,10 @@ func HandleSeedBlocks(seedInput *string, allowReseed bool) (uint32, error) {
 	}
 
 	if lastHeight == 0 || lastHeight < blockSeedData.BlockHeight {
-		sdk.StateSetObject(BlockPrefix+fmt.Sprintf("%d", blockSeedData.BlockHeight), blockSeedData.BlockHeader)
+		sdk.StateSetObject(
+			constants.BlockPrefix+fmt.Sprintf("%d", blockSeedData.BlockHeight),
+			blockSeedData.BlockHeader,
+		)
 		sdk.StateSetObject(lastHeightKey, fmt.Sprintf("%d", blockSeedData.BlockHeight))
 		return blockSeedData.BlockHeight, nil
 	}

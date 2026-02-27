@@ -1,6 +1,7 @@
 package mapping
 
 import (
+	"btc-mapping-contract/contract/constants"
 	ce "btc-mapping-contract/contract/contracterrors"
 	"btc-mapping-contract/sdk"
 	"crypto/sha256"
@@ -15,9 +16,9 @@ import (
 func IntializeContractState(publicKeys *PublicKeys, networkMode string) (*ContractState, error) {
 	var networkParams *chaincfg.Params
 	switch networkMode {
-	case Testnet3:
+	case constants.Testnet3:
 		networkParams = &chaincfg.TestNet3Params
-	case Testnet4:
+	case constants.Testnet4:
 		networkParams = &chaincfg.TestNet4Params
 	default:
 		networkParams = &chaincfg.MainNetParams

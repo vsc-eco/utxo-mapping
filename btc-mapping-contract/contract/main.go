@@ -18,9 +18,11 @@ package main
 
 import (
 	"btc-mapping-contract/contract/blocklist"
+	"btc-mapping-contract/contract/constants"
 	ce "btc-mapping-contract/contract/contracterrors"
 	"btc-mapping-contract/contract/mapping"
 	_ "btc-mapping-contract/sdk" // ensure sdk is imported
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"strings"
@@ -39,7 +41,7 @@ var NetworkMode string
 
 func checkAdmin() {
 	var adminAddress string
-	if mapping.IsTestnet(NetworkMode) {
+	if constants.IsTestnet(NetworkMode) {
 		adminAddress = *sdk.GetEnvKey("contract.owner")
 	} else {
 		adminAddress = oracleAddress
@@ -60,7 +62,7 @@ func checkAdmin() {
 func SeedBlocks(blockSeedInput *string) *string {
 	checkAdmin()
 
-	newLastHeight, err := blocklist.HandleSeedBlocks(blockSeedInput, mapping.IsTestnet(NetworkMode))
+	newLastHeight, err := blocklist.HandleSeedBlocks(blockSeedInput, constants.IsTestnet(NetworkMode))
 	if err != nil {
 		ce.CustomAbort(err)
 	}
@@ -83,11 +85,13 @@ func AddBlocks(addBlocksInput *string) *string {
 
 	blockHeaders, err := blocklist.DivideHeaderList(&addBlocksObj.Blocks)
 	if err != nil {
-		ce.CustomAbort(err)
+		ce.CustomAbort(
+			ce.WrapContractError(ce.ErrInput, err, "error parsing block headers"),
+		)
 	}
 
 	var resultBuilder strings.Builder
-	lastHeight, added, err := blocklist.HandleAddBlocks(blockHeaders)
+	lastHeight, added, err := blocklist.HandleAddBlocks(blockHeaders, NetworkMode)
 	if err != nil {
 		if err != blocklist.ErrorSequenceIncorrect {
 			ce.CustomAbort(err)
@@ -203,7 +207,7 @@ func Transfer(tx *string) *string {
 		)
 	}
 
-	err = mapping.HandleTrasfer(&transferInstructions)
+	err = mapping.HandleTransfer(&transferInstructions)
 	if err != nil {
 		ce.CustomAbort(err)
 	}
@@ -223,12 +227,32 @@ func TransferFrom(tx *string) *string {
 		)
 	}
 
-	err = mapping.HandleDraw(&drawInstructions)
+	err = mapping.HandleTransfer(&drawInstructions)
 	if err != nil {
 		ce.CustomAbort(err)
 	}
 
 	return mapping.StrPtr("0")
+}
+
+func validatePublicKey(keyHex string) error {
+	// Check format is valid hex
+	keyBytes, err := hex.DecodeString(keyHex)
+	if err != nil {
+		return ce.WrapContractError(ce.ErrInvalidHex, err)
+	}
+	// Check length for ECDSA compressed (33 bytes) or uncompressed (65 bytes)
+	if len(keyBytes) != 33 && len(keyBytes) != 65 {
+		return ce.NewContractError(
+			ce.ErrInput,
+			"invalid key length: expected 33 or 65 bytes, got "+strconv.Itoa(len(keyBytes)),
+		)
+	}
+	// For compressed keys, check first byte is 0x02 or 0x03
+	if len(keyBytes) == 33 && (keyBytes[0] != 0x02 && keyBytes[0] != 0x03) {
+		return fmt.Errorf("invalid compressed key prefix")
+	}
+	return nil
 }
 
 //go:wasmexport registerPublicKey
@@ -252,8 +276,12 @@ func RegisterPublicKey(keyStr *string) *string {
 	var resultBuilder strings.Builder
 
 	if keys.PrimaryPubKey != "" {
+		err := validatePublicKey(keys.PrimaryPubKey)
+		if err != nil {
+			ce.CustomAbort(ce.Prepend(err, "error registering primary public key"))
+		}
 		existingPrimary := sdk.StateGetObject(primaryPublicKeyStateKey)
-		if *existingPrimary == "" || mapping.IsTestnet(NetworkMode) {
+		if *existingPrimary == "" || constants.IsTestnet(NetworkMode) {
 			sdk.StateSetObject(primaryPublicKeyStateKey, keys.PrimaryPubKey)
 			resultBuilder.WriteString("set primary key to: " + keys.PrimaryPubKey)
 		} else {
@@ -262,11 +290,15 @@ func RegisterPublicKey(keyStr *string) *string {
 	}
 
 	if keys.BackupPubKey != "" {
+		err := validatePublicKey(keys.BackupPubKey)
+		if err != nil {
+			ce.CustomAbort(ce.Prepend(err, "error registering backup public key"))
+		}
 		if resultBuilder.Len() > 0 {
 			resultBuilder.WriteString(", ")
 		}
 		existingBackup := sdk.StateGetObject(backupPublicKeyStateKey)
-		if *existingBackup == "" || mapping.IsTestnet(NetworkMode) {
+		if *existingBackup == "" || constants.IsTestnet(NetworkMode) {
 			sdk.StateSetObject(backupPublicKeyStateKey, keys.BackupPubKey)
 			resultBuilder.WriteString("set backup key to: " + keys.BackupPubKey)
 		} else {
@@ -286,7 +318,7 @@ func CreateKeyPair(_ *string) *string {
 		)
 	}
 
-	keyId := mapping.TssKeyName
+	keyId := constants.TssKeyName
 	sdk.TssCreateKey(keyId, "ecdsa")
 	return mapping.StrPtr("key created, id: " + keyId)
 }
@@ -312,9 +344,9 @@ func RegisterRouter(input *string) *string {
 	var resultBuilder strings.Builder
 
 	if router.ContractId != "" {
-		existingPrimary := sdk.StateGetObject(mapping.RouterContractIdKey)
-		if *existingPrimary == "" || mapping.IsTestnet(NetworkMode) {
-			sdk.StateSetObject(mapping.RouterContractIdKey, router.ContractId)
+		existingPrimary := sdk.StateGetObject(constants.RouterContractIdKey)
+		if *existingPrimary == "" || constants.IsTestnet(NetworkMode) {
+			sdk.StateSetObject(constants.RouterContractIdKey, router.ContractId)
 			resultBuilder.WriteString("set router contract ID to: " + router.ContractId)
 		} else {
 			resultBuilder.WriteString("router contract ID already registered: " + *existingPrimary)

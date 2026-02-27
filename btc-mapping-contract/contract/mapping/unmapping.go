@@ -1,6 +1,7 @@
 package mapping
 
 import (
+	"btc-mapping-contract/contract/constants"
 	ce "btc-mapping-contract/contract/contracterrors"
 	"btc-mapping-contract/sdk"
 	"bytes"
@@ -18,15 +19,17 @@ import (
 // constants in sats
 const dustThreshold = 546
 
-// 0.01 BTC
-const splitThreshold = 1000000
+const splitThreshold = 1000000 // 0.01 BTC
 const maxChangeOutputs = 4
 
 func calcVscFee(amount int64) (int64, error) {
 	const minFee int64 = 1000
-	const feeRate float64 = 0.01
-	percentageFee := int64(float64(amount) * feeRate)
-	finalFee := max(minFee, percentageFee)
+	const feeRateBps uint64 = 100                                // 100 basis points, 1%
+	percentageFee := (int64(amount) * int64(feeRateBps)) / 10000 // No float
+	finalFee := minFee
+	if percentageFee > minFee {
+		finalFee = percentageFee
+	}
 	if finalFee >= amount {
 		return 0, ce.NewContractError(ce.ErrBalance, "transaction too small to cover fee")
 	}
@@ -280,7 +283,7 @@ func (cs *ContractState) createSpendTransaction(
 			return nil, nil, 0, err
 		}
 
-		sdk.TssSignKey(TssKeyName, sigHash)
+		sdk.TssSignKey(constants.TssKeyName, sigHash)
 
 		unsignedSigHashes[i] = UnsignedSigHash{
 			Index:         uint32(i),
@@ -315,6 +318,10 @@ func indexUnconfimedOutputs(tx *wire.MsgTx, changeAddress string, network *chain
 		_, addrs, _, err := txscript.ExtractPkScriptAddrs(txOut.PkScript, network)
 		if err != nil {
 			return nil, err
+		}
+		// must be 1 because it's P2WSH
+		if len(addrs) != 1 {
+			return nil, ce.NewContractError(ce.ErrTransaction, "incorrect number of addresses for transaction output")
 		}
 		if addrs[0].EncodeAddress() == changeAddress {
 			// sdk.Log(fmt.Sprintf("utxo amt to change address: %d", txOut.Value))
