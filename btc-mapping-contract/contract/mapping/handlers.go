@@ -4,8 +4,8 @@ import (
 	"btc-mapping-contract/sdk"
 	"bytes"
 	"encoding/hex"
-	"fmt"
 	"slices"
+	"strconv"
 
 	"github.com/CosmWasm/tinyjson"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -80,7 +80,7 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		return err
 	}
 
-	sdk.Log(fmt.Sprintf("vsc fee: %d SATS", vscFee))
+	sdk.Log("vsc fee: " + strconv.FormatInt(vscFee, 10) + " SATS")
 
 	inputUtxoIds, totalInputAmt, err := cs.getInputUtxoIds(amount)
 	if err != nil {
@@ -111,7 +111,7 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		return err
 	}
 
-	sdk.Log(fmt.Sprintf("btc fee: %d SATS", btcFee))
+	sdk.Log("btc fee: " + strconv.FormatInt(btcFee, 10) + " SATS")
 
 	finalAmt := amount + vscFee + btcFee
 
@@ -128,7 +128,7 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	for _, utxo := range unconfirmedUtxos {
 		utxoJson, err := tinyjson.Marshal(utxo)
 		if err != nil {
-			return ce.NewContractError(ce.ErrJson, fmt.Sprintf("error marhalling utxo: %s", err.Error()))
+			return ce.WrapContractError(ce.ErrJson, err, "error marhalling utxo")
 		}
 		// create utxo entry
 		internalId := cs.UtxoNextId
@@ -138,7 +138,7 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 
 		// sdk.Log(fmt.Sprintf("appending utxo with internal id: %d, amount: %d", internalId, utxo.Amount))
 		cs.UtxoList = append(cs.UtxoList, utxoLookup)
-		sdk.StateSetObject(fmt.Sprintf("%s%x", utxoPrefix, internalId), string(utxoJson))
+		sdk.StateSetObject(utxoPrefix+strconv.FormatUint(uint64(internalId), 16), string(utxoJson))
 	}
 
 	for _, inputId := range inputUtxoIds {
@@ -146,12 +146,12 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 			cs.UtxoList,
 			func(utxo [3]int64) bool { return int64(inputId) == utxo[0] },
 		)
-		sdk.StateDeleteObject(fmt.Sprintf("%s%x", utxoPrefix, inputId))
+		sdk.StateDeleteObject(getUtxoKey(inputId))
 	}
 
 	signingDataJson, err := tinyjson.Marshal(signingData)
 	if err != nil {
-		return ce.NewContractError(ce.ErrJson, fmt.Sprintf("error marshalling signing data: %s", err.Error()))
+		return ce.WrapContractError(ce.ErrJson, err, "error marshalling signing data")
 	}
 
 	// use this key, then increment

@@ -5,7 +5,7 @@ import (
 	"btc-mapping-contract/sdk"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
+	"errors"
 	"math"
 	"slices"
 	"strconv"
@@ -304,30 +304,61 @@ func StrPtr(s string) *string {
 }
 
 func createDepositLog(d Deposit) string {
-	fields := make([]string, 4)
-	fields[0] = "deposit"
-	fields[1] = fmt.Sprintf("t%s%s", logKeyDelimiter, d.to)
-	fields[2] = fmt.Sprintf("f%s%s", logKeyDelimiter, strings.Join(d.from, logArrayDelimiter))
-	fields[3] = fmt.Sprintf("a%s%d", logKeyDelimiter, d.amount)
-	return strings.Join(fields, logDelimiter)
+	var b strings.Builder
+
+	b.Grow(128)
+
+	b.WriteString("deposit")
+	b.WriteString(logDelimiter)
+
+	b.WriteString("t")
+	b.WriteString(logKeyDelimiter)
+	b.WriteString(d.to)
+	b.WriteString(logDelimiter)
+
+	b.WriteString("f")
+	b.WriteString(logKeyDelimiter)
+	for i, s := range d.from {
+		if i > 0 {
+			b.WriteString(logArrayDelimiter)
+		}
+		b.WriteString(s)
+	}
+	b.WriteString(logDelimiter)
+
+	b.WriteString("a")
+	b.WriteString(logKeyDelimiter)
+
+	var buf [20]byte
+	b.Write(strconv.AppendInt(buf[:0], d.amount, 10))
+
+	return b.String()
 }
 
 func safeAdd64(a, b int64) (int64, error) {
 	if a > 0 && b > math.MaxInt64-a {
-		return 0, fmt.Errorf("overflow detected")
+		return 0, errors.New("overflow detected")
 	}
 	if a < 0 && b < math.MinInt64-a {
-		return 0, fmt.Errorf("underflow detected")
+		return 0, errors.New("underflow detected")
 	}
 	return a + b, nil
 }
 
 func safeSubtract64(a, b int64) (int64, error) {
 	if b > 0 && a < math.MinInt64+b {
-		return 0, fmt.Errorf("underflow detected")
+		return 0, errors.New("underflow detected")
 	}
 	if b < 0 && a > math.MaxInt64+b {
-		return 0, fmt.Errorf("overflow detected")
+		return 0, errors.New("overflow detected")
 	}
 	return a - b, nil
+}
+
+func getUtxoKey(id uint32) string {
+	return utxoPrefix + strconv.FormatUint(uint64(id), 16)
+}
+
+func joinIdVout(utxo Utxo) string {
+	return utxo.TxId + ":" + strconv.FormatUint(uint64(utxo.Vout), 10)
 }

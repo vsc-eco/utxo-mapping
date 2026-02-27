@@ -5,7 +5,6 @@ import (
 	ce "btc-mapping-contract/contract/contracterrors"
 	"btc-mapping-contract/sdk"
 	"crypto/sha256"
-	"fmt"
 	"net/url"
 	"strconv"
 
@@ -167,7 +166,7 @@ func (cs *ContractState) SaveToState() error {
 	}
 	sdk.StateSetObject(utxoRegistryKey, string(utxosJson))
 
-	sdk.StateSetObject(utxoLastIdKey, fmt.Sprintf("%x", cs.UtxoNextId))
+	sdk.StateSetObject(utxoLastIdKey, strconv.FormatUint(uint64(cs.UtxoNextId), 16))
 
 	txSpendsJson, err := tinyjson.Marshal(cs.TxSpendsList)
 	if err != nil {

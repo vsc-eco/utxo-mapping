@@ -6,7 +6,7 @@ import (
 	"btc-mapping-contract/sdk"
 	"bytes"
 	"encoding/hex"
-	"fmt"
+	"strconv"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -14,7 +14,7 @@ import (
 
 func verifyTransaction(req *VerificationRequest, rawTxBytes []byte) error {
 	// block header from contract state (input by chain oracle)
-	rawHeaderHex := sdk.StateGetObject(constants.BlockPrefix + fmt.Sprintf("%d", req.BlockHeight))
+	rawHeaderHex := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatUint(uint64(req.BlockHeight), 10))
 	rawHeaderBytes, err := hex.DecodeString(*rawHeaderHex)
 	if err != nil {
 		return err

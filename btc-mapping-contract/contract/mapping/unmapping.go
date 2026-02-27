@@ -6,7 +6,6 @@ import (
 	"btc-mapping-contract/sdk"
 	"bytes"
 	"encoding/hex"
-	"strconv"
 
 	"github.com/CosmWasm/tinyjson"
 	"github.com/btcsuite/btcd/btcutil"
@@ -40,7 +39,7 @@ func getInputUtxos(registryEntries []uint32) ([]*Utxo, error) {
 	result := make([]*Utxo, len(registryEntries))
 	for i, internalId := range registryEntries {
 		utxo := Utxo{}
-		utxoJson := sdk.StateGetObject(utxoPrefix + strconv.FormatUint(uint64(internalId), 16))
+		utxoJson := sdk.StateGetObject(getUtxoKey(internalId))
 		err := tinyjson.Unmarshal([]byte(*utxoJson), &utxo)
 		if err != nil {
 			return nil, ce.WrapContractError(ce.ErrStateAccess, err, "error unmarshalling saved utxo")

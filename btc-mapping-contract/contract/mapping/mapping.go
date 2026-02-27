@@ -3,7 +3,6 @@ package mapping
 import (
 	"btc-mapping-contract/sdk"
 	"encoding/hex"
-	"fmt"
 	"strconv"
 
 	"github.com/CosmWasm/tinyjson"
@@ -88,7 +87,7 @@ func (cs *ContractState) updateUtxoSpends(txId string) error {
 		internalId, _, confirmed := unpackUtxo(utxoBytes)
 		if confirmed == 0 {
 			utxo := Utxo{}
-			utxoJson := sdk.StateGetObject(fmt.Sprintf("%s%x", utxoPrefix, internalId))
+			utxoJson := sdk.StateGetObject(getUtxoKey(internalId))
 			err := tinyjson.Unmarshal([]byte(*utxoJson), &utxo)
 			if err != nil {
 				return ce.NewContractError(ce.ErrStateAccess, "error unmarshalling saved utxo: "+err.Error())
@@ -120,62 +119,6 @@ func (cs *ContractState) updateUtxoSpends(txId string) error {
 	return nil
 }
 
-// TODO: make last output an actual error object
-func (cs *ContractState) determineReturnInfo(metadata *AddressMetadata) (string, NetworkName, string) {
-	// fallback is typically the system address, which should never fail to be created
-	// if it does, defaults on a "blind faith" send to the sender's destination
-	fallBackAddress, _, err := createP2WSHAddressWithBackup(
-		cs.PublicKeys.PrimaryPubKey,
-		cs.PublicKeys.BackupPubKey,
-		nil,
-		cs.NetworkParams,
-	)
-	if err != nil {
-		fallBackAddress = metadata.Recipient
-	}
-
-	if !metadata.Params.Has(returnAddressKey) {
-		return metadata.Recipient, Vsc, "no return address provided, returning to destination VSC account"
-	}
-
-	returnAddress := metadata.Params.Get(returnAddressKey)
-
-	var returnNetwork Network
-
-	if !metadata.Params.Has(returnNetworkKey) {
-		returnNetwork = cs.NetworkOptions[Vsc]
-	} else {
-		returnNetwork, err = cs.getNetwork(metadata.Params.Get(returnNetworkKey))
-		if err != nil {
-			returnNetwork = cs.NetworkOptions[Vsc]
-		}
-	}
-
-	if returnNetwork.ValidateAddress(returnAddress) {
-		return returnAddress, returnNetwork.Name(), ""
-	} else {
-		// destination network, to be trimmed to VSC or BTC
-		destNetName := metadata.OutNetwork
-		if metadata.OutNetwork != Vsc && metadata.OutNetwork != Btc {
-			destNetName = Vsc
-		}
-		if cs.NetworkOptions[destNetName].ValidateAddress(returnAddress) {
-			return metadata.Recipient, destNetName, fmt.Sprintf(
-				"return address '%s' invalid on network '%s', funds returned to transaction destination account on vsc",
-				returnAddress,
-				returnNetwork.Name(),
-			)
-		}
-		return fallBackAddress, Vsc, fmt.Sprintf(
-			"return address '%s' invalid on network '%s' and destination address '%s' invalid on network '%s', funds burned",
-			returnAddress,
-			returnNetwork.Name(),
-			metadata.Recipient,
-			destNetName,
-		)
-	}
-}
-
 func (ms *MappingState) processUtxos(relevantUtxos []Utxo) error {
 	totalMapped := int64(0)
 	env := sdk.GetEnv()
@@ -189,7 +132,7 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) error {
 		}
 		if metadata, ok := ms.AddressRegistry[addrs[0].EncodeAddress()]; ok {
 			// Create UTXO entry
-			observedUtxoKey := fmt.Sprintf("%s:%d", utxo.TxId, utxo.Vout)
+			observedUtxoKey := joinIdVout(utxo)
 			// proceed if this output has already been observed
 			// TODO: error or some type of acknowledgement here?
 			alreadyObserved := sdk.StateGetObject(observedPrefix + observedUtxoKey)
@@ -206,7 +149,7 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) error {
 				return ce.NewContractError(ce.ErrJson, "error marshalling utxo: "+err.Error())
 			}
 
-			sdk.StateSetObject(fmt.Sprintf("%s%x", utxoPrefix, utxoInternalId), string(utxoJson))
+			sdk.StateSetObject(getUtxoKey(utxoInternalId), string(utxoJson))
 
 			// set observed
 			sdk.StateSetObject(observedPrefix+observedUtxoKey, "1")

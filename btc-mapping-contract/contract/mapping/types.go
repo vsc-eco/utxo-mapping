@@ -7,13 +7,13 @@ import (
 )
 
 const balancePrefix = "bal/"
-const observedPrefix = "observed_txs/"
+const observedPrefix = "otx/"
 const utxoPrefix = "utxos/"
-const utxoRegistryKey = "utxo_registry"
-const utxoLastIdKey = "utxo_id"
-const txSpendsRegistryKey = "tx_spend_registry"
-const txSpendsPrefix = "tx-spend/"
-const supplyKey = "supply"
+const utxoRegistryKey = "utxor"
+const utxoLastIdKey = "utxoid"
+const txSpendsRegistryKey = "txspdr"
+const txSpendsPrefix = "txspd/"
+const supplyKey = "sply"
 
 // Instruction URL search param keys
 const (

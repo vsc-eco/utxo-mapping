@@ -23,7 +23,6 @@ import (
 	"btc-mapping-contract/contract/mapping"
 	_ "btc-mapping-contract/sdk" // ensure sdk is imported
 	"encoding/hex"
-	"fmt"
 	"strconv"
 	"strings"
 
@@ -67,7 +66,7 @@ func SeedBlocks(blockSeedInput *string) *string {
 		ce.CustomAbort(err)
 	}
 
-	outMsg := fmt.Sprintf("last height: %d", newLastHeight)
+	outMsg := "last height: " + strconv.FormatUint(uint64(newLastHeight), 10)
 	return &outMsg
 }
 
@@ -250,7 +249,7 @@ func validatePublicKey(keyHex string) error {
 	}
 	// For compressed keys, check first byte is 0x02 or 0x03
 	if len(keyBytes) == 33 && (keyBytes[0] != 0x02 && keyBytes[0] != 0x03) {
-		return fmt.Errorf("invalid compressed key prefix")
+		ce.NewContractError(ce.ErrInput, "invalid compressed key prefix")
 	}
 	return nil
 }

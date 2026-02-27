@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"math"
 	"strconv"
 
@@ -32,7 +31,7 @@ type BlockSeedInput struct {
 	BlockHeight uint32
 }
 
-const lastHeightKey = "last_block_height"
+const lastHeightKey = "lsthgt"
 
 var ErrorLastHeightDNE = errors.New("last height does not exist")
 
@@ -127,7 +126,10 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 			return 0, 0, ErrorSequenceIncorrect
 		}
 
-		sdk.StateSetObject(constants.BlockPrefix+fmt.Sprintf("%d", blockHeight), hex.EncodeToString(headerBytes[:]))
+		sdk.StateSetObject(
+			constants.BlockPrefix+strconv.FormatUint(uint64(blockHeight), 10),
+			hex.EncodeToString(headerBytes[:]),
+		)
 		lastHeight = blockHeight
 		lastBlockHeader = blockHeader
 	}
@@ -152,15 +154,15 @@ func HandleSeedBlocks(seedInput *string, allowReseed bool) (uint32, error) {
 
 	if lastHeight == 0 || lastHeight < blockSeedData.BlockHeight {
 		sdk.StateSetObject(
-			constants.BlockPrefix+fmt.Sprintf("%d", blockSeedData.BlockHeight),
+			constants.BlockPrefix+strconv.FormatInt(int64(blockSeedData.BlockHeight), 10),
 			blockSeedData.BlockHeader,
 		)
-		sdk.StateSetObject(lastHeightKey, fmt.Sprintf("%d", blockSeedData.BlockHeight))
+		sdk.StateSetObject(lastHeightKey, strconv.FormatInt(int64(blockSeedData.BlockHeight), 10))
 		return blockSeedData.BlockHeight, nil
 	}
 
 	return 0, ce.NewContractError(
 		ce.ErrInput,
-		fmt.Sprintf("last height >= input block height. last height: %d", lastHeight),
+		"last height >= input block height. last height: "+strconv.FormatUint(uint64(lastHeight), 10),
 	)
 }
