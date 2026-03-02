@@ -347,7 +347,7 @@ func createFeeLog(vscFee, btcFee int64) string {
 	b.WriteString(logDelimiter)
 
 	// 3. VSC Fee
-	b.WriteString("vsc")
+	b.WriteString("magi")
 	b.WriteString(logKeyDelimiter)
 
 	// Temporary stack buffer for integer conversion (max 20 digits for int64)

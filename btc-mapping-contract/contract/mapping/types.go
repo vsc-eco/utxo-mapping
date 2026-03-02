@@ -44,24 +44,24 @@ const (
 )
 
 //tinyjson:json
-type MappingParams struct {
-	TxData *VerificationRequest
+type MapParams struct {
+	TxData *VerificationRequest `json:"tx_data"`
 	// strings should be valid URL search params, to be decoded later
-	Instructions []string
+	Instructions []string `json:"instructions"`
+}
+
+//tinyjson:json
+type VerificationRequest struct {
+	BlockHeight    uint32 `json:"block_height"`
+	RawTxHex       string `json:"raw_tx_hex"`
+	MerkleProofHex string `json:"merkle_proof_hex"` // array of byte arrays, each of which is guaranteed 32 bytes
+	TxIndex        uint32 `json:"tx_index"`         // position of the tx in the block
 }
 
 type Deposit struct {
 	to     string
 	from   []string
 	amount int64
-}
-
-//tinyjson:json
-type VerificationRequest struct {
-	BlockHeight    uint32
-	RawTxHex       string
-	MerkleProofHex string // array of byte arrays, each of which is guaranteed 32 bytes
-	TxIndex        uint32 // position of the tx in the block
 }
 
 //tinyjson:json

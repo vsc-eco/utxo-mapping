@@ -11,7 +11,6 @@ import (
 	"btc-mapping-contract/contract/constants"
 	ce "btc-mapping-contract/contract/contracterrors"
 
-	"github.com/CosmWasm/tinyjson"
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
@@ -20,13 +19,13 @@ import (
 type BlockHeaderBytes [80]byte
 
 //tinyjson:json
-type AddBlocksInput struct {
+type AddBlocksParams struct {
 	Blocks    string
 	LatestFee int64
 }
 
 //tinyjson:json
-type BlockSeedInput struct {
+type SeedBlocksParams struct {
 	BlockHeader string
 	BlockHeight uint32
 }
@@ -136,7 +135,7 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 	return lastHeight, lastHeight - initialLastHeight, nil
 }
 
-func HandleSeedBlocks(seedInput *string, allowReseed bool) (uint32, error) {
+func HandleSeedBlocks(seedParams SeedBlocksParams, allowReseed bool) (uint32, error) {
 	lastHeight, err := LastHeightFromState()
 	if err != nil {
 		if err != ErrorLastHeightDNE {
@@ -146,19 +145,13 @@ func HandleSeedBlocks(seedInput *string, allowReseed bool) (uint32, error) {
 		return 0, ce.NewContractError(ce.ErrInitialization, "blocks already seeded last height "+strconv.FormatUint(uint64(lastHeight), 10))
 	}
 
-	var blockSeedData BlockSeedInput
-	err = tinyjson.Unmarshal([]byte(*seedInput), &blockSeedData)
-	if err != nil {
-		return 0, ce.WrapContractError(ce.ErrJson, err)
-	}
-
-	if lastHeight == 0 || lastHeight < blockSeedData.BlockHeight {
+	if lastHeight == 0 || lastHeight < seedParams.BlockHeight {
 		sdk.StateSetObject(
-			constants.BlockPrefix+strconv.FormatInt(int64(blockSeedData.BlockHeight), 10),
-			blockSeedData.BlockHeader,
+			constants.BlockPrefix+strconv.FormatInt(int64(seedParams.BlockHeight), 10),
+			seedParams.BlockHeader,
 		)
-		sdk.StateSetObject(LastHeightKey, strconv.FormatInt(int64(blockSeedData.BlockHeight), 10))
-		return blockSeedData.BlockHeight, nil
+		sdk.StateSetObject(LastHeightKey, strconv.FormatInt(int64(seedParams.BlockHeight), 10))
+		return seedParams.BlockHeight, nil
 	}
 
 	return 0, ce.NewContractError(
