@@ -57,7 +57,13 @@ func checkAdmin() {
 func SeedBlocks(blockSeedInput *string) *string {
 	checkAdmin()
 
-	newLastHeight, err := blocklist.HandleSeedBlocks(blockSeedInput, constants.IsTestnet(NetworkMode))
+	var seedParams blocklist.SeedBlocksParams
+	err := tinyjson.Unmarshal([]byte(*blockSeedInput), &seedParams)
+	ce.CustomAbort(
+		ce.WrapContractError(ce.ErrJson, err),
+	)
+
+	newLastHeight, err := blocklist.HandleSeedBlocks(seedParams, constants.IsTestnet(NetworkMode))
 	if err != nil {
 		ce.CustomAbort(err)
 	}
@@ -70,7 +76,7 @@ func SeedBlocks(blockSeedInput *string) *string {
 func AddBlocks(addBlocksInput *string) *string {
 	checkAdmin()
 
-	var addBlocksObj blocklist.AddBlocksInput
+	var addBlocksObj blocklist.AddBlocksParams
 	err := tinyjson.Unmarshal([]byte(*addBlocksInput), &addBlocksObj)
 	if err != nil {
 		ce.CustomAbort(
@@ -113,7 +119,7 @@ func AddBlocks(addBlocksInput *string) *string {
 
 //go:wasmexport map
 func Map(incomingTx *string) *string {
-	var mapInstructions mapping.MappingParams
+	var mapInstructions mapping.MapParams
 	err := tinyjson.Unmarshal([]byte(*incomingTx), &mapInstructions)
 	if err != nil {
 		ce.CustomAbort(
@@ -127,7 +133,7 @@ func Map(incomingTx *string) *string {
 	}
 	if publicKeys.PrimaryPubKey == "" {
 		ce.CustomAbort(
-			ce.NewContractError(ce.ErrInitialization, "not registered public key"),
+			ce.NewContractError(ce.ErrInitialization, "no registered public key"),
 		)
 	}
 

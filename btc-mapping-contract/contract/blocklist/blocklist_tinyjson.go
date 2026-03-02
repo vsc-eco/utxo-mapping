@@ -15,7 +15,7 @@ var (
 	_ tinyjson.Marshaler
 )
 
-func tinyjson2d7d9c89DecodeBtcMappingContractContractBlocklistTinyjsonTmp(in *jlexer.Lexer, out *BlockSeedInput) {
+func tinyjson2d7d9c89DecodeBtcMappingContractContractBlocklistTinyjsonTmp(in *jlexer.Lexer, out *SeedBlocksParams) {
 	isTopLevel := in.IsStart()
 	if in.IsNull() {
 		if isTopLevel {
@@ -48,7 +48,7 @@ func tinyjson2d7d9c89DecodeBtcMappingContractContractBlocklistTinyjsonTmp(in *jl
 		in.Consumed()
 	}
 }
-func tinyjson2d7d9c89EncodeBtcMappingContractContractBlocklistTinyjsonTmp(out *jwriter.Writer, in BlockSeedInput) {
+func tinyjson2d7d9c89EncodeBtcMappingContractContractBlocklistTinyjsonTmp(out *jwriter.Writer, in SeedBlocksParams) {
 	out.RawByte('{')
 	first := true
 	_ = first
@@ -66,15 +66,15 @@ func tinyjson2d7d9c89EncodeBtcMappingContractContractBlocklistTinyjsonTmp(out *j
 }
 
 // MarshalTinyJSON supports tinyjson.Marshaler interface
-func (v BlockSeedInput) MarshalTinyJSON(w *jwriter.Writer) {
+func (v SeedBlocksParams) MarshalTinyJSON(w *jwriter.Writer) {
 	tinyjson2d7d9c89EncodeBtcMappingContractContractBlocklistTinyjsonTmp(w, v)
 }
 
 // UnmarshalTinyJSON supports tinyjson.Unmarshaler interface
-func (v *BlockSeedInput) UnmarshalTinyJSON(l *jlexer.Lexer) {
+func (v *SeedBlocksParams) UnmarshalTinyJSON(l *jlexer.Lexer) {
 	tinyjson2d7d9c89DecodeBtcMappingContractContractBlocklistTinyjsonTmp(l, v)
 }
-func tinyjson2d7d9c89DecodeBtcMappingContractContractBlocklistTinyjsonTmp1(in *jlexer.Lexer, out *AddBlocksInput) {
+func tinyjson2d7d9c89DecodeBtcMappingContractContractBlocklistTinyjsonTmp1(in *jlexer.Lexer, out *AddBlocksParams) {
 	isTopLevel := in.IsStart()
 	if in.IsNull() {
 		if isTopLevel {
@@ -107,7 +107,7 @@ func tinyjson2d7d9c89DecodeBtcMappingContractContractBlocklistTinyjsonTmp1(in *j
 		in.Consumed()
 	}
 }
-func tinyjson2d7d9c89EncodeBtcMappingContractContractBlocklistTinyjsonTmp1(out *jwriter.Writer, in AddBlocksInput) {
+func tinyjson2d7d9c89EncodeBtcMappingContractContractBlocklistTinyjsonTmp1(out *jwriter.Writer, in AddBlocksParams) {
 	out.RawByte('{')
 	first := true
 	_ = first
@@ -125,11 +125,11 @@ func tinyjson2d7d9c89EncodeBtcMappingContractContractBlocklistTinyjsonTmp1(out *
 }
 
 // MarshalTinyJSON supports tinyjson.Marshaler interface
-func (v AddBlocksInput) MarshalTinyJSON(w *jwriter.Writer) {
+func (v AddBlocksParams) MarshalTinyJSON(w *jwriter.Writer) {
 	tinyjson2d7d9c89EncodeBtcMappingContractContractBlocklistTinyjsonTmp1(w, v)
 }
 
 // UnmarshalTinyJSON supports tinyjson.Unmarshaler interface
-func (v *AddBlocksInput) UnmarshalTinyJSON(l *jlexer.Lexer) {
+func (v *AddBlocksParams) UnmarshalTinyJSON(l *jlexer.Lexer) {
 	tinyjson2d7d9c89DecodeBtcMappingContractContractBlocklistTinyjsonTmp1(l, v)
 }

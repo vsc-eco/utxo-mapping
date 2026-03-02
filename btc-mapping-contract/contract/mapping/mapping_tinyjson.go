@@ -848,7 +848,7 @@ func (v PoolInfo) MarshalTinyJSON(w *jwriter.Writer) {
 func (v *PoolInfo) UnmarshalTinyJSON(l *jlexer.Lexer) {
 	tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp11(l, v)
 }
-func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp12(in *jlexer.Lexer, out *MappingParams) {
+func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp12(in *jlexer.Lexer, out *MapParams) {
 	isTopLevel := in.IsStart()
 	if in.IsNull() {
 		if isTopLevel {
@@ -910,7 +910,7 @@ func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp12(in *jl
 		in.Consumed()
 	}
 }
-func tinyjsonA043f2bcEncodeBtcMappingContractContractMappingTinyjsonTmp12(out *jwriter.Writer, in MappingParams) {
+func tinyjsonA043f2bcEncodeBtcMappingContractContractMappingTinyjsonTmp12(out *jwriter.Writer, in MapParams) {
 	out.RawByte('{')
 	first := true
 	_ = first
@@ -943,12 +943,12 @@ func tinyjsonA043f2bcEncodeBtcMappingContractContractMappingTinyjsonTmp12(out *j
 }
 
 // MarshalTinyJSON supports tinyjson.Marshaler interface
-func (v MappingParams) MarshalTinyJSON(w *jwriter.Writer) {
+func (v MapParams) MarshalTinyJSON(w *jwriter.Writer) {
 	tinyjsonA043f2bcEncodeBtcMappingContractContractMappingTinyjsonTmp12(w, v)
 }
 
 // UnmarshalTinyJSON supports tinyjson.Unmarshaler interface
-func (v *MappingParams) UnmarshalTinyJSON(l *jlexer.Lexer) {
+func (v *MapParams) UnmarshalTinyJSON(l *jlexer.Lexer) {
 	tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp12(l, v)
 }
 func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp13(in *jlexer.Lexer, out *DexInstruction) {
