@@ -39,8 +39,8 @@ var LtcMainNetParams = chaincfg.Params{
 	PrivateKeyID:     0xB0,
 	// WitnessPubKeyHashAddrID and WitnessScriptHashAddrID are btcd-internal values
 	// used for address type identification, not for bech32 encoding. Using BTC defaults
-	// as Litecoin does not define separate values. Unverified but safe — bech32 encoding
-	// uses Bech32HRPSegwit only.
+	// as Litecoin does not define separate values. Proven unused: btcutil address
+	// encoding/decoding uses only Bech32HRPSegwit for segwit addresses.
 	WitnessPubKeyHashAddrID: 0x06,
 	WitnessScriptHashAddrID: 0x0A,
 
@@ -54,7 +54,7 @@ var LtcMainNetParams = chaincfg.Params{
 
 	// PoW
 	PowLimit:     scryptPowLimit,
-	PowLimitBits: 0x1e0fffff,
+	PowLimitBits: 0x1e0ffff0,
 }
 
 // LtcTestNet4Params defines the network parameters for the Litecoin test network.
@@ -70,7 +70,7 @@ var LtcTestNet4Params = chaincfg.Params{
 	// testnet prefix). Legacy 0xC4 ("2"-prefix) P2SH addresses will NOT validate.
 	ScriptHashAddrID: 0x3A, // SCRIPT_ADDRESS2
 	PrivateKeyID:     0xEF,
-	// See mainnet comment — unverified btcd-internal values, safe for bech32 usage.
+	// See mainnet comment — proven unused by btcutil, safe for bech32 usage.
 	WitnessPubKeyHashAddrID: 0x06,
 	WitnessScriptHashAddrID: 0x0A,
 

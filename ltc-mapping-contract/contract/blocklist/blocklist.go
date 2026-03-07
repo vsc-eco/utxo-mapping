@@ -11,7 +11,6 @@ import (
 	"ltc-mapping-contract/contract/constants"
 	ce "ltc-mapping-contract/contract/contracterrors"
 	"ltc-mapping-contract/contract/mapping"
-
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
 )
