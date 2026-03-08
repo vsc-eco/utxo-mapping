@@ -14,7 +14,7 @@ import (
 	ce "ltc-mapping-contract/contract/contracterrors"
 )
 
-const MaxMerkleProofLength = 33 // 2^33 blocks > total BTC supply
+const MaxMerkleProofLength = 33 // 2^33 blocks > total LTC supply
 
 func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 	rawTx, err := hex.DecodeString(txData.RawTxHex)
@@ -30,7 +30,7 @@ func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 	}
 	merkleProof := make([]chainhash.Hash, len(proofBytes)/32)
 	if len(merkleProof) > MaxMerkleProofLength {
-		return ce.NewContractError(ce.ErrInput, "proof length exceeds maximum length for total bitcoin supply")
+		return ce.NewContractError(ce.ErrInput, "proof length exceeds maximum length for total litecoin supply")
 	}
 	for i := 0; i < len(proofBytes); i += 32 {
 		merkleProof[i/32] = chainhash.Hash(proofBytes[i : i+32])
