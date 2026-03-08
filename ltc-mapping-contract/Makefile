@@ -13,7 +13,7 @@ TINYGO_IMAGE := tinygo/tinygo:0.39.0
 WORKDIR      := /work
 DOCKER_TINYGO = docker run --rm \
 	-e HOME=/tmp \
-	-v $(CURDIR):$(WORKDIR) \
+	--mount type=bind,source="$(CURDIR)",target=$(WORKDIR) \
 	-w $(WORKDIR) \
 	$(TINYGO_IMAGE) \
 	tinygo
@@ -23,7 +23,7 @@ TINYGO_CMD = tinygo
 ifdef USE_DOCKER
     TINYGO_CMD = docker run --rm \
         -u $(shell id -u):$(shell id -g) \
-        -v $(CURDIR):$(WORKDIR) \
+        --mount type=bind,source="$(CURDIR)",target=$(WORKDIR) \
         -w $(WORKDIR) \
         $(TINYGO_IMAGE) \
         tinygo
