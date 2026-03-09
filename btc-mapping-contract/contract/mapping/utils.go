@@ -1,6 +1,7 @@
 package mapping
 
 import (
+	"btc-mapping-contract/contract/constants"
 	ce "btc-mapping-contract/contract/contracterrors"
 	"btc-mapping-contract/sdk"
 	"crypto/sha256"
@@ -35,7 +36,7 @@ func createP2WSHAddressWithBackup(
 		return "", nil, err
 	}
 
-	csvBlocks := backupCSVBlocks
+	csvBlocks := constants.BackupCSVBlocks
 
 	if network.Net != chaincfg.MainNetParams.Net {
 		csvBlocks = 2
@@ -168,12 +169,12 @@ func checkAndDeductBalance(env sdk.Env, account string, amount int64) error {
 		intentAmount := int64(0)
 		//check sender's intents
 		for _, intent := range env.SenderIntents {
-			if intent.Type != intentTransferType {
+			if intent.Type != constants.IntentTransferType {
 				continue
 			}
-			if contractId, ok := intent.Args[intentContractIdKey]; ok && contractId == env.ContractId {
+			if contractId, ok := intent.Args[constants.IntentContractIdKey]; ok && contractId == env.ContractId {
 				// sdk.Log("found intent for this contract: " + fmt.Sprintf("%v", intent))
-				if amount, ok := intent.Args[intentLimitKey]; ok {
+				if amount, ok := intent.Args[constants.IntentLimitKey]; ok {
 					var err error
 					intentAmount, err = strconv.ParseInt(amount, 10, 64)
 					if err != nil {
@@ -205,12 +206,12 @@ func checkAndDeductBalance(env sdk.Env, account string, amount int64) error {
 		intentAmount := int64(0)
 		//check caller's intents
 		for _, intent := range env.CallerIntents {
-			if intent.Type != intentTransferType {
+			if intent.Type != constants.IntentTransferType {
 				continue
 			}
-			if contractId, ok := intent.Args[intentContractIdKey]; ok && contractId == env.ContractId {
-				// sdk.Log("found intent for this contract: " + intent.Args[intentLimitKey] + " " + intent.Args["token"])
-				if amount, ok := intent.Args[intentLimitKey]; ok {
+			if contractId, ok := intent.Args[constants.IntentContractIdKey]; ok && contractId == env.ContractId {
+				// sdk.Log("found intent for this contract: " + intent.Args[constants.IntentLimitKey] + " " + intent.Args["token"])
+				if amount, ok := intent.Args[constants.IntentLimitKey]; ok {
 					clean := strings.Replace(amount, ".", "", 1)
 					var err error
 					intentAmount, err = strconv.ParseInt(clean, 10, 64)
@@ -245,7 +246,7 @@ func unpackUtxo(utxo [3]int64) (uint32, int64, uint8) {
 }
 
 func getAccBal(vscAcc string) int64 {
-	s := sdk.StateGetObject(BalancePrefix + vscAcc)
+	s := sdk.StateGetObject(constants.BalancePrefix + vscAcc)
 	if s == nil || *s == "" {
 		return 0
 	}
@@ -257,14 +258,14 @@ func getAccBal(vscAcc string) int64 {
 // sets account balance to number (in base 10)
 func setAccBal(vscAcc string, newBal int64) {
 	if newBal == 0 {
-		sdk.StateDeleteObject(BalancePrefix + vscAcc)
+		sdk.StateDeleteObject(constants.BalancePrefix + vscAcc)
 		return
 	}
 	v := uint64(newBal)
 	n := (bits.Len64(v) + 7) / 8
 	var buf [8]byte
 	binary.BigEndian.PutUint64(buf[:], v)
-	sdk.StateSetObject(BalancePrefix+vscAcc, string(buf[8-n:]))
+	sdk.StateSetObject(constants.BalancePrefix+vscAcc, string(buf[8-n:]))
 }
 
 func incAccBalance(vscAcc string, amount int64) error {
@@ -279,7 +280,7 @@ func incAccBalance(vscAcc string, amount int64) error {
 
 // gets the amount spent so far in this transaction
 func getAccExpenditure(contractId, vscAcc string) (int64, error) {
-	balString := sdk.EphemStateGetObject(contractId, intentExpenditurePrefix+vscAcc)
+	balString := sdk.EphemStateGetObject(contractId, constants.IntentExpenditurePrefix+vscAcc)
 	if *balString == "" {
 		return 0, nil
 	}
@@ -292,7 +293,7 @@ func getAccExpenditure(contractId, vscAcc string) (int64, error) {
 
 // sets the amount spent so far in this transaction
 func setAccExpenditure(vscAcc string, newBal int64) {
-	sdk.EphemStateSetObject(BalancePrefix+vscAcc, strconv.FormatInt(newBal, 10))
+	sdk.EphemStateSetObject(constants.BalancePrefix+vscAcc, strconv.FormatInt(newBal, 10))
 }
 
 // func deduct(vscAcc string, amount, balance, expenditure int64) {
@@ -319,25 +320,25 @@ func createDepositLog(d Deposit) string {
 	b.Grow(128)
 
 	b.WriteString("dep")
-	b.WriteString(logDelimiter)
+	b.WriteString(constants.LogDelimiter)
 
 	b.WriteString("t")
-	b.WriteString(logKeyDelimiter)
+	b.WriteString(constants.LogKeyDelimiter)
 	b.WriteString(d.to)
-	b.WriteString(logDelimiter)
+	b.WriteString(constants.LogDelimiter)
 
 	b.WriteString("f")
-	b.WriteString(logKeyDelimiter)
+	b.WriteString(constants.LogKeyDelimiter)
 	for i, s := range d.from {
 		if i > 0 {
-			b.WriteString(logArrayDelimiter)
+			b.WriteString(constants.LogArrayDelimiter)
 		}
 		b.WriteString(s)
 	}
-	b.WriteString(logDelimiter)
+	b.WriteString(constants.LogDelimiter)
 
 	b.WriteString("a")
-	b.WriteString(logKeyDelimiter)
+	b.WriteString(constants.LogKeyDelimiter)
 
 	var buf [20]byte
 	b.Write(strconv.AppendInt(buf[:0], d.amount, 10))
@@ -354,20 +355,20 @@ func createFeeLog(vscFee, btcFee int64) string {
 
 	// 2. Header
 	b.WriteString("fee")
-	b.WriteString(logDelimiter)
+	b.WriteString(constants.LogDelimiter)
 
 	// 3. VSC Fee
 	b.WriteString("m")
-	b.WriteString(logKeyDelimiter)
+	b.WriteString(constants.LogKeyDelimiter)
 
 	// Temporary stack buffer for integer conversion (max 20 digits for int64)
 	var buf [20]byte
 	b.Write(strconv.AppendInt(buf[:0], vscFee, 10))
-	b.WriteString(logDelimiter)
+	b.WriteString(constants.LogDelimiter)
 
 	// 4. BTC Fee
 	b.WriteString("b")
-	b.WriteString(logKeyDelimiter)
+	b.WriteString(constants.LogKeyDelimiter)
 	b.Write(strconv.AppendInt(buf[:0], btcFee, 10))
 
 	// 5. Final String Conversion (1 allocation)
@@ -395,9 +396,9 @@ func safeSubtract64(a, b int64) (int64, error) {
 }
 
 func getUtxoKey(id uint32) string {
-	return UtxoPrefix + strconv.FormatUint(uint64(id), 16)
+	return constants.UtxoPrefix + strconv.FormatUint(uint64(id), 16)
 }
 
 func getObservedKey(utxo Utxo) string {
-	return ObservedPrefix + utxo.TxId + ":" + strconv.FormatUint(uint64(utxo.Vout), 10)
+	return constants.ObservedPrefix + utxo.TxId + ":" + strconv.FormatUint(uint64(utxo.Vout), 10)
 }

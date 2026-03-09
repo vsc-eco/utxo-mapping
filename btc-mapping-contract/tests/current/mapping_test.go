@@ -26,10 +26,10 @@ func TestMap(t *testing.T) {
 	ct := test_utils.NewContractTest()
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
-	ct.StateSet(contractId, mapping.UtxoRegistryKey, `[]`)
+	ct.StateSet(contractId, constants.UtxoRegistryKey, `[]`)
 	ct.StateSet(
 		contractId,
-		mapping.SupplyKey,
+		constants.SupplyKey,
 		`{"active_supply":0,"user_supply":0,"fee_supply":0,"base_fee_rate":1}`,
 	)
 	ct.StateSet(contractId, blocklist.LastHeightKey, "114810")
@@ -95,36 +95,36 @@ func TestUnmap(t *testing.T) {
 	ct := test_utils.NewContractTest()
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
-	ct.StateSet(contractId, mapping.BalancePrefix+"hive:milo-hpr", "10000")
+	ct.StateSet(contractId, constants.BalancePrefix+"hive:milo-hpr", "10000")
 	ct.StateSet(
 		contractId,
-		mapping.ObservedPrefix+"95af4aafb228696204ed86003e9ac6b904d6493d4311eda90ac34875c4ebab9a:0",
+		constants.ObservedPrefix+"95af4aafb228696204ed86003e9ac6b904d6493d4311eda90ac34875c4ebab9a:0",
 		"1",
 	)
 	ct.StateSet(
 		contractId,
-		mapping.ObservedPrefix+"4cfede180e58a2326aabd41c20fefcf60aba212e031e5b27be3dbfd5caf09af1:1",
+		constants.ObservedPrefix+"4cfede180e58a2326aabd41c20fefcf60aba212e031e5b27be3dbfd5caf09af1:1",
 		"1",
 	)
 	ct.StateSet(
 		contractId,
-		mapping.UtxoRegistryKey,
+		constants.UtxoRegistryKey,
 		`[[0,5000,1],[1,5000,1]]`,
 	)
 	ct.StateSet(
 		contractId,
-		mapping.UtxoPrefix+"0",
+		constants.UtxoPrefix+"0",
 		`{"tx_id":"95af4aafb228696204ed86003e9ac6b904d6493d4311eda90ac34875c4ebab9a","vout":0,"amount":5000,"pk_script":"ACAqDOQIRoebQvp3OesVzat3ygG3gXqXh5sfWP61LkRHjA==","tag":"6ad59da3ece6b8fcfd0cd8c615ed5ec82504fbd81808b2aea5fb750adb01f20c"}`,
 	)
 	ct.StateSet(
 		contractId,
-		mapping.UtxoPrefix+"1",
+		constants.UtxoPrefix+"1",
 		`{"tx_id":"4cfede180e58a2326aabd41c20fefcf60aba212e031e5b27be3dbfd5caf09af1","vout":1,"amount":5000,"pk_script":"ACC63J0lCXrLrpyBg0RUMqOyJOX7MbMjqDXkNkwDg974/w==","tag":""}`,
 	)
-	ct.StateSet(contractId, mapping.UtxoLastIdKey, "2")
+	ct.StateSet(contractId, constants.UtxoLastIdKey, "2")
 	ct.StateSet(
 		contractId,
-		mapping.SupplyKey,
+		constants.SupplyKey,
 		`{"active_supply":10000,"user_supply":10000,"fee_supply":0,"base_fee_rate":1}`,
 	)
 	ct.StateSet(contractId, blocklist.LastHeightKey, "114810")
@@ -193,35 +193,35 @@ func TestTransfer(t *testing.T) {
 	ct := test_utils.NewContractTest()
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
-	ct.StateSet(contractId, "balhive:milo-hpr", "5000")
+	ct.StateSet(contractId, constants.BalancePrefix+"hive:milo-hpr", "5000")
 	ct.StateSet(
 		contractId,
-		"observed_txs70392917bb417a68fabd51e8d97a48b5d9594538b76cd47317b4c5c7755b3229:1",
+		constants.ObservedPrefix+"70392917bb417a68fabd51e8d97a48b5d9594538b76cd47317b4c5c7755b3229:1",
 		"1",
 	)
 	ct.StateSet(
 		contractId,
-		"utxo_registry",
-		`[["AA==","Aboy","AQ=="]]`,
+		constants.UtxoRegistryKey,
+		`[[0,5000,1]]`,
 	)
 	ct.StateSet(
 		contractId,
-		"utxos0",
+		constants.UtxoPrefix+"0",
 		`{"tx_id":"70392917bb417a68fabd51e8d97a48b5d9594538b76cd47317b4c5c7755b3229","vout":1,"amount":5000,"pk_script":"ACBgnG71qWAHis6PJ3asfdG7WSVDT1HYnaXrj5VCSeB6Vw==","tag":"6ad59da3ece6b8fcfd0cd8c615ed5ec82504fbd81808b2aea5fb750adb01f20c"}`,
 	)
-	ct.StateSet(contractId, "utxo_id", "1")
+	ct.StateSet(contractId, constants.UtxoLastIdKey, "1")
 	ct.StateSet(
 		contractId,
-		"supply",
+		constants.SupplyKey,
 		`{"active_supply":5000,"user_supply":5000,"fee_supply":0,"base_fee_rate":1}`,
 	)
-	ct.StateSet(contractId, "last_block_height", "4782849")
+	ct.StateSet(contractId, blocklist.LastHeightKey, "4782849")
 	ct.StateSet(
 		contractId,
-		"block4782849",
+		constants.BlockPrefix+"4782849",
 		"00000020c85f72486dce7bbe73e806f095494d37553995ffc9a6995ab860a34700000000e37446d7b9f3f5498d2b07a25ca3e76144a4754dd49794f8f8b91e7161cff7eee7321e69ffff001dc44cdfad",
 	)
-	ct.StateSet(contractId, "pubkey", `0332e9f22cfa2f6233c059c4d54700e3d00df3d7f55e3ea16207b860360446634f`)
+	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, `0332e9f22cfa2f6233c059c4d54700e3d00df3d7f55e3ea16207b860360446634f`)
 
 	transferDetails := mapping.TransferParams{
 		Amount: "8000",
@@ -298,22 +298,18 @@ func TestCreateKey(t *testing.T) {
 	// fmt.Println("tss requests:", ct.Tss.Requests.Requests)
 }
 
-const inputPubKey = `{"primary_public_key": "pubkey", "backup_public_key": "backupkey"}`
-
 func TestRegisterKey(t *testing.T) {
 	ct := test_utils.NewContractTest()
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 
-	// keys := mapping.PublicKeys{
-	// 	PrimaryPubKey: "pub",
-	// 	BackupPubKey:  "back",
-	// }
-
-	// input, err := tinyjson.Marshal(keys)
-	// if err != nil {
-	// 	t.Fatalf("error marshalling input string: %s", err.Error())
-	// }
+	input, err := tinyjson.Marshal(mapping.PublicKeys{
+		PrimaryPubKey: "pubkey",
+		BackupPubKey:  "backupkey",
+	})
+	if err != nil {
+		t.Fatal("error marshalling input:", err.Error())
+	}
 
 	r := ct.Call(stateEngine.TxVscCallContract{
 		Self: stateEngine.TxSelf{
@@ -327,7 +323,7 @@ func TestRegisterKey(t *testing.T) {
 		},
 		ContractId: contractId,
 		Action:     "register_public_key",
-		Payload:    json.RawMessage(inputPubKey),
+		Payload:    input,
 		RcLimit:    1000,
 		Intents:    []contracts.Intent{},
 	})
@@ -342,19 +338,24 @@ func TestRegisterKey(t *testing.T) {
 	fmt.Println("Return value:", r.Ret)
 }
 
-const rawBlocks = `{"blocks":"00c0fa213b04801d1b66efcf8f41290a675777893f5c6ac158a585654263ba0900000000fdf6162d92eee3af012f1ddab30a401bb371a0da32371d185fc25eb3655fd6d013575469ffff001db80220f80000002002883f9d7847a35a0d371cd11bf95c0f9d252ed41f46dde04172bf0c000000003d2af3ae86b3638665e6214df4dc12712fd7486348c3c319cedb3c69bc8a4ddac45b5469ffff001d1adfdc74","latest_fee":1}`
-
 func TestAddBlocks(t *testing.T) {
 	ct := test_utils.NewContractTest()
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
-	ct.StateSet(contractId, "last_block_height", "116087")
+	ct.StateSet(contractId, blocklist.LastHeightKey, "116087")
 	ct.StateSet(
 		contractId,
-		"block116087",
+		constants.BlockPrefix+"116087",
 		"00c0a520165303733ee5b0561d46da9dcce685fd12a807d64472931c46d5920c00000000c96f929654fc44fb69783b6cc4f2340ad85de5b10c5047836561901299ed23d162525469ffff001dda00dd53",
 	)
-	// ct.StateSet("mapping_contract", "supply", `{}`)
+
+	payload, err := tinyjson.Marshal(blocklist.AddBlocksParams{
+		Blocks:    "00c0fa213b04801d1b66efcf8f41290a675777893f5c6ac158a585654263ba0900000000fdf6162d92eee3af012f1ddab30a401bb371a0da32371d185fc25eb3655fd6d013575469ffff001db80220f80000002002883f9d7847a35a0d371cd11bf95c0f9d252ed41f46dde04172bf0c000000003d2af3ae86b3638665e6214df4dc12712fd7486348c3c319cedb3c69bc8a4ddac45b5469ffff001d1adfdc74",
+		LatestFee: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	r := ct.Call(stateEngine.TxVscCallContract{
 		Self: stateEngine.TxSelf{
@@ -368,7 +369,7 @@ func TestAddBlocks(t *testing.T) {
 		},
 		ContractId: contractId,
 		Action:     "add_blocks",
-		Payload:    json.RawMessage([]byte(rawBlocks)),
+		Payload:    payload,
 		RcLimit:    10000,
 		Intents:    []contracts.Intent{},
 	})
@@ -384,13 +385,19 @@ func TestAddBlocks(t *testing.T) {
 	fmt.Println("Return value:", r.Ret)
 }
 
-const seedBlockInput = `{"block_header":"0000002081e2ced515b739090e16bd5d6b7cd7d5450ebe1deb24e4ff2c00000000000000ddba270323b3ae839a4ac7bc31ab10f35c00204833bdcf5d88cf2bd9247bc030c40dee68ffff001d4ee60d63","block_height":4736940}`
-
 func TestSeedBlocks(t *testing.T) {
 	ct := test_utils.NewContractTest()
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
-	ct.StateSet(contractId, "last_block_height", "116087")
+	ct.StateSet(contractId, blocklist.LastHeightKey, "116087")
+
+	payload, err := tinyjson.Marshal(blocklist.SeedBlocksParams{
+		BlockHeader: "0000002081e2ced515b739090e16bd5d6b7cd7d5450ebe1deb24e4ff2c00000000000000ddba270323b3ae839a4ac7bc31ab10f35c00204833bdcf5d88cf2bd9247bc030c40dee68ffff001d4ee60d63",
+		BlockHeight: 4736940,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	r := ct.Call(stateEngine.TxVscCallContract{
 		Self: stateEngine.TxSelf{
@@ -404,7 +411,7 @@ func TestSeedBlocks(t *testing.T) {
 		},
 		ContractId: contractId,
 		Action:     "seed_blocks",
-		Payload:    json.RawMessage([]byte(seedBlockInput)),
+		Payload:    payload,
 		RcLimit:    1000,
 		Intents:    []contracts.Intent{},
 	})

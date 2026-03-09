@@ -24,7 +24,7 @@ func IntializeContractState(publicKeys *PublicKeys, networkMode string) (*Contra
 	}
 
 	var utxos UtxoRegistry
-	utxoState := sdk.StateGetObject(UtxoRegistryKey)
+	utxoState := sdk.StateGetObject(constants.UtxoRegistryKey)
 	if len(*utxoState) > 0 {
 		err := tinyjson.Unmarshal([]byte(*utxoState), &utxos)
 		if err != nil {
@@ -32,7 +32,7 @@ func IntializeContractState(publicKeys *PublicKeys, networkMode string) (*Contra
 		}
 	}
 
-	lastUtxoIdHex := sdk.StateGetObject(UtxoLastIdKey)
+	lastUtxoIdHex := sdk.StateGetObject(constants.UtxoLastIdKey)
 	lastUtxoId, err := strconv.ParseUint(*lastUtxoIdHex, 16, 32)
 	if err != nil {
 		if *lastUtxoIdHex == "" {
@@ -43,7 +43,7 @@ func IntializeContractState(publicKeys *PublicKeys, networkMode string) (*Contra
 	}
 
 	var txSpends TxSpendsRegistry
-	txSpendsState := sdk.StateGetObject(TxSpendsRegistryKey)
+	txSpendsState := sdk.StateGetObject(constants.TxSpendsRegistryKey)
 	if len(*txSpendsState) > 0 {
 		err := tinyjson.Unmarshal([]byte(*txSpendsState), &txSpends)
 		if err != nil {
@@ -52,7 +52,7 @@ func IntializeContractState(publicKeys *PublicKeys, networkMode string) (*Contra
 	}
 
 	var supply SystemSupply
-	supplyState := sdk.StateGetObject(SupplyKey)
+	supplyState := sdk.StateGetObject(constants.SupplyKey)
 	if len(*supplyState) > 0 {
 		err := tinyjson.Unmarshal([]byte(*supplyState), &supply)
 		if err != nil {
@@ -109,8 +109,8 @@ func (cs *ContractState) parseInstructions(
 		// assumes VSC as the network for deposits and unspecified swaps
 		var recipient string
 		var mappingType MappingType
-		if params.Has(depositToKey) {
-			recipient = params.Get(depositToKey)
+		if params.Has(constants.DepositToKey) {
+			recipient = params.Get(constants.DepositToKey)
 			if !cs.NetworkOptions[Vsc].ValidateAddress(recipient) {
 				return nil, ce.NewContractError(
 					ce.ErrInput,
@@ -119,9 +119,9 @@ func (cs *ContractState) parseInstructions(
 				)
 			}
 			mappingType = MapDeposit
-		} else if params.Has(swapToKey) {
-			recipient = params.Get(swapToKey)
-			recipientNetwork, err := cs.getNetwork(params.Get(swapNetworkOut))
+		} else if params.Has(constants.SwapToKey) {
+			recipient = params.Get(constants.SwapToKey)
+			recipientNetwork, err := cs.getNetwork(params.Get(constants.SwapNetworkOut))
 			if err != nil {
 				recipientNetwork = cs.NetworkOptions[Vsc]
 			}
@@ -165,21 +165,21 @@ func (cs *ContractState) SaveToState() error {
 	if err != nil {
 		return ce.NewContractError(ce.ErrJson, "error marshaling utxo listings: "+err.Error())
 	}
-	sdk.StateSetObject(UtxoRegistryKey, string(utxosJson))
+	sdk.StateSetObject(constants.UtxoRegistryKey, string(utxosJson))
 
-	sdk.StateSetObject(UtxoLastIdKey, strconv.FormatUint(uint64(cs.UtxoNextId), 16))
+	sdk.StateSetObject(constants.UtxoLastIdKey, strconv.FormatUint(uint64(cs.UtxoNextId), 16))
 
 	txSpendsJson, err := tinyjson.Marshal(cs.TxSpendsList)
 	if err != nil {
 		return ce.NewContractError(ce.ErrJson, "error marshaling tx spends: "+err.Error())
 	}
-	sdk.StateSetObject(TxSpendsRegistryKey, string(txSpendsJson))
+	sdk.StateSetObject(constants.TxSpendsRegistryKey, string(txSpendsJson))
 
 	supplyJson, err := tinyjson.Marshal(cs.Supply)
 	if err != nil {
 		return ce.NewContractError(ce.ErrJson, "error marshaling supply: "+err.Error())
 	}
-	sdk.StateSetObject(SupplyKey, string(supplyJson))
+	sdk.StateSetObject(constants.SupplyKey, string(supplyJson))
 
 	return nil
 }
@@ -194,7 +194,7 @@ func (ms *MappingState) SaveToState() error {
 
 func SupplyFromState() (*SystemSupply, error) {
 	var supply SystemSupply
-	supplyState := sdk.StateGetObject(SupplyKey)
+	supplyState := sdk.StateGetObject(constants.SupplyKey)
 	if len(*supplyState) > 0 {
 		err := tinyjson.Unmarshal([]byte(*supplyState), &supply)
 		if err != nil {
@@ -210,7 +210,7 @@ func SaveSupplyToState(supply *SystemSupply) error {
 	if err != nil {
 		return err
 	}
-	sdk.StateSetObject(SupplyKey, string(supplyJson))
+	sdk.StateSetObject(constants.SupplyKey, string(supplyJson))
 
 	return nil
 }

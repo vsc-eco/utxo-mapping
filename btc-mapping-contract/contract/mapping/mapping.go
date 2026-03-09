@@ -64,7 +64,7 @@ func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) ([]Utxo, error) {
 }
 
 func (cs *ContractState) updateUtxoSpends(txId string) error {
-	utxoSpendJson := sdk.StateGetObject(TxSpendsPrefix + txId)
+	utxoSpendJson := sdk.StateGetObject(constants.TxSpendsPrefix + txId)
 	if len(*utxoSpendJson) < 1 {
 		return nil
 	}
@@ -107,7 +107,7 @@ func (cs *ContractState) updateUtxoSpends(txId string) error {
 		}
 	}
 
-	sdk.StateDeleteObject(TxSpendsPrefix + txId)
+	sdk.StateDeleteObject(constants.TxSpendsPrefix + txId)
 	for i, val := range cs.TxSpendsList {
 		if val == txId {
 			// swap with the last element and shorten
@@ -174,11 +174,11 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) error {
 					}
 				}
 
-				ok := metadata.Params.Has(swapAssetOut)
+				ok := metadata.Params.Has(constants.SwapAssetOut)
 				if !ok {
 					return ce.NewContractError(ce.ErrInput, "asset out required to execute a swap")
 				}
-				assetOut := metadata.Params.Get(swapAssetOut)
+				assetOut := metadata.Params.Get(constants.SwapAssetOut)
 
 				instruction := DexInstruction{
 					Type:      "swap",
