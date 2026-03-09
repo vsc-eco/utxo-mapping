@@ -140,7 +140,7 @@ func TestUnmap(t *testing.T) {
 	)
 
 	payload, err := tinyjson.Marshal(mapping.TransferParams{
-		Amount: 7500,
+		Amount: "7500",
 		To:     "tb1qxvxtxtjgcmu8r82ss4yhg899xt4rfdnvhjspp8",
 	})
 	if err != nil {
@@ -224,7 +224,7 @@ func TestTransfer(t *testing.T) {
 	ct.StateSet(contractId, "pubkey", `0332e9f22cfa2f6233c059c4d54700e3d00df3d7f55e3ea16207b860360446634f`)
 
 	transferDetails := mapping.TransferParams{
-		Amount: 8000,
+		Amount: "8000",
 		To:     "hive:vaultec",
 	}
 	payload, err := tinyjson.Marshal(transferDetails)

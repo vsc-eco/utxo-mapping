@@ -4,9 +4,11 @@ import (
 	ce "btc-mapping-contract/contract/contracterrors"
 	"btc-mapping-contract/sdk"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"math"
+	"math/bits"
 	"slices"
 	"strconv"
 	"strings"
@@ -148,14 +150,17 @@ func buildIntentError(remaining int64, amount int64, address string) error {
 func checkAndDeductBalance(env sdk.Env, account string, amount int64) error {
 	callerAddress := env.Caller.String()
 	senderAddress := env.Sender.Address.String()
-	bal, err := getAccBal(account)
-	if err != nil {
-		return ce.NewContractError(ce.ErrStateAccess, "could not fetch balance for account ("+account+")")
-	}
+	bal := getAccBal(account)
 	if bal < amount {
 		return ce.NewContractError(
 			ce.ErrBalance,
-			"sender balance "+strconv.FormatInt(bal, 10)+" insufficient needs "+strconv.FormatInt(amount, 10),
+			"account ["+account+"] balance "+strconv.FormatInt(
+				bal,
+				10,
+			)+" insufficient needs "+strconv.FormatInt(
+				amount,
+				10,
+			),
 		)
 	}
 	switch account {
@@ -169,6 +174,7 @@ func checkAndDeductBalance(env sdk.Env, account string, amount int64) error {
 			if contractId, ok := intent.Args[intentContractIdKey]; ok && contractId == env.ContractId {
 				// sdk.Log("found intent for this contract: " + fmt.Sprintf("%v", intent))
 				if amount, ok := intent.Args[intentLimitKey]; ok {
+					var err error
 					intentAmount, err = strconv.ParseInt(amount, 10, 64)
 					if err != nil {
 						return ce.WrapContractError(ce.ErrIntent, err, "invalid intent amount")
@@ -206,6 +212,7 @@ func checkAndDeductBalance(env sdk.Env, account string, amount int64) error {
 				// sdk.Log("found intent for this contract: " + intent.Args[intentLimitKey] + " " + intent.Args["token"])
 				if amount, ok := intent.Args[intentLimitKey]; ok {
 					clean := strings.Replace(amount, ".", "", 1)
+					var err error
 					intentAmount, err = strconv.ParseInt(clean, 10, 64)
 					if err != nil {
 						return ce.NewContractError(ce.ErrIntent, "invalid intent amount")
@@ -237,28 +244,31 @@ func unpackUtxo(utxo [3]int64) (uint32, int64, uint8) {
 	return uint32(utxo[0]), utxo[1], uint8(utxo[2])
 }
 
-func getAccBal(vscAcc string) (int64, error) {
-	balString := sdk.StateGetObject(BalancePrefix + vscAcc)
-	if *balString == "" {
-		return 0, nil
+func getAccBal(vscAcc string) int64 {
+	s := sdk.StateGetObject(BalancePrefix + vscAcc)
+	if s == nil || *s == "" {
+		return 0
 	}
-	bal, err := strconv.ParseInt(*balString, 10, 64)
-	if err != nil {
-		return 0, err
-	}
-	return bal, nil
+	var buf [8]byte
+	copy(buf[8-len(*s):], *s)
+	return int64(binary.BigEndian.Uint64(buf[:]))
 }
 
 // sets account balance to number (in base 10)
 func setAccBal(vscAcc string, newBal int64) {
-	sdk.StateSetObject(BalancePrefix+vscAcc, strconv.FormatInt(newBal, 10))
+	if newBal == 0 {
+		sdk.StateDeleteObject(BalancePrefix + vscAcc)
+		return
+	}
+	v := uint64(newBal)
+	n := (bits.Len64(v) + 7) / 8
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], v)
+	sdk.StateSetObject(BalancePrefix+vscAcc, string(buf[8-n:]))
 }
 
 func incAccBalance(vscAcc string, amount int64) error {
-	bal, err := getAccBal(vscAcc)
-	if err != nil {
-		return err
-	}
+	bal := getAccBal(vscAcc)
 	newBal, err := safeAdd64(bal, amount)
 	if err != nil {
 		return ce.WrapContractError(ce.ErrArithmetic, err, "error incremting user balance")
@@ -308,7 +318,7 @@ func createDepositLog(d Deposit) string {
 
 	b.Grow(128)
 
-	b.WriteString("deposit")
+	b.WriteString("dep")
 	b.WriteString(logDelimiter)
 
 	b.WriteString("t")
@@ -339,15 +349,15 @@ func createFeeLog(vscFee, btcFee int64) string {
 	var b strings.Builder
 
 	// 1. Pre-allocate capacity.
-	// "fee|vsc:int64|btc:int64" is usually < 64 bytes.
-	b.Grow(64)
+	// "fee|m=int64|b=int64" is guarnateed to be < 50 bytes.
+	b.Grow(50)
 
 	// 2. Header
 	b.WriteString("fee")
 	b.WriteString(logDelimiter)
 
 	// 3. VSC Fee
-	b.WriteString("magi")
+	b.WriteString("m")
 	b.WriteString(logKeyDelimiter)
 
 	// Temporary stack buffer for integer conversion (max 20 digits for int64)
@@ -356,7 +366,7 @@ func createFeeLog(vscFee, btcFee int64) string {
 	b.WriteString(logDelimiter)
 
 	// 4. BTC Fee
-	b.WriteString("btc")
+	b.WriteString("b")
 	b.WriteString(logKeyDelimiter)
 	b.Write(strconv.AppendInt(buf[:0], btcFee, 10))
 
