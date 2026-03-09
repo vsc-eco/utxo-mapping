@@ -19,6 +19,8 @@ func IntializeContractState(publicKeys *PublicKeys, networkMode string) (*Contra
 		networkParams = &chaincfg.TestNet3Params
 	case constants.Testnet4:
 		networkParams = &chaincfg.TestNet4Params
+	case constants.Regtest:
+		networkParams = &chaincfg.RegressionNetParams
 	default:
 		networkParams = &chaincfg.MainNetParams
 	}

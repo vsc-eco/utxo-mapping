@@ -5,7 +5,7 @@ const DirPathDelimiter = "/"
 const TssKeyName = "main"
 const RouterContractIdKey = "routerid"
 
-const BalancePrefix = "bal"
+const BalancePrefix = "bal" + DirPathDelimiter
 const ObservedPrefix = "otx" + DirPathDelimiter
 const UtxoPrefix = "utxo" + DirPathDelimiter
 const UtxoRegistryKey = "utxor"
@@ -52,8 +52,9 @@ const (
 	Testnet3 string = "testnet3"
 	Testnet4 string = "testnet4"
 	Mainnet  string = "mainnet"
+	Regtest  string = "regtest"
 )
 
 func IsTestnet(networkName string) bool {
-	return networkName == Testnet3 || networkName == Testnet4
+	return networkName == Testnet3 || networkName == Testnet4 || networkName == Regtest
 }

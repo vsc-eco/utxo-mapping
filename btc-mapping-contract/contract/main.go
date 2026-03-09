@@ -59,9 +59,11 @@ func SeedBlocks(blockSeedInput *string) *string {
 
 	var seedParams blocklist.SeedBlocksParams
 	err := tinyjson.Unmarshal([]byte(*blockSeedInput), &seedParams)
-	ce.CustomAbort(
-		ce.WrapContractError(ce.ErrJson, err),
-	)
+	if err != nil {
+		ce.CustomAbort(
+			ce.WrapContractError(ce.ErrJson, err),
+		)
+	}
 
 	newLastHeight, err := blocklist.HandleSeedBlocks(seedParams, constants.IsTestnet(NetworkMode))
 	if err != nil {

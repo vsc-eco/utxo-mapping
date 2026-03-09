@@ -5,6 +5,7 @@ TARGET = contract/main.go
 BASEFLAGS = -gc=custom -scheduler=none -panic=trap -no-debug -target=wasm-unknown
 TESTNET3FLAGS = -ldflags="-X 'main.NetworkMode=testnet3'"
 TESTNET4FLAGS = -ldflags="-X 'main.NetworkMode=testnet4'"
+REGTESTFLAGS  = -ldflags="-X 'main.NetworkMode=regtest'"
 
 TINYJSON		:= tinyjson
 TINYJSON_FLAGS 	:= -snake_case -no_std_marshalers
@@ -74,6 +75,10 @@ mainnet: NETWORK ?= mainnet
 mainnet:
 	@echo "Building $@ with $(NETWORK) flags"
 	$(TINYGO_CMD) build $(CFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
+
+regtest:
+	@echo "Building $@ with regtest flags"
+	$(TINYGO_CMD) build $(BASEFLAGS) $(REGTESTFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
 
 strip:
 	@for file in $(BIN_DIR)/*.wasm; do \

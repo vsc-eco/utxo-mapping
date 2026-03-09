@@ -76,6 +76,8 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 		networkParams = &chaincfg.TestNet3Params
 	case constants.Testnet4:
 		networkParams = &chaincfg.TestNet4Params
+	case constants.Regtest:
+		networkParams = &chaincfg.RegressionNetParams
 	default:
 		networkParams = &chaincfg.MainNetParams
 	}
