@@ -29,12 +29,13 @@ const (
 type AddressType string
 
 const (
-	AddressTypeEVM     AddressType = "evm"
-	AddressTypeKey     AddressType = "key"
-	AddressTypeHive    AddressType = "hive"
-	AddressTypeSystem  AddressType = "system"
-	AddressTypeBLS     AddressType = "bls"
-	AddressTypeUnknown AddressType = "unknown"
+	AddressTypeEVM      AddressType = "evm"
+	AddressTypeKey      AddressType = "key"
+	AddressTypeHive     AddressType = "hive"
+	AddressTypeSystem   AddressType = "system"
+	AddressTypeBLS      AddressType = "bls"
+	AddressTypeContract AddressType = "contract"
+	AddressTypeUnknown  AddressType = "unknown"
 )
 
 type Address string
@@ -62,6 +63,8 @@ func (a Address) Type() AddressType {
 		return AddressTypeHive
 	} else if strings.HasPrefix(a.String(), "system:") {
 		return AddressTypeSystem
+	} else if strings.HasPrefix(a.String(), "contract:") {
+		return AddressTypeContract
 	} else {
 		return AddressTypeUnknown
 	}

@@ -70,7 +70,10 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	if err != nil {
 		return err
 	}
-	amount := instructions.Amount
+	amount, err := strconv.ParseInt(instructions.Amount, 10, 64)
+	if err != nil {
+		return ce.WrapContractError(ce.ErrInput, err, "invalid amount value")
+	}
 	if amount <= 0 {
 		return ce.NewContractError(ce.ErrInput, "amount must be positive")
 	}
@@ -185,7 +188,10 @@ func HandleTransfer(instructions *TransferParams) error {
 	if err != nil {
 		return err
 	}
-	amount := instructions.Amount
+	amount, err := strconv.ParseInt(instructions.Amount, 10, 64)
+	if err != nil {
+		return ce.WrapContractError(ce.ErrInput, err, "invalid amount value")
+	}
 	if amount <= 0 {
 		return ce.NewContractError(ce.ErrInput, "amount must be positive")
 	}
@@ -209,13 +215,15 @@ func HandleTransfer(instructions *TransferParams) error {
 			return err
 		}
 	default:
-		return ce.NewContractError(ce.ErrInput, "must transfer from caller or sender")
+		return ce.NewContractError(
+			ce.ErrInput,
+			"must transfer from caller ["+env.Caller.String()+
+				"] or sender ["+env.Sender.Address.String()+
+				" ] got ["+instructions.From+"]",
+		)
 	}
 
-	recipientBal, err := getAccBal(instructions.To)
-	if err != nil {
-		return err
-	}
+	recipientBal := getAccBal(instructions.To)
 
 	newBal, err := safeAdd64(recipientBal, amount)
 	if err != nil {

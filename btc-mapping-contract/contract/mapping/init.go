@@ -109,8 +109,8 @@ func (cs *ContractState) parseInstructions(
 		// assumes VSC as the network for deposits and unspecified swaps
 		var recipient string
 		var mappingType MappingType
-		if params.Has(depositKey) {
-			recipient = params.Get(depositKey)
+		if params.Has(depositToKey) {
+			recipient = params.Get(depositToKey)
 			if !cs.NetworkOptions[Vsc].ValidateAddress(recipient) {
 				return nil, ce.NewContractError(
 					ce.ErrInput,
@@ -119,8 +119,8 @@ func (cs *ContractState) parseInstructions(
 				)
 			}
 			mappingType = MapDeposit
-		} else if params.Has(swapRecipientKey) {
-			recipient = params.Get(swapRecipientKey)
+		} else if params.Has(swapToKey) {
+			recipient = params.Get(swapToKey)
 			recipientNetwork, err := cs.getNetwork(params.Get(swapNetworkOut))
 			if err != nil {
 				recipientNetwork = cs.NetworkOptions[Vsc]
@@ -155,6 +155,7 @@ func (cs *ContractState) parseInstructions(
 				Type:        mappingType,
 			}
 		}
+		// should error for unsupported instruction?
 	}
 	return registry, nil
 }

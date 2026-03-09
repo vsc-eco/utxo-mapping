@@ -17,10 +17,10 @@ const SupplyKey = "sply"
 
 // Instruction URL search param keys
 const (
-	depositKey       = "deposit_to"
+	depositToKey     = "deposit_to"
 	swapAssetOut     = "swap_asset_out"
 	swapNetworkOut   = "swap_network_out"
-	swapRecipientKey = "swap_to"
+	swapToKey        = "swap_to"
 	returnAddressKey = "return_address"
 	returnNetworkKey = "return_network"
 )
@@ -74,7 +74,7 @@ type AccountInfo struct {
 //
 //tinyjson:json
 type TransferParams struct {
-	Amount int64  `json:"amount"`
+	Amount string `json:"amount"`
 	To     string `json:"to"`
 	From   string `json:"from,omitempty"`
 }

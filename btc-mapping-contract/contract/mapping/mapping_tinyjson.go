@@ -319,7 +319,7 @@ func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp4(in *jle
 		}
 		switch key {
 		case "amount":
-			out.Amount = int64(in.Int64())
+			out.Amount = string(in.String())
 		case "to":
 			out.To = string(in.String())
 		case "from":
@@ -341,7 +341,7 @@ func tinyjsonA043f2bcEncodeBtcMappingContractContractMappingTinyjsonTmp4(out *jw
 	{
 		const prefix string = ",\"amount\":"
 		out.RawString(prefix[1:])
-		out.Int64(int64(in.Amount))
+		out.String(string(in.Amount))
 	}
 	{
 		const prefix string = ",\"to\":"

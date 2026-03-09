@@ -184,6 +184,7 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) error {
 					Type:      "swap",
 					Version:   "1.0.0",
 					AssetIn:   BtcAssetValue,
+					AmountIn:  utxo.Amount,
 					AssetOut:  assetOut,
 					Recipient: metadata.Recipient,
 				}

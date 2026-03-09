@@ -14,7 +14,7 @@ type Network interface {
 
 const (
 	Btc  NetworkName = "btc"
-	Vsc  NetworkName = "vsc"
+	Vsc  NetworkName = "magi"
 	Hive NetworkName = "hive"
 )
 
