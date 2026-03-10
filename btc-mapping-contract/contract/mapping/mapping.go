@@ -229,8 +229,16 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) error {
 	}
 
 	if totalMapped != 0 {
-		ms.Supply.ActiveSupply += totalMapped
-		ms.Supply.UserSupply += totalMapped
+		newActive, err := safeAdd64(ms.Supply.ActiveSupply, totalMapped)
+		if err != nil {
+			return ce.WrapContractError(ce.ErrArithmetic, err, "error incrementing active supply")
+		}
+		ms.Supply.ActiveSupply = newActive
+		newUser, err := safeAdd64(ms.Supply.UserSupply, totalMapped)
+		if err != nil {
+			return ce.WrapContractError(ce.ErrArithmetic, err, "error incrementing user supply")
+		}
+		ms.Supply.UserSupply = newUser
 	}
 
 	return nil

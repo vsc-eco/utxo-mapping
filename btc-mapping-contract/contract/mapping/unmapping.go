@@ -107,7 +107,10 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint8, int64, error) {
 	for _, entry := range cs.UtxoList {
 		if entry.Id >= constants.UtxoConfirmedPoolStart {
 			inputs = append(inputs, entry.Id)
-			accAmount += entry.Amount
+			accAmount, err := safeAdd64(accAmount, entry.Amount)
+			if err != nil {
+				return nil, 0, ce.WrapContractError(ce.ErrArithmetic, err, "error gathering utxos")
+			}
 
 			fee := cs.estimateFee(int64(len(inputs)), amount, accAmount)
 			requiredAmount := amount + fee
@@ -126,7 +129,10 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint8, int64, error) {
 	// uses unconfirmed txs only if all confirmed txs are insufficient
 	for _, u := range unconfirmedTxs {
 		inputs = append(inputs, u.id)
-		accAmount += u.amount
+		accAmount, err := safeAdd64(accAmount, u.amount)
+		if err != nil {
+			return nil, 0, ce.WrapContractError(ce.ErrArithmetic, err, "error gathering utxos")
+		}
 
 		fee := cs.estimateFee(int64(len(inputs)), amount, accAmount)
 		requiredAmount := amount + fee
