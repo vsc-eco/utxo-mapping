@@ -1,68 +1,14 @@
 package mapping
 
 import (
-	"btc-mapping-contract/sdk"
-	"bytes"
-	"encoding/hex"
-	"slices"
-	"strconv"
-
-	"github.com/CosmWasm/tinyjson"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-
 	"btc-mapping-contract/contract/constants"
 	ce "btc-mapping-contract/contract/contracterrors"
+	"btc-mapping-contract/sdk"
+	"slices"
+	"strconv"
 )
 
 const MaxMerkleProofLength = 33 // 2^33 blocks > total BTC supply
-
-func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
-	rawTx, err := hex.DecodeString(txData.RawTxHex)
-	if err != nil {
-		return ce.WrapContractError("", err)
-	}
-	proofBytes, err := hex.DecodeString(txData.MerkleProofHex)
-	if err != nil {
-		return err
-	}
-	if len(proofBytes)%32 != 0 {
-		return ce.NewContractError(ce.ErrInput, "proof length must be a multiple of 32")
-	}
-	merkleProof := make([]chainhash.Hash, len(proofBytes)/32)
-	if len(merkleProof) > MaxMerkleProofLength {
-		return ce.NewContractError(ce.ErrInput, "proof length exceeds maximum length for total bitcoin supply")
-	}
-	for i := 0; i < len(proofBytes); i += 32 {
-		merkleProof[i/32] = chainhash.Hash(proofBytes[i : i+32])
-	}
-	if err := verifyTransaction(txData, rawTx); err != nil {
-		return err
-	}
-
-	var msgTx wire.MsgTx
-	err = msgTx.Deserialize(bytes.NewReader(rawTx))
-	if err != nil {
-		return err
-	}
-
-	// gets all outputs the address of which is specified in the deposit instructions
-	relevantOutputs, err := ms.indexOutputs(&msgTx)
-	if err != nil {
-		return ce.Prepend(err, "error indexing outputs")
-	}
-
-	// removes this tx from utxo spends if present
-	ms.updateUtxoSpends(msgTx.TxID())
-
-	// TODO: return mapping results for each relevenat address as part of contract output, or at least log them
-	err = ms.processUtxos(relevantOutputs)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
 
 // Returns: raw tx hex to be broadcast
 func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
@@ -88,8 +34,6 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	if err != nil {
 		return ce.Prepend(err, "error getting input utxos")
 	}
-
-	// sdk.Log(fmt.Sprintf("inputids: %v, totalinputamt: %d", inputUtxoIds, totalInputAmt))
 
 	inputUtxos, err := getInputUtxos(inputUtxoIds)
 	if err != nil {
@@ -128,36 +72,28 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		return err
 	}
 	for _, utxo := range unconfirmedUtxos {
-		utxoJson, err := tinyjson.Marshal(utxo)
+		internalId, err := cs.allocateUnconfirmedId()
 		if err != nil {
-			return ce.WrapContractError(ce.ErrJson, err, "error marhalling utxo")
+			return err
 		}
-		// create utxo entry
-		internalId := cs.UtxoNextId
-		cs.UtxoNextId++
-
-		utxoLookup := packUtxo(internalId, utxo.Amount, 0)
-
-		// sdk.Log(fmt.Sprintf("appending utxo with internal id: %d, amount: %d", internalId, utxo.Amount))
-		cs.UtxoList = append(cs.UtxoList, utxoLookup)
-		sdk.StateSetObject(constants.UtxoPrefix+strconv.FormatUint(uint64(internalId), 16), string(utxoJson))
+		cs.UtxoList = append(cs.UtxoList, UtxoRegistryEntry{Id: internalId, Amount: utxo.Amount})
+		saveUtxo(internalId, utxo)
 	}
 
 	for _, inputId := range inputUtxoIds {
 		cs.UtxoList = slices.DeleteFunc(
 			cs.UtxoList,
-			func(utxo [3]int64) bool { return int64(inputId) == utxo[0] },
+			func(entry UtxoRegistryEntry) bool { return entry.Id == inputId },
 		)
 		sdk.StateDeleteObject(getUtxoKey(inputId))
 	}
 
-	signingDataJson, err := tinyjson.Marshal(signingData)
+	signingDataBytes, err := MarshalSigningData(signingData)
 	if err != nil {
 		return ce.WrapContractError(ce.ErrJson, err, "error marshalling signing data")
 	}
 
-	// use this key, then increment
-	sdk.StateSetObject(constants.TxSpendsPrefix+tx.TxID(), string(signingDataJson))
+	sdk.StateSetObject(constants.TxSpendsPrefix+tx.TxID(), string(signingDataBytes))
 	cs.TxSpendsList = append(cs.TxSpendsList, tx.TxID())
 
 	// update supply

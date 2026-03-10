@@ -13,12 +13,9 @@ import (
 )
 
 func verifyTransaction(req *VerificationRequest, rawTxBytes []byte) error {
-	// block header from contract state (input by chain oracle)
-	rawHeaderHex := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatUint(uint64(req.BlockHeight), 10))
-	rawHeaderBytes, err := hex.DecodeString(*rawHeaderHex)
-	if err != nil {
-		return err
-	}
+	// block header from contract state (stored as raw 80 bytes)
+	rawHeaderStr := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatUint(uint64(req.BlockHeight), 10))
+	rawHeaderBytes := []byte(*rawHeaderStr)
 	var blockHeader wire.BlockHeader
 	blockHeader.BtcDecode(bytes.NewReader(rawHeaderBytes), wire.ProtocolVersion, wire.LatestEncoding)
 

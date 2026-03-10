@@ -129,11 +129,14 @@ func Map(incomingTx *string) *string {
 		)
 	}
 
+	// public keys stored as raw bytes; hex-encode for internal use
+	primaryRaw := *sdk.StateGetObject(constants.PrimaryPublicKeyStateKey)
+	backupRaw := *sdk.StateGetObject(constants.BackupPublicKeyStateKey)
 	publicKeys := mapping.PublicKeys{
-		PrimaryPubKey: *sdk.StateGetObject(constants.PrimaryPublicKeyStateKey),
-		BackupPubKey:  *sdk.StateGetObject(constants.BackupPublicKeyStateKey),
+		PrimaryPubKey: hex.EncodeToString([]byte(primaryRaw)),
+		BackupPubKey:  hex.EncodeToString([]byte(backupRaw)),
 	}
-	if publicKeys.PrimaryPubKey == "" {
+	if primaryRaw == "" {
 		ce.CustomAbort(
 			ce.NewContractError(ce.ErrInitialization, "no registered public key"),
 		)
@@ -159,11 +162,14 @@ func Map(incomingTx *string) *string {
 
 //go:wasmexport unmap
 func Unmap(tx *string) *string {
+	// public keys stored as raw bytes; hex-encode for internal use
+	primaryRaw := *sdk.StateGetObject(constants.PrimaryPublicKeyStateKey)
+	backupRaw := *sdk.StateGetObject(constants.BackupPublicKeyStateKey)
 	publicKeys := mapping.PublicKeys{
-		PrimaryPubKey: *sdk.StateGetObject(constants.PrimaryPublicKeyStateKey),
-		BackupPubKey:  *sdk.StateGetObject(constants.BackupPublicKeyStateKey),
+		PrimaryPubKey: hex.EncodeToString([]byte(primaryRaw)),
+		BackupPubKey:  hex.EncodeToString([]byte(backupRaw)),
 	}
-	if publicKeys.PrimaryPubKey == "" {
+	if primaryRaw == "" {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInitialization, ce.MsgNoPublicKey))
 	}
 
@@ -253,7 +259,7 @@ func validatePublicKey(keyHex string) error {
 	}
 	// For compressed keys, check first byte is 0x02 or 0x03
 	if len(keyBytes) == 33 && (keyBytes[0] != 0x02 && keyBytes[0] != 0x03) {
-		ce.NewContractError(ce.ErrInput, "invalid compressed key prefix")
+		return ce.NewContractError(ce.ErrInput, "invalid compressed key prefix")
 	}
 	return nil
 }
@@ -285,10 +291,11 @@ func RegisterPublicKey(keyStr *string) *string {
 		}
 		existingPrimary := sdk.StateGetObject(constants.PrimaryPublicKeyStateKey)
 		if *existingPrimary == "" || constants.IsTestnet(NetworkMode) {
-			sdk.StateSetObject(constants.PrimaryPublicKeyStateKey, keys.PrimaryPubKey)
+			keyBytes, _ := hex.DecodeString(keys.PrimaryPubKey)
+			sdk.StateSetObject(constants.PrimaryPublicKeyStateKey, string(keyBytes))
 			resultBuilder.WriteString("set primary key to: " + keys.PrimaryPubKey)
 		} else {
-			resultBuilder.WriteString("primary key already registered: " + *existingPrimary)
+			resultBuilder.WriteString("primary key already registered: " + hex.EncodeToString([]byte(*existingPrimary)))
 		}
 	}
 
@@ -302,10 +309,11 @@ func RegisterPublicKey(keyStr *string) *string {
 		}
 		existingBackup := sdk.StateGetObject(constants.BackupPublicKeyStateKey)
 		if *existingBackup == "" || constants.IsTestnet(NetworkMode) {
-			sdk.StateSetObject(constants.BackupPublicKeyStateKey, keys.BackupPubKey)
+			keyBytes, _ := hex.DecodeString(keys.BackupPubKey)
+			sdk.StateSetObject(constants.BackupPublicKeyStateKey, string(keyBytes))
 			resultBuilder.WriteString("set backup key to: " + keys.BackupPubKey)
 		} else {
-			resultBuilder.WriteString("backup key already registered: " + *existingBackup)
+			resultBuilder.WriteString("backup key already registered: " + hex.EncodeToString([]byte(*existingBackup)))
 		}
 	}
 

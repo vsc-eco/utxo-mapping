@@ -5,6 +5,14 @@ const DirPathDelimiter = "/"
 const TssKeyName = "main"
 const RouterContractIdKey = "routerid"
 
+// UTXO ID pool layout (single-byte ID, 256 slots total).
+// IDs 0–63  are the unconfirmed pool (change outputs pending confirmation).
+// IDs 64–255 are the confirmed pool   (active mapped UTXOs ready to spend).
+const (
+	UtxoUnconfirmedPoolSize = 64  // number of slots in the unconfirmed pool
+	UtxoConfirmedPoolStart  = 64  // first ID in the confirmed pool
+)
+
 const BalancePrefix = "bal" + DirPathDelimiter
 const ObservedPrefix = "otx" + DirPathDelimiter
 const UtxoPrefix = "utxo" + DirPathDelimiter

@@ -11,7 +11,6 @@ import (
 
 	"btc-mapping-contract/contract/mapping"
 
-	"github.com/CosmWasm/tinyjson"
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -42,6 +41,16 @@ func encodeBalance(t *testing.T, amount int64) string {
 	var buf [8]byte
 	binary.BigEndian.PutUint64(buf[:], v)
 	return string(buf[8-n:])
+}
+
+// decodeHex decodes a hex string to raw bytes as a string, for state seeding.
+func decodeHex(t *testing.T, s string) string {
+	t.Helper()
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		t.Fatal("decodeHex failed:", err)
+	}
+	return string(b)
 }
 
 // regtestDestAddress returns a P2WPKH address derived from TestBackupPubKeyHex
@@ -94,6 +103,17 @@ func serializeHeader(t *testing.T, h *wire.BlockHeader) string {
 	return hex.EncodeToString(buf.Bytes())
 }
 
+// serializeHeaderRaw serializes a block header to raw 80 bytes as a string,
+// suitable for seeding directly into contract state.
+func serializeHeaderRaw(t *testing.T, h *wire.BlockHeader) string {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := h.Serialize(&buf); err != nil {
+		t.Fatal("failed to serialize block header:", err)
+	}
+	return buf.String()
+}
+
 // buildTestTx creates a minimal transaction paying amount sats to toAddress.
 // The contract only checks the Merkle proof, not the transaction inputs.
 func buildTestTx(t *testing.T, toAddress string, amount int64) *wire.MsgTx {
@@ -126,10 +146,10 @@ func serializeTx(t *testing.T, tx *wire.MsgTx) string {
 	return hex.EncodeToString(buf.Bytes())
 }
 
-// depositUtxoJSON builds a JSON-encoded Utxo for a UTXO produced by a deposit
+// depositUtxoBinary builds a binary-encoded Utxo for a UTXO produced by a deposit
 // instruction. The PkScript and Tag are derived from the instruction string,
 // matching the on-chain address derivation.
-func depositUtxoJSON(t *testing.T, txId string, vout uint32, amount int64, instruction string) string {
+func depositUtxoBinary(t *testing.T, txId string, vout uint32, amount int64, instruction string) string {
 	t.Helper()
 	address, _, err := mapping.DepositAddress(TestPrimaryPubKeyHex, TestBackupPubKeyHex, instruction, regtestParams())
 	if err != nil {
@@ -149,18 +169,14 @@ func depositUtxoJSON(t *testing.T, txId string, vout uint32, amount int64, instr
 		Vout:     vout,
 		Amount:   amount,
 		PkScript: pkScript,
-		Tag:      hex.EncodeToString(sum[:]),
+		Tag:      sum[:],
 	}
-	b, err := tinyjson.Marshal(utxo)
-	if err != nil {
-		t.Fatal("failed to marshal utxo:", err)
-	}
-	return string(b)
+	return string(mapping.MarshalUtxo(&utxo))
 }
 
-// changeUtxoJSON builds a JSON-encoded Utxo for a change UTXO (empty tag),
+// changeUtxoBinary builds a binary-encoded Utxo for a change UTXO (nil tag),
 // matching the change address derivation used by HandleUnmap.
-func changeUtxoJSON(t *testing.T, txId string, vout uint32, amount int64) string {
+func changeUtxoBinary(t *testing.T, txId string, vout uint32, amount int64) string {
 	t.Helper()
 	// nil tag → change address path (OP_CHECKSIGVERIFY + OP_DATA_0)
 	address, _, err := mapping.AddressWithBackup(TestPrimaryPubKeyHex, TestBackupPubKeyHex, nil, regtestParams())
@@ -180,19 +196,15 @@ func changeUtxoJSON(t *testing.T, txId string, vout uint32, amount int64) string
 		Vout:     vout,
 		Amount:   amount,
 		PkScript: pkScript,
-		Tag:      "",
+		Tag:      nil,
 	}
-	b, err := tinyjson.Marshal(utxo)
-	if err != nil {
-		t.Fatal("failed to marshal utxo:", err)
-	}
-	return string(b)
+	return string(mapping.MarshalUtxo(&utxo))
 }
 
 // MapTestFixture holds all data needed to call the map contract action.
 type MapTestFixture struct {
 	RawTxHex       string
-	BlockHeaderHex string
+	BlockHeaderHex string // hex-encoded, for use in VerificationRequest
 	MerkleProofHex string
 	TxIndex        uint32
 	BlockHeight    uint32
@@ -226,6 +238,14 @@ func buildSeedHeader(t *testing.T, ts time.Time) string {
 	t.Helper()
 	header := buildRegtestHeader(chainhash.Hash{}, chainhash.Hash{}, ts)
 	return serializeHeader(t, header)
+}
+
+// buildSeedHeaderRaw creates a seed header and returns raw bytes as a string,
+// suitable for seeding directly into contract state.
+func buildSeedHeaderRaw(t *testing.T, ts time.Time) string {
+	t.Helper()
+	header := buildRegtestHeader(chainhash.Hash{}, chainhash.Hash{}, ts)
+	return serializeHeaderRaw(t, header)
 }
 
 // buildHeaderChain creates a seed header plus count chained headers.

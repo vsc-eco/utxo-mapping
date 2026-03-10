@@ -21,7 +21,7 @@ Run a single test:
 make test FILTER=<test_name>
 ```
 
-Always use Docker-based compilation (consistent output):
+Make all targets besides "test" with USE_DOCKER=1
 
 ```bash
 USE_DOCKER=1 make dev

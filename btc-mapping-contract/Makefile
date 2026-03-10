@@ -31,7 +31,7 @@ ifdef USE_DOCKER
         tinygo
 endif
 
-NETWORK ?= testnet4
+NETWORK ?= regtest
 FILTER ?= .
 
 RUN_ARGS := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
@@ -49,8 +49,9 @@ CFLAGS = $(BASEFLAGS) $(call netflags,$(NETWORK))
 netflags = \
 	$(if $(filter testnet3,$1),$(TESTNET3FLAGS), \
 	$(if $(filter testnet4,$1),$(TESTNET4FLAGS), \
+	$(if $(filter regtest,$1),$(REGTESTFLAGS), \
 	$(if $(filter mainnet,$1),, \
-	$(error Unknown NETWORK: $1))))
+	$(error Unknown NETWORK: $1)))))
 
 all: dev
 
@@ -78,7 +79,7 @@ mainnet:
 
 regtest:
 	@echo "Building $@ with regtest flags"
-	$(TINYGO_CMD) build $(BASEFLAGS) $(REGTESTFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
+	$(TINYGO_CMD) build $(CFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
 
 strip:
 	@for file in $(BIN_DIR)/*.wasm; do \
@@ -183,7 +184,7 @@ tinyjson:
 	done
 
 test:
-	cd tests/current && go test -v -run "$(FILTER)"
+	cd tests/current && go test -v -p 1 -parallel 1 -run "$(FILTER)"
 
 clean:
 	rm -rf $(BIN_DIR)/*.wasm

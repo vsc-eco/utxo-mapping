@@ -5,9 +5,7 @@ import (
 	ce "btc-mapping-contract/contract/contracterrors"
 	"btc-mapping-contract/sdk"
 	"bytes"
-	"encoding/hex"
 
-	"github.com/CosmWasm/tinyjson"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -35,16 +33,14 @@ func calcVscFee(amount int64) (int64, error) {
 	return finalFee, nil
 }
 
-func getInputUtxos(registryEntries []uint32) ([]*Utxo, error) {
+func getInputUtxos(registryEntries []uint8) ([]*Utxo, error) {
 	result := make([]*Utxo, len(registryEntries))
 	for i, internalId := range registryEntries {
-		utxo := Utxo{}
-		utxoJson := sdk.StateGetObject(getUtxoKey(internalId))
-		err := tinyjson.Unmarshal([]byte(*utxoJson), &utxo)
+		utxo, err := loadUtxo(internalId)
 		if err != nil {
-			return nil, ce.WrapContractError(ce.ErrStateAccess, err, "error unmarshalling saved utxo")
+			return nil, ce.WrapContractError(ce.ErrStateAccess, err, "error loading saved utxo")
 		}
-		result[i] = &utxo
+		result[i] = utxo
 	}
 	return result, nil
 }
@@ -79,45 +75,39 @@ func (cs *ContractState) estimateFee(numInputs int64, amount, inputAmount int64)
 }
 
 // returns a list of internal ids of inputs for making a tx
-func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint32, int64, error) {
+func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint8, int64, error) {
 	// approximate size of including a new PSWSH input (base tx size plus signature)
 	// slight overestimate (+1 at the end) to make sure there's enough balance
-	// TODO: remove?
 	const P2WSHAPPROXINPUTSIZE = 40 + 1 + (72+68+3)/4 + 1
 
-	inputs := []uint32{}
+	inputs := []uint8{}
 
 	// accumulates amount of all inputs
 	accAmount := int64(0)
 
-	// first loops, find first tx sufficient to cover spend
-	for _, utxo := range cs.UtxoList {
-		internalId, utxoAmount, confirmed := unpackUtxo(utxo)
-		if confirmed == 0 {
+	// first loop: find single confirmed UTXO sufficient to cover spend
+	for _, entry := range cs.UtxoList {
+		if entry.Id < constants.UtxoConfirmedPoolStart {
 			continue
 		}
-		fee := cs.estimateFee(1, amount, utxoAmount)
+		fee := cs.estimateFee(1, amount, entry.Amount)
 		requiredAmount := amount + fee
-		// calculates amount required to cover initial tx plus the addition of itself as an input
-		if utxoAmount >= requiredAmount {
-			return []uint32{internalId}, utxoAmount, nil
+		if entry.Amount >= requiredAmount {
+			return []uint8{entry.Id}, entry.Amount, nil
 		}
 	}
-	// second loop, only if first did not find anything
-	// accumulate utxos until enough combined balance to cover spend
-	// avoids unconfirmed txs
-	type unconfirmedUtxo struct {
-		internalId uint32
-		amount     int64
-	}
 
-	unconfirmedTxs := []unconfirmedUtxo{}
-	for _, utxo := range cs.UtxoList {
-		internalId, utxoAmount, confirmed := unpackUtxo(utxo)
-		if confirmed != 0 {
-			inputs = append(inputs, internalId)
-			accAmount += utxoAmount
-			// greater than or equal
+	// second loop: accumulate confirmed UTXOs, fall back to unconfirmed if needed
+	type unconfirmedEntry struct {
+		id     uint8
+		amount int64
+	}
+	unconfirmedTxs := []unconfirmedEntry{}
+
+	for _, entry := range cs.UtxoList {
+		if entry.Id >= constants.UtxoConfirmedPoolStart {
+			inputs = append(inputs, entry.Id)
+			accAmount += entry.Amount
 
 			fee := cs.estimateFee(int64(len(inputs)), amount, accAmount)
 			requiredAmount := amount + fee
@@ -126,17 +116,17 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint32, int64, error) 
 				return inputs, accAmount, nil
 			}
 		} else {
-			unconfirmedTxs = append(unconfirmedTxs, unconfirmedUtxo{
-				internalId: internalId,
-				amount:     utxoAmount,
+			unconfirmedTxs = append(unconfirmedTxs, unconfirmedEntry{
+				id:     entry.Id,
+				amount: entry.Amount,
 			})
 		}
-
 	}
+
 	// uses unconfirmed txs only if all confirmed txs are insufficient
-	for _, utxo := range unconfirmedTxs {
-		inputs = append(inputs, utxo.internalId)
-		accAmount += utxo.amount
+	for _, u := range unconfirmedTxs {
+		inputs = append(inputs, u.id)
+		accAmount += u.amount
 
 		fee := cs.estimateFee(int64(len(inputs)), amount, accAmount)
 		requiredAmount := amount + fee
@@ -171,7 +161,7 @@ func (cs *ContractState) createSpendTransaction(
 ) (*SigningData, *wire.MsgTx, int64, error) {
 	tx := wire.NewMsgTx(wire.TxVersion)
 
-	// create all witness script now for better size estimation
+	// create all witness scripts now for better size estimation
 	witnessScripts := make(map[int][]byte)
 	for index, utxo := range inputs {
 		txHash, err := chainhash.NewHashFromStr(utxo.TxId)
@@ -183,16 +173,10 @@ func (cs *ContractState) createSpendTransaction(
 		txIn := wire.NewTxIn(outPoint, nil, nil)
 		tx.AddTxIn(txIn)
 
-		tag, err := hex.DecodeString(utxo.Tag)
-
-		if err != nil {
-			return nil, nil, 0, err
-		}
-
 		_, witnessScript, err := createP2WSHAddressWithBackup(
 			cs.PublicKeys.PrimaryPubKey,
 			cs.PublicKeys.BackupPubKey,
-			tag,
+			utxo.Tag, // already []byte
 			cs.NetworkParams,
 		)
 
@@ -202,7 +186,6 @@ func (cs *ContractState) createSpendTransaction(
 		witnessScripts[index] = witnessScript
 	}
 
-	// sdk.Log(fmt.Sprintf("witness scripts created %v", witnessScripts))
 	destAddr, err := btcutil.DecodeAddress(destAddress, cs.NetworkParams)
 	if err != nil {
 		return nil, nil, 0, ce.WrapContractError(
@@ -238,7 +221,7 @@ func (cs *ContractState) createSpendTransaction(
 		if err != nil {
 			return nil, nil, 0, err
 		}
-		// create a dummy change ouput to calculate additional fee for adding change outputs
+		// create a dummy change output to calculate additional fee for adding change outputs
 		changeOutputSize := int64(wire.NewTxOut(int64(0), changeScript).SerializeSize())
 
 		numChangeOuputs := min(max(totalChange/splitThreshold, 1), maxChangeOutputs)
@@ -286,29 +269,24 @@ func (cs *ContractState) createSpendTransaction(
 
 		unsignedSigHashes[i] = UnsignedSigHash{
 			Index:         uint32(i),
-			SigHash:       hex.EncodeToString(sigHash),
-			WitnessScript: hex.EncodeToString(witnessScript),
+			SigHash:       sigHash,
+			WitnessScript: witnessScript,
 		}
 	}
-
-	// sdk.Log(fmt.Sprintf("created sig hashes: %v", unsignedSigHashes))
 
 	var buf bytes.Buffer
 	err = tx.Serialize(&buf)
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	txHex := hex.EncodeToString(buf.Bytes())
 
 	return &SigningData{
-		Tx:                txHex,
+		Tx:                buf.Bytes(),
 		UnsignedSigHashes: unsignedSigHashes,
 	}, tx, fee, nil
 }
 
 func indexUnconfimedOutputs(tx *wire.MsgTx, changeAddress string, network *chaincfg.Params) ([]*Utxo, error) {
-	// sdk.Log(fmt.Sprintf("len tx.txOut: %d", len(tx.TxOut)))
-
 	// 1 output will be to the destination, the others will be to change address
 	utxos := make([]*Utxo, len(tx.TxOut)-1)
 
@@ -323,13 +301,12 @@ func indexUnconfimedOutputs(tx *wire.MsgTx, changeAddress string, network *chain
 			return nil, ce.NewContractError(ce.ErrTransaction, "incorrect number of addresses for transaction output")
 		}
 		if addrs[0].EncodeAddress() == changeAddress {
-			// sdk.Log(fmt.Sprintf("utxo amt to change address: %d", txOut.Value))
 			utxo := Utxo{
 				TxId:     tx.TxID(),
 				Vout:     uint32(index),
 				Amount:   txOut.Value,
 				PkScript: txOut.PkScript,
-				Tag:      "",
+				Tag:      nil, // change outputs have no tag
 			}
 			if i < len(utxos) {
 				utxos[i] = &utxo

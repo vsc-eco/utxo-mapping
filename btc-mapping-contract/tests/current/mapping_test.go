@@ -4,7 +4,6 @@ import (
 	"btc-mapping-contract/contract/blocklist"
 	"btc-mapping-contract/contract/constants"
 	"btc-mapping-contract/contract/mapping"
-	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -19,7 +18,7 @@ import (
 	btcMapping "btc-mapping-contract"
 )
 
-var ContractWasm = btcMapping.RegtestWasm
+var ContractWasm = btcMapping.DevWasm
 
 func TestMap(t *testing.T) {
 	const instruction = "deposit_to=hive:milo-hpr"
@@ -28,14 +27,14 @@ func TestMap(t *testing.T) {
 	fixture := buildMapFixture(t, instruction, 10000, blockHeight)
 
 	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
-	ct.StateSet(contractId, constants.UtxoRegistryKey, `[]`)
-	ct.StateSet(contractId, constants.SupplyKey, `{"active_supply":0,"user_supply":0,"fee_supply":0,"base_fee_rate":1}`)
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
 	ct.StateSet(contractId, blocklist.LastHeightKey, "100")
-	ct.StateSet(contractId, constants.BlockPrefix+"100", fixture.BlockHeaderHex)
-	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, TestPrimaryPubKeyHex)
-	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, TestBackupPubKeyHex)
+	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
+	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
+	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
 
 	params := mapping.MapParams{
 		TxData: &mapping.VerificationRequest{
@@ -89,20 +88,31 @@ func TestUnmap(t *testing.T) {
 	const fakeTxId1 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 	ct.StateSet(contractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, 10000))
 	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId0+":0", "1")
 	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId1+":0", "1")
-	ct.StateSet(contractId, constants.UtxoRegistryKey, `[[0,5000,1],[1,5000,1]]`)
-	ct.StateSet(contractId, constants.UtxoPrefix+"0", depositUtxoJSON(t, fakeTxId0, 0, 5000, instruction))
-	ct.StateSet(contractId, constants.UtxoPrefix+"1", changeUtxoJSON(t, fakeTxId1, 0, 5000))
-	ct.StateSet(contractId, constants.UtxoLastIdKey, "2")
-	ct.StateSet(contractId, constants.SupplyKey, `{"active_supply":10000,"user_supply":10000,"fee_supply":0,"base_fee_rate":1}`)
+	// UTXOs in confirmed pool: IDs 64 (0x40) and 65 (0x41)
+	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(mapping.UtxoRegistry{
+		{Id: 64, Amount: 5000},
+		{Id: 65, Amount: 5000},
+	})))
+	ct.StateSet(contractId, constants.UtxoPrefix+"40", depositUtxoBinary(t, fakeTxId0, 0, 5000, instruction))
+	ct.StateSet(contractId, constants.UtxoPrefix+"41", changeUtxoBinary(t, fakeTxId1, 0, 5000))
+	// 2-byte counter: [confirmedNextId=66, unconfirmedNextId=0]
+	ct.StateSet(contractId, constants.UtxoLastIdKey, string([]byte{66, 0}))
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
+		ActiveSupply: 10000,
+		UserSupply:   10000,
+		FeeSupply:    0,
+		BaseFeeRate:  1,
+	})))
 	ct.StateSet(contractId, blocklist.LastHeightKey, "100")
-	ct.StateSet(contractId, constants.BlockPrefix+"100", buildSeedHeader(t, time.Unix(0, 0)))
-	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, TestPrimaryPubKeyHex)
-	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, TestBackupPubKeyHex)
+	ct.StateSet(contractId, constants.BlockPrefix+"100", buildSeedHeaderRaw(t, time.Unix(0, 0)))
+	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
+	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
 
 	payload, err := tinyjson.Marshal(mapping.TransferParams{
 		Amount: "7500",
@@ -154,6 +164,7 @@ func TestUnmap(t *testing.T) {
 
 func TestTransfer(t *testing.T) {
 	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 	ct.StateSet(contractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, 10000))
@@ -204,9 +215,9 @@ func TestTransfer(t *testing.T) {
 	fmt.Println("Return value:", r.Ret)
 }
 
-
 func TestRegisterKey(t *testing.T) {
 	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 
@@ -249,11 +260,12 @@ func TestAddBlocks(t *testing.T) {
 	seedHex, chainHex := buildHeaderChain(t, seedTime, 2)
 
 	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 	ct.StateSet(contractId, blocklist.LastHeightKey, "100")
-	ct.StateSet(contractId, constants.BlockPrefix+"100", seedHex)
-	ct.StateSet(contractId, constants.SupplyKey, `{"active_supply":0,"user_supply":0,"fee_supply":0,"base_fee_rate":1}`)
+	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, seedHex))
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
 
 	payload, err := tinyjson.Marshal(blocklist.AddBlocksParams{
 		Blocks:    chainHex,
@@ -294,12 +306,13 @@ func TestSeedBlocks(t *testing.T) {
 	seedTime := time.Unix(0, 0) // epoch: WASM time.Now() returns epoch
 
 	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 	// no LastHeightKey set — seeding from scratch
 
 	payload, err := tinyjson.Marshal(blocklist.SeedBlocksParams{
-		BlockHeader: buildSeedHeader(t, seedTime),
+		BlockHeader: buildSeedHeader(t, seedTime), // hex string, decoded by HandleSeedBlocks
 		BlockHeight: 100,
 	})
 	if err != nil {
@@ -332,46 +345,5 @@ func TestSeedBlocks(t *testing.T) {
 	assert.LessOrEqual(t, r.GasUsed, uint(1000000000))
 
 	logStateDiff(t, r.StateDiff)
-	fmt.Println("Return value:", r.Ret)
-}
-
-func TestLogging(t *testing.T) {
-	ct := test_utils.NewContractTest()
-	contractId := "mapping_contract"
-	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
-	ct.StateSet(contractId, "tx_spends", "null")
-
-	r := ct.Call(stateEngine.TxVscCallContract{
-		Self: stateEngine.TxSelf{
-			TxId:                 "sometxid",
-			BlockId:              "block:unmap",
-			Index:                69,
-			OpIndex:              0,
-			Timestamp:            "2025-10-14T00:00:00",
-			RequiredAuths:        []string{"hive:milo-hpr"},
-			RequiredPostingAuths: []string{},
-		},
-		ContractId: contractId,
-		Action:     "test_log",
-		Payload: json.RawMessage(
-			[]byte(`{"amount":10000,"recipient_btc_address":"tb1q5dgehs94wf5mgfasnfjsh4dqv6hz8e35w4w7tk"}`),
-		),
-		RcLimit: 10000,
-		Intents: []contracts.Intent{},
-	})
-
-	fmt.Println("logs:", r.Logs)
-
-	dumpLogs(t, r.Logs)
-
-	if r.Err != "" {
-		fmt.Println("error:", r.Err)
-	}
-	assert.True(t, r.Success)
-	if assert.LessOrEqual(t, r.GasUsed, uint(1000000000)) {
-		fmt.Println("gas used:", r.GasUsed)
-	}
-	assert.GreaterOrEqual(t, len(r.Logs), 1)
-
 	fmt.Println("Return value:", r.Ret)
 }
