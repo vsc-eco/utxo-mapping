@@ -1,9 +1,9 @@
 package mapping
 
 import (
-	"btc-mapping-contract/contract/constants"
-	ce "btc-mapping-contract/contract/contracterrors"
-	"btc-mapping-contract/sdk"
+	"dash-mapping-contract/contract/constants"
+	ce "dash-mapping-contract/contract/contracterrors"
+	"dash-mapping-contract/sdk"
 	"bytes"
 	"encoding/hex"
 	"strconv"
@@ -13,9 +13,12 @@ import (
 )
 
 func verifyTransaction(req *VerificationRequest, rawTxBytes []byte) error {
-	// block header from contract state (stored as raw 80 bytes)
-	rawHeaderStr := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatUint(uint64(req.BlockHeight), 10))
-	rawHeaderBytes := []byte(*rawHeaderStr)
+	// block header from contract state (input by chain oracle)
+	rawHeaderHex := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatUint(uint64(req.BlockHeight), 10))
+	rawHeaderBytes, err := hex.DecodeString(*rawHeaderHex)
+	if err != nil {
+		return err
+	}
 	var blockHeader wire.BlockHeader
 	if err := blockHeader.BtcDecode(bytes.NewReader(rawHeaderBytes), wire.ProtocolVersion, wire.LatestEncoding); err != nil {
 		return ce.WrapContractError(ce.ErrInput, err, "error decoding block header")
