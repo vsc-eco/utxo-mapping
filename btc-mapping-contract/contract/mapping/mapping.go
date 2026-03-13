@@ -122,7 +122,7 @@ func (cs *ContractState) updateUtxoSpends(txId string) error {
 	return nil
 }
 
-func (ms *MappingState) processUtxos(relevantUtxos []Utxo) error {
+func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string) error {
 	totalMapped := int64(0)
 	env := sdk.GetEnv()
 	routerId := ""
@@ -162,10 +162,9 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) error {
 				if err := incAccBalance(metadata.Recipient, utxo.Amount); err != nil {
 					return ce.Prepend(err, "error crediting deposit balance")
 				}
-				// TODO: add from addresses
 				sdk.Log(createDepositLog(Deposit{
 					to:     metadata.Recipient,
-					from:   []string{},
+					from:   from,
 					amount: utxo.Amount,
 				}))
 			case MapSwap:

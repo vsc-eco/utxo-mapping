@@ -117,48 +117,25 @@ func tinyjson223cdf42DecodeBtcMappingContractSdkTinyjsonTmp1(in *jlexer.Lexer, o
 			out.Caller = Address(in.String())
 		case "msg.payer":
 			out.Payer = Address(in.String())
-		case "intents.caller":
+		case "intents":
 			if in.IsNull() {
 				in.Skip()
-				out.CallerIntents = nil
+				out.Intents = nil
 			} else {
 				in.Delim('[')
-				if out.CallerIntents == nil {
+				if out.Intents == nil {
 					if !in.IsDelim(']') {
-						out.CallerIntents = make([]Intent, 0, 2)
+						out.Intents = make([]Intent, 0, 2)
 					} else {
-						out.CallerIntents = []Intent{}
+						out.Intents = []Intent{}
 					}
 				} else {
-					out.CallerIntents = (out.CallerIntents)[:0]
+					out.Intents = (out.Intents)[:0]
 				}
 				for !in.IsDelim(']') {
 					var v3 Intent
 					tinyjson223cdf42DecodeBtcMappingContractSdkTinyjsonTmp3(in, &v3)
-					out.CallerIntents = append(out.CallerIntents, v3)
-					in.WantComma()
-				}
-				in.Delim(']')
-			}
-		case "intents.sender":
-			if in.IsNull() {
-				in.Skip()
-				out.SenderIntents = nil
-			} else {
-				in.Delim('[')
-				if out.SenderIntents == nil {
-					if !in.IsDelim(']') {
-						out.SenderIntents = make([]Intent, 0, 2)
-					} else {
-						out.SenderIntents = []Intent{}
-					}
-				} else {
-					out.SenderIntents = (out.SenderIntents)[:0]
-				}
-				for !in.IsDelim(']') {
-					var v4 Intent
-					tinyjson223cdf42DecodeBtcMappingContractSdkTinyjsonTmp3(in, &v4)
-					out.SenderIntents = append(out.SenderIntents, v4)
+					out.Intents = append(out.Intents, v3)
 					in.WantComma()
 				}
 				in.Delim(']')
@@ -228,33 +205,17 @@ func tinyjson223cdf42EncodeBtcMappingContractSdkTinyjsonTmp1(out *jwriter.Writer
 		out.String(string(in.Payer))
 	}
 	{
-		const prefix string = ",\"intents.caller\":"
+		const prefix string = ",\"intents\":"
 		out.RawString(prefix)
-		if in.CallerIntents == nil && (out.Flags&jwriter.NilSliceAsEmpty) == 0 {
+		if in.Intents == nil && (out.Flags&jwriter.NilSliceAsEmpty) == 0 {
 			out.RawString("null")
 		} else {
 			out.RawByte('[')
-			for v5, v6 := range in.CallerIntents {
+			for v5, v6 := range in.Intents {
 				if v5 > 0 {
 					out.RawByte(',')
 				}
 				tinyjson223cdf42EncodeBtcMappingContractSdkTinyjsonTmp3(out, v6)
-			}
-			out.RawByte(']')
-		}
-	}
-	{
-		const prefix string = ",\"intents.sender\":"
-		out.RawString(prefix)
-		if in.SenderIntents == nil && (out.Flags&jwriter.NilSliceAsEmpty) == 0 {
-			out.RawString("null")
-		} else {
-			out.RawByte('[')
-			for v7, v8 := range in.SenderIntents {
-				if v7 > 0 {
-					out.RawByte(',')
-				}
-				tinyjson223cdf42EncodeBtcMappingContractSdkTinyjsonTmp3(out, v8)
 			}
 			out.RawByte(']')
 		}

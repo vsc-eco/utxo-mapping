@@ -41,12 +41,7 @@ func checkAdmin() {
 	} else {
 		adminAddress = constants.OracleAddress
 	}
-	if sdk.GetEnv().Caller.String() != sdk.GetEnv().Sender.Address.String() {
-		ce.CustomAbort(
-			ce.NewContractError(ce.ErrNoPermission, "admin actions must be performed directly by the sender"),
-		)
-	}
-	if sdk.GetEnv().Sender.Address.String() != adminAddress {
+	if sdk.GetEnv().Caller.String() != adminAddress {
 		ce.CustomAbort(
 			ce.NewContractError(ce.ErrNoPermission, "this action must be performed by a contract administrator"),
 		)
@@ -203,7 +198,7 @@ func Transfer(tx *string) *string {
 	return mapping.StrPtr("0")
 }
 
-// Draws funds from the Sender (original user who sent the transaction)
+// Draws funds from a third-party account that has approved the caller.
 //
 //go:wasmexport transferFrom
 func TransferFrom(tx *string) *string {
@@ -220,6 +215,75 @@ func TransferFrom(tx *string) *string {
 		ce.CustomAbort(err)
 	}
 
+	return mapping.StrPtr("0")
+}
+
+// Sets a spending allowance for a spender contract to use the caller's tokens.
+//
+//go:wasmexport approve
+func Approve(input *string) *string {
+	env := sdk.GetEnv()
+	var params mapping.AllowanceParams
+	err := tinyjson.Unmarshal([]byte(*input), &params)
+	if err != nil {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
+	}
+	amount, err := strconv.ParseInt(params.Amount, 10, 64)
+	if err != nil {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "invalid amount value"))
+	}
+	if amount < 0 {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "allowance amount must be non-negative"))
+	}
+	mapping.HandleApprove(env.Caller.String(), params.Spender, amount)
+	return mapping.StrPtr("0")
+}
+
+// Increases the spending allowance for a spender contract.
+//
+//go:wasmexport increaseAllowance
+func IncreaseAllowance(input *string) *string {
+	env := sdk.GetEnv()
+	var params mapping.AllowanceParams
+	err := tinyjson.Unmarshal([]byte(*input), &params)
+	if err != nil {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
+	}
+	amount, err := strconv.ParseInt(params.Amount, 10, 64)
+	if err != nil {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "invalid amount value"))
+	}
+	if amount <= 0 {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "amount must be positive"))
+	}
+	err = mapping.HandleIncreaseAllowance(env.Caller.String(), params.Spender, amount)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	return mapping.StrPtr("0")
+}
+
+// Decreases the spending allowance for a spender contract.
+//
+//go:wasmexport decreaseAllowance
+func DecreaseAllowance(input *string) *string {
+	env := sdk.GetEnv()
+	var params mapping.AllowanceParams
+	err := tinyjson.Unmarshal([]byte(*input), &params)
+	if err != nil {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
+	}
+	amount, err := strconv.ParseInt(params.Amount, 10, 64)
+	if err != nil {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "invalid amount value"))
+	}
+	if amount <= 0 {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "amount must be positive"))
+	}
+	err = mapping.HandleDecreaseAllowance(env.Caller.String(), params.Spender, amount)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
 	return mapping.StrPtr("0")
 }
 
@@ -254,7 +318,7 @@ func validateAndDecodeKey(keyHex string) (mapping.CompressedPubKey, error) {
 func RegisterPublicKey(keyStr *string) *string {
 	env := sdk.GetEnv()
 	// leave this as owner always
-	if env.Sender.Address.String() != *sdk.GetEnvKey("contract.owner") {
+	if env.Caller.String() != *sdk.GetEnvKey("contract.owner") {
 		ce.CustomAbort(
 			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
 		)
@@ -307,7 +371,7 @@ func RegisterPublicKey(keyStr *string) *string {
 //go:wasmexport createKeyPair
 func CreateKeyPair(_ *string) *string {
 	// leave this as owner always
-	if sdk.GetEnv().Sender.Address.String() != *sdk.GetEnvKey("contract.owner") {
+	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
 		ce.CustomAbort(
 			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
 		)
@@ -322,7 +386,7 @@ func CreateKeyPair(_ *string) *string {
 func RegisterRouter(input *string) *string {
 	env := sdk.GetEnv()
 	// leave this as owner always
-	if env.Sender.Address.String() != *sdk.GetEnvKey("contract.owner") {
+	if env.Caller.String() != *sdk.GetEnvKey("contract.owner") {
 		ce.CustomAbort(
 			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
 		)

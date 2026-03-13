@@ -17,6 +17,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
 )
 
 func createP2WSHAddressWithBackup(
@@ -112,21 +113,8 @@ func checkAuth(env sdk.Env) error {
 	return nil
 }
 
-func buildIntentError(remaining int64, amount int64, address string) error {
-	return ce.NewContractError(
-		ce.ErrIntent,
-		"insufficient intent ("+
-			strconv.FormatInt(remaining, 10)+
-			") remaining to cover spend ("+
-			strconv.FormatInt(amount, 10)+
-			") for "+
-			address,
-	)
-}
-
 func checkAndDeductBalance(env sdk.Env, account string, amount int64) error {
 	callerAddress := env.Caller.String()
-	senderAddress := env.Sender.Address.String()
 	bal := getAccBal(account)
 	if bal < amount {
 		return ce.NewContractError(
@@ -135,71 +123,24 @@ func checkAndDeductBalance(env sdk.Env, account string, amount int64) error {
 				" insufficient needs "+strconv.FormatInt(amount, 10),
 		)
 	}
-	switch account {
-	case senderAddress:
-		intentAmount := int64(0)
-		for _, intent := range env.SenderIntents {
-			if intent.Type != constants.IntentTransferType {
-				continue
-			}
-			if contractId, ok := intent.Args[constants.IntentContractIdKey]; ok && contractId == env.ContractId {
-				if limitStr, ok := intent.Args[constants.IntentLimitKey]; ok {
-					var err error
-					intentAmount, err = strconv.ParseInt(limitStr, 10, 64)
-					if err != nil {
-						return ce.WrapContractError(ce.ErrIntent, err, "invalid intent amount")
-					}
-					break
-				}
-			}
+	if account != callerAddress {
+		allowance := getAllowance(account, callerAddress)
+		if allowance < amount {
+			return ce.NewContractError(
+				ce.ErrNoPermission,
+				"allowance ("+strconv.FormatInt(allowance, 10)+
+					") insufficient for spend ("+strconv.FormatInt(amount, 10)+
+					") by "+callerAddress,
+			)
 		}
-
-		expenditure, err := getAccExpenditure(env.ContractId, senderAddress)
-		if err != nil {
-			return ce.WrapContractError(ce.ErrStateAccess, err, "error fetching previous token expenditure")
-		}
-		remaining := intentAmount - expenditure
-		if remaining < amount {
-			return buildIntentError(remaining, amount, senderAddress)
-		}
-
-		newBal, err := safeSubtract64(bal, amount)
-		if err != nil {
-			return ce.WrapContractError(ce.ErrArithmetic, err, "error incremting user balance")
-		}
-		setAccBal(account, newBal)
-		setAccExpenditure(account, expenditure+amount)
-		return nil
-	case callerAddress:
-		intentAmount := int64(0)
-		for _, intent := range env.CallerIntents {
-			if intent.Type != constants.IntentTransferType {
-				continue
-			}
-			if contractId, ok := intent.Args[constants.IntentContractIdKey]; ok && contractId == env.ContractId {
-				if amount, ok := intent.Args[constants.IntentLimitKey]; ok {
-					clean := strings.Replace(amount, ".", "", 1)
-					var err error
-					intentAmount, err = strconv.ParseInt(clean, 10, 64)
-					if err != nil {
-						return ce.NewContractError(ce.ErrIntent, "invalid intent amount")
-					}
-				}
-			}
-		}
-
-		if intentAmount < amount {
-			return buildIntentError(intentAmount, amount, account)
-		}
-		newBal, err := safeSubtract64(bal, amount)
-		if err != nil {
-			return ce.WrapContractError(ce.ErrArithmetic, err, "error incremting user balance")
-		}
-		setAccBal(account, newBal)
-		return nil
-	default:
-		return ce.NewContractError(ce.ErrIntent, account+" is not the sender or caller")
+		setAllowance(account, callerAddress, allowance-amount)
 	}
+	newBal, err := safeSubtract64(bal, amount)
+	if err != nil {
+		return ce.WrapContractError(ce.ErrArithmetic, err, "error decrementing user balance")
+	}
+	setAccBal(account, newBal)
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -458,20 +399,27 @@ func incAccBalance(vscAcc string, amount int64) error {
 	return nil
 }
 
-func getAccExpenditure(contractId, vscAcc string) (int64, error) {
-	balString := sdk.EphemStateGetObject(contractId, constants.IntentExpenditurePrefix+vscAcc)
-	if *balString == "" {
-		return 0, nil
+func getAllowance(owner, spender string) int64 {
+	s := sdk.StateGetObject(constants.AllowancePrefix + owner + constants.DirPathDelimiter + spender)
+	if s == nil || *s == "" {
+		return 0
 	}
-	bal, err := strconv.ParseInt(*balString, 10, 64)
-	if err != nil {
-		return 0, err
-	}
-	return bal, nil
+	var buf [8]byte
+	copy(buf[8-len(*s):], *s)
+	return int64(binary.BigEndian.Uint64(buf[:]))
 }
 
-func setAccExpenditure(vscAcc string, newBal int64) {
-	sdk.EphemStateSetObject(constants.IntentExpenditurePrefix+vscAcc, strconv.FormatInt(newBal, 10))
+func setAllowance(owner, spender string, amount int64) {
+	key := constants.AllowancePrefix + owner + constants.DirPathDelimiter + spender
+	if amount == 0 {
+		sdk.StateDeleteObject(key)
+		return
+	}
+	v := uint64(amount)
+	n := (bits.Len64(v) + 7) / 8
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], v)
+	sdk.StateSetObject(key, string(buf[8-n:]))
 }
 
 func (cs *ContractState) getNetwork(s string) (Network, error) {
@@ -498,18 +446,38 @@ func createDepositLog(d Deposit) string {
 	b.WriteString(constants.LogDelimiter)
 	b.WriteString("f")
 	b.WriteString(constants.LogKeyDelimiter)
-	for i, s := range d.from {
-		if i > 0 {
-			b.WriteString(constants.LogArrayDelimiter)
-		}
-		b.WriteString(s)
-	}
+	b.WriteString(d.from)
 	b.WriteString(constants.LogDelimiter)
 	b.WriteString("a")
 	b.WriteString(constants.LogKeyDelimiter)
 	var buf [20]byte
 	b.Write(strconv.AppendInt(buf[:0], d.amount, 10))
 	return b.String()
+}
+
+// senderLabel returns the single sender address if all inputs share one address, or "many" otherwise.
+func senderLabel(inputs []*wire.TxIn, network *chaincfg.Params) string {
+	label := ""
+	for _, in := range inputs {
+		pkScript, err := txscript.ComputePkScript(in.SignatureScript, in.Witness)
+		if err != nil {
+			return "many"
+		}
+		_, addrs, _, err := txscript.ExtractPkScriptAddrs(pkScript.Script(), network)
+		if err != nil || len(addrs) == 0 {
+			return "many"
+		}
+		addr := addrs[0].EncodeAddress()
+		if label == "" {
+			label = addr
+		} else if label != addr {
+			return "many"
+		}
+	}
+	if label == "" {
+		return "many"
+	}
+	return label
 }
 
 func createFeeLog(vscFee, btcFee int64) string {

@@ -46,12 +46,13 @@ const (
 )
 
 const (
-	IntentTransferType      = "transfer.allow"
-	IntentContractIdKey     = "contract_id"
-	IntentLimitKey          = "limit"
-	IntentTokenKey          = "token"
-	IntentExpenditurePrefix = "l" + DirPathDelimiter
+	IntentTransferType  = "transfer.allow"
+	IntentContractIdKey = "contract_id"
+	IntentLimitKey      = "limit"
+	IntentTokenKey      = "token"
 )
+
+const AllowancePrefix = "q" + DirPathDelimiter
 
 const OracleAddress = "did:vsc:oracle:btc"
 const PrimaryPublicKeyStateKey = "pubkey"

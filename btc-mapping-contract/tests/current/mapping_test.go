@@ -136,16 +136,7 @@ func TestUnmap(t *testing.T) {
 		Action:     "unmap",
 		Payload:    payload,
 		RcLimit:    10000,
-		Intents: []contracts.Intent{
-			{
-				Type: constants.IntentTransferType,
-				Args: map[string]string{
-					constants.IntentContractIdKey: contractId,
-					constants.IntentLimitKey:      "10000",
-					constants.IntentTokenKey:      "btc",
-				},
-			},
-		},
+		Intents:    []contracts.Intent{},
 	})
 
 	dumpLogs(t, r.Logs)
@@ -193,15 +184,7 @@ func TestTransfer(t *testing.T) {
 		Payload:    payload,
 		RcLimit:    10000,
 		Caller:     "hive:milo-hpr",
-		Intents: []contracts.Intent{
-			{
-				Type: constants.IntentTransferType,
-				Args: map[string]string{
-					constants.IntentContractIdKey: contractId,
-					constants.IntentLimitKey:      "8000",
-				},
-			},
-		},
+		Intents:    []contracts.Intent{},
 	})
 	if r.Err != "" {
 		fmt.Println("error:", r.Err, r.ErrMsg)

@@ -23,7 +23,7 @@ type VerificationRequest struct {
 
 type Deposit struct {
 	to     string
-	from   []string
+	from   string
 	amount int64
 }
 
@@ -182,4 +182,10 @@ type PublicKeys struct {
 //tinyjson:json
 type RouterContract struct {
 	ContractId string `json:"router_contract"`
+}
+
+//tinyjson:json
+type AllowanceParams struct {
+	Spender string `json:"spender"`
+	Amount  string `json:"amount"`
 }

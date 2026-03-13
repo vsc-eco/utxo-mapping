@@ -2,7 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Commands
+## Build Convention
+
+**IMPORTANT**: Never run `go build`, `go vet`, `go run`, or any direct Go toolchain commands in this repo. This is a TinyGo WASM project — standard Go toolchain commands fail or give misleading errors.
+
+Always use `make` targets:
 
 ```bash
 make dev          # Build WASM for testnet4 (default dev target)
@@ -33,7 +37,7 @@ This is a **TinyGo WASM smart contract** that maps Bitcoin UTXOs to Magi/VSC Net
 
 ### Contract Modules
 
-**`contract/main.go`** — WASM entry point. Exports functions via `//go:wasmexport` and routes calls to handlers. Key exported actions: `map`, `unmap`, `transfer`, `transferFrom`, `addBlocks`, `seedBlocks`, `registerPublicKey`, `createKeyPair`.
+**`contract/main.go`** — WASM entry point. Exports functions via `//go:wasmexport` and routes calls to handlers. Key exported actions: `map`, `unmap`, `transfer`, `transferFrom`, `approve`, `increaseAllowance`, `decreaseAllowance`, `addBlocks`, `seedBlocks`, `registerPublicKey`, `createKeyPair`.
 
 **`contract/mapping/`** — Core logic. `handlers.go` handles `map`/`unmap` actions. `mapping.go` processes UTXOs and indexes addresses. `utils.go` builds P2WSH addresses with backup spending paths (CSV timelock). `proof.go` verifies Bitcoin Merkle inclusion proofs. `init.go` loads contract state from storage.
 
@@ -47,17 +51,24 @@ This is a **TinyGo WASM smart contract** that maps Bitcoin UTXOs to Magi/VSC Net
 
 ### State Storage Keys
 
-| Key                    | Content                                                    |
-| ---------------------- | ---------------------------------------------------------- |
-| `utxor`                | UTXO registry (JSON array of `[id, vout, amount]`)         |
-| `utxo/<id>`            | Individual UTXO data                                       |
-| `txspdr`               | Spent transaction IDs registry                             |
-| `sply`                 | Supply tracking (`active`, `user`, `fee`, `base_fee_rate`) |
-| `block/<height>`       | 80-byte block header (hex)                                 |
-| `lsthgt`               | Last known block height                                    |
-| `pubkey` / `backupkey` | ECDSA public keys for TSS                                  |
-| `routerid`             | Router contract ID                                         |
-| `bal/<address>`        | Account balance in satoshis                                |
+Keys are defined in `contract/constants/constants.go`. The separator between prefix and key segment is `-` (i.e., `DirPathDelimiter = "-"`).
+
+| Constant                    | Key pattern                    | Content                                                         |
+| --------------------------- | ------------------------------ | --------------------------------------------------------------- |
+| `BalancePrefix`             | `a-<address>`                  | Account balance in satoshis (compact big-endian int64, 1–8 B)  |
+| `AllowancePrefix`           | `q-<owner>-<spender>`          | ERC-20-style spending allowance (compact big-endian int64)     |
+| `ObservedPrefix`            | `o-<txid>:<vout>`              | Observed tx marker (value `"1"`)                                |
+| `UtxoPrefix`                | `u-<hex_id>`                   | Individual UTXO binary blob                                     |
+| `UtxoRegistryKey`           | `r`                            | UTXO registry (packed 9 bytes/entry: 1-byte ID + 8-byte amount) |
+| `UtxoLastIdKey`             | `i`                            | 2 bytes: `[confirmedNextId, unconfirmedNextId]`                 |
+| `TxSpendsRegistryKey`       | `p`                            | Tx spends registry (32 bytes/entry)                             |
+| `TxSpendsPrefix`            | `d-<txid>`                     | Signing data for pending withdrawal (msgpack)                   |
+| `SupplyKey`                 | `s`                            | 32 bytes: 4× int64 BE (`active`, `user`, `fee`, `base_fee_rate`) |
+| `LastHeightKey`             | `h`                            | Last known block height (decimal string)                        |
+| `BlockPrefix`               | `b-<height>`                   | 80-byte raw Bitcoin block header                                |
+| `PrimaryPublicKeyStateKey`  | `pubkey`                       | TSS primary compressed public key (33 bytes)                    |
+| `BackupPublicKeyStateKey`   | `backupkey`                    | TSS backup compressed public key (33 bytes)                     |
+| `RouterContractIdKey`       | `routerid`                     | Router contract ID (string)                                     |
 
 ### Key Design Patterns
 
