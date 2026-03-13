@@ -13,73 +13,70 @@ CONTRACTS_DIR	:= contract
 
 TINYGO_IMAGE := tinygo/tinygo:0.39.0
 WORKDIR      := /work
-DOCKER_TINYGO = docker run --rm \
-	-e HOME=/tmp \
-	-v $(CURDIR):$(WORKDIR) \
-	-w $(WORKDIR) \
-	$(TINYGO_IMAGE) \
-	tinygo
 
-TINYGO_CMD = tinygo
+# For each local path in go.work (use/replace directives), add a Docker volume
+# mount so the container can resolve the same relative paths as the host.
+# Container path is computed by normalising WORKDIR/relative_path.
+GOWORK_EXTRA_MOUNTS := $(if $(wildcard go.work),$(shell \
+  awk '($$1=="use"||$$1=="replace") && $$NF~/^(\.|\/|~)/ && $$NF!="." {print $$NF}' go.work 2>/dev/null | \
+  while read rel; do \
+    host=$$(realpath "$(CURDIR)/$$rel" 2>/dev/null); \
+    ctr=$$(python3 -c "import os,sys; print(os.path.normpath(sys.argv[1]))" "$(WORKDIR)/$$rel"); \
+    [ -d "$$host" ] && printf -- '-v %s:%s ' "$$host" "$$ctr"; \
+  done),)
 
-ifdef USE_DOCKER
-    TINYGO_CMD = docker run --rm \
-        -u $(shell id -u):$(shell id -g) \
-        -v $(CURDIR):$(WORKDIR) \
-        -w $(WORKDIR) \
-        $(TINYGO_IMAGE) \
-        tinygo
+TINYGO_CMD = docker run --rm \
+    -u $(shell id -u):$(shell id -g) \
+    $(GOWORK_EXTRA_MOUNTS) \
+    -v $(CURDIR):$(WORKDIR) \
+    -w $(WORKDIR) \
+    $(TINYGO_IMAGE) \
+    tinygo
+
+ifeq ($(USE_DOCKER),0)
+    TINYGO_CMD = tinygo
 endif
 
-NETWORK ?= regtest
 FILTER ?= .
 
 RUN_ARGS := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
 ifneq ($(RUN_ARGS),)
   ifeq ($(firstword $(MAKECMDGOALS)),test)
     FILTER := $(firstword $(RUN_ARGS))
-  else
-    NETWORK := $(firstword $(RUN_ARGS))
   endif
 endif
 $(eval $(RUN_ARGS):;@:)
 
-CFLAGS = $(BASEFLAGS) $(call netflags,$(NETWORK))
-
 netflags = \
 	$(if $(filter testnet3,$1),$(TESTNET3FLAGS), \
 	$(if $(filter testnet4,$1),$(TESTNET4FLAGS), \
-	$(if $(filter regtest,$1),$(REGTESTFLAGS), \
+	$(if $(filter regtest dev,$1),$(REGTESTFLAGS), \
 	$(if $(filter mainnet,$1),, \
 	$(error Unknown NETWORK: $1)))))
 
 all: dev
 
+# Fetch the latest commit on the testnet branch and update the replace directive.
+update-vsc-node:
+	@NEWVER=$$(go list -m github.com/vsc-eco/go-vsc-node@testnet | awk '{print $$2}') && \
+	CURVER=$$(awk '!/^[[:space:]]*\/\// && /replace vsc-node =>/ {print $$NF}' go.mod) && \
+	if [ "$$NEWVER" != "$$CURVER" ]; then \
+		echo "vsc-node $$CURVER -> $$NEWVER" && \
+		go mod edit -replace=vsc-node=github.com/vsc-eco/go-vsc-node@$$NEWVER && \
+		go mod tidy; \
+	fi
+
+.PHONY: update-vsc-node
+
+# Run update-vsc-node before any build or test target.
+all dev testnet3 testnet4 mainnet regtest test: | update-vsc-node
+
 pull-tinygo:
 	docker pull $(TINYGO_IMAGE)
 
-dev:
-	@echo "Building $@ with $(NETWORK) flags"
-	$(TINYGO_CMD) build $(CFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
-
-testnet3: NETWORK ?= testnet3
-testnet3:
-	@echo "Building $@ with $(NETWORK) flags"
-	$(TINYGO_CMD) build $(CFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
-
-testnet4: NETWORK ?= testnet4
-testnet4:
-	@echo "Building $@ with $(NETWORK) flags"
-	$(TINYGO_CMD) build $(CFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
-
-mainnet: NETWORK ?= mainnet
-mainnet:
-	@echo "Building $@ with $(NETWORK) flags"
-	$(TINYGO_CMD) build $(CFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
-
-regtest:
-	@echo "Building $@ with regtest flags"
-	$(TINYGO_CMD) build $(CFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
+dev testnet3 testnet4 mainnet regtest:
+	@echo "Building $@ ..."
+	$(TINYGO_CMD) build $(BASEFLAGS) $(call netflags,$@) -o $(BIN_DIR)/$@.wasm $(TARGET)
 
 strip:
 	@for file in $(BIN_DIR)/*.wasm; do \

@@ -1,7 +1,6 @@
 package current_test
 
 import (
-	"btc-mapping-contract/contract/blocklist"
 	"btc-mapping-contract/contract/constants"
 	"encoding/json"
 	"strings"
@@ -20,18 +19,33 @@ const testOwner = "hive:milo-hpr"
 
 // Valid Bitcoin testnet4 block headers (116087 → 116088 → 116089).
 const lastBlockHeight = "116087"
+
 const lastBlockHeader = "00c0a520165303733ee5b0561d46da9dcce685fd12a807d64472931c46d5920c00000000c96f929654fc44fb69783b6cc4f2340ad85de5b10c5047836561901299ed23d162525469ffff001dda00dd53"
+
 const twoBlocksPayload = `{"blocks":"00c0fa213b04801d1b66efcf8f41290a675777893f5c6ac158a585654263ba0900000000fdf6162d92eee3af012f1ddab30a401bb371a0da32371d185fc25eb3655fd6d013575469ffff001db80220f80000002002883f9d7847a35a0d371cd11bf95c0f9d252ed41f46dde04172bf0c000000003d2af3ae86b3638665e6214df4dc12712fd7486348c3c319cedb3c69bc8a4ddac45b5469ffff001d1adfdc74","latest_fee":1}`
 
 type ctWrapper struct {
 	ct *test_utils.ContractTest
 }
 
-func callAction(t *testing.T, w *ctWrapper, action string, payload string, caller string) test_utils.ContractTestCallResult {
+func callAction(
+	t *testing.T,
+	w *ctWrapper,
+	action string,
+	payload string,
+	caller string,
+) test_utils.ContractTestCallResult {
 	return callActionOnContract(t, w, testContractId, action, payload, caller)
 }
 
-func callActionOnContract(t *testing.T, w *ctWrapper, contractId string, action string, payload string, caller string) test_utils.ContractTestCallResult {
+func callActionOnContract(
+	t *testing.T,
+	w *ctWrapper,
+	contractId string,
+	action string,
+	payload string,
+	caller string,
+) test_utils.ContractTestCallResult {
 	t.Helper()
 	if caller == "" {
 		caller = testOwner
@@ -52,7 +66,7 @@ func seedBlocksViaState(w *ctWrapper) {
 }
 
 func seedBlocksViaStateForContract(w *ctWrapper, contractId string) {
-	w.ct.StateSet(contractId, blocklist.LastHeightKey, lastBlockHeight)
+	w.ct.StateSet(contractId, constants.LastHeightKey, lastBlockHeight)
 	w.ct.StateSet(contractId, constants.BlockPrefix+lastBlockHeight, lastBlockHeader)
 	w.ct.StateSet(contractId, "sply", `{"active_supply":0,"user_supply":0,"fee_supply":0,"base_fee_rate":1}`)
 }
@@ -61,6 +75,7 @@ func seedBlocksViaStateForContract(w *ctWrapper, contractId string) {
 // to avoid Badger DB lock conflicts.
 func TestAllOperations(t *testing.T) {
 	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
 	ct.RegisterContract(testContractId, testOwner, ContractWasm)
 	w := &ctWrapper{ct: &ct}
 

@@ -2,3 +2,5 @@
 *.wasm
 .env
 data/
+go.work
+go.work.sum

@@ -2,9 +2,14 @@ module btc-mapping-contract
 
 go 1.25.6
 
-// replace vsc-node => github.com/vsc-eco/go-vsc-node v0.0.0-20251120092146-ea108c70b7f0
+// DO NOT modify. Auto-updated by the Makefile. To use a local or deprecated version, use a go.work file, e.g.
+//
+// // go.work - gitignored, not committed
+// go 1.25.6
+// use .
+// replace vsc-node => path-to-local-node
 
-replace vsc-node => ../../testnet/go-vsc-node/
+replace vsc-node => github.com/vsc-eco/go-vsc-node v0.0.0-20260313160238-1776d958532b
 
 replace github.com/agl/ed25519 => github.com/binance-chain/edwards25519 v0.0.0-20200305024217-f36fc4b53d43
 
