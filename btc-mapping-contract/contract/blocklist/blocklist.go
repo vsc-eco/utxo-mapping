@@ -12,6 +12,7 @@ import (
 	ce "btc-mapping-contract/contract/contracterrors"
 
 	"github.com/btcsuite/btcd/blockchain"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
 )
@@ -26,18 +27,16 @@ type AddBlocksParams struct {
 
 //tinyjson:json
 type SeedBlocksParams struct {
-	BlockHeader string
-	BlockHeight uint32
+	BlockHeader string `json:"block_header"`
+	BlockHeight uint32 `json:"block_height"`
 }
-
-const LastHeightKey = "lsthgt"
 
 var ErrorLastHeightDNE = errors.New("last height does not exist")
 
 var ErrorSequenceIncorrect = errors.New("block sequence incorrect")
 
 func LastHeightFromState() (uint32, error) {
-	lastHeightString := sdk.StateGetObject(LastHeightKey)
+	lastHeightString := sdk.StateGetObject(constants.LastHeightKey)
 	if *lastHeightString == "" {
 		return 0, ErrorLastHeightDNE
 	}
@@ -50,7 +49,7 @@ func LastHeightFromState() (uint32, error) {
 }
 
 func LastHeightToState(lastHeight uint32) {
-	sdk.StateSetObject(LastHeightKey, strconv.FormatUint(uint64(lastHeight), 10))
+	sdk.StateSetObject(constants.LastHeightKey, strconv.FormatUint(uint64(lastHeight), 10))
 }
 
 func DivideHeaderList(blocksHex *string) ([]BlockHeaderBytes, error) {
@@ -97,8 +96,6 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 		return 0, 0, ce.NewContractError(ce.ErrInput, "error decoding block header: "+err.Error())
 	}
 
-	timeSource := blockchain.NewMedianTime()
-	timeSource.AddTimeSample("local", lastBlockHeader.Timestamp)
 	powLimit := networkParams.PowLimit
 
 	for _, headerBytes := range rawHeaders {
@@ -113,10 +110,11 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 		if err != nil {
 			return 0, 0, ce.NewContractError(ce.ErrInput, "error decoding block header: "+err.Error())
 		}
-		if err := blockchain.CheckBlockHeaderSanity(&blockHeader, powLimit, timeSource, blockchain.BFNone); err != nil {
+		msgBlock := wire.MsgBlock{Header: blockHeader}
+		if err := blockchain.CheckProofOfWork(btcutil.NewBlock(&msgBlock), powLimit); err != nil {
 			return 0, 0, ce.NewContractError(
 				ce.ErrInput,
-				"block "+strconv.FormatUint(uint64(blockHeight), 10)+" failed sanity check: "+err.Error(),
+				"block "+strconv.FormatUint(uint64(blockHeight), 10)+" failed PoW check: "+err.Error(),
 			)
 		}
 
@@ -156,7 +154,7 @@ func HandleSeedBlocks(seedParams SeedBlocksParams, allowReseed bool) (uint32, er
 			constants.BlockPrefix+strconv.FormatInt(int64(seedParams.BlockHeight), 10),
 			string(headerBytes),
 		)
-		sdk.StateSetObject(LastHeightKey, strconv.FormatInt(int64(seedParams.BlockHeight), 10))
+		sdk.StateSetObject(constants.LastHeightKey, strconv.FormatInt(int64(seedParams.BlockHeight), 10))
 		return seedParams.BlockHeight, nil
 	}
 

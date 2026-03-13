@@ -31,7 +31,7 @@ func TestMap(t *testing.T) {
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
-	ct.StateSet(contractId, blocklist.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.LastHeightKey, "100")
 	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
@@ -78,7 +78,7 @@ func TestMap(t *testing.T) {
 		fmt.Println("gas used:", r.GasUsed)
 	}
 
-	logStateDiff(t, r.StateDiff)
+	dumpStateDiff(t, r.StateDiff)
 	fmt.Println("Return value:", r.Ret)
 }
 
@@ -109,7 +109,7 @@ func TestUnmap(t *testing.T) {
 		FeeSupply:    0,
 		BaseFeeRate:  1,
 	})))
-	ct.StateSet(contractId, blocklist.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.LastHeightKey, "100")
 	ct.StateSet(contractId, constants.BlockPrefix+"100", buildSeedHeaderRaw(t, time.Unix(0, 0)))
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
@@ -158,7 +158,7 @@ func TestUnmap(t *testing.T) {
 		fmt.Println("gas used:", r.GasUsed)
 	}
 
-	logStateDiff(t, r.StateDiff)
+	dumpStateDiff(t, r.StateDiff)
 	fmt.Println("Return value:", r.Ret)
 }
 
@@ -211,7 +211,7 @@ func TestTransfer(t *testing.T) {
 		fmt.Println("gas used:", r.GasUsed)
 	}
 
-	logStateDiff(t, r.StateDiff)
+	dumpStateDiff(t, r.StateDiff)
 	fmt.Println("Return value:", r.Ret)
 }
 
@@ -221,7 +221,7 @@ func TestRegisterKey(t *testing.T) {
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 
-	input, err := tinyjson.Marshal(mapping.PublicKeys{
+	input, err := tinyjson.Marshal(mapping.RegisterKeyParams{
 		PrimaryPubKey: TestPrimaryPubKeyHex,
 		BackupPubKey:  TestBackupPubKeyHex,
 	})
@@ -251,7 +251,7 @@ func TestRegisterKey(t *testing.T) {
 	assert.True(t, r.Success)
 	assert.LessOrEqual(t, r.GasUsed, uint(1000000000))
 
-	logStateDiff(t, r.StateDiff)
+	dumpStateDiff(t, r.StateDiff)
 	fmt.Println("Return value:", r.Ret)
 }
 
@@ -263,7 +263,7 @@ func TestAddBlocks(t *testing.T) {
 	t.Cleanup(func() { ct.DataLayer.Stop() })
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
-	ct.StateSet(contractId, blocklist.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.LastHeightKey, "100")
 	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, seedHex))
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
 
@@ -298,7 +298,7 @@ func TestAddBlocks(t *testing.T) {
 	assert.True(t, r.Success)
 	assert.LessOrEqual(t, r.GasUsed, uint(1000000000))
 
-	logStateDiff(t, r.StateDiff)
+	dumpStateDiff(t, r.StateDiff)
 	fmt.Println("Return value:", r.Ret)
 }
 
@@ -315,6 +315,7 @@ func TestSeedBlocks(t *testing.T) {
 		BlockHeader: buildSeedHeader(t, seedTime), // hex string, decoded by HandleSeedBlocks
 		BlockHeight: 100,
 	})
+	t.Log(string(payload))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,6 +345,6 @@ func TestSeedBlocks(t *testing.T) {
 	assert.True(t, r.Success)
 	assert.LessOrEqual(t, r.GasUsed, uint(1000000000))
 
-	logStateDiff(t, r.StateDiff)
+	dumpStateDiff(t, r.StateDiff)
 	fmt.Println("Return value:", r.Ret)
 }

@@ -20,22 +20,8 @@ import (
 )
 
 func createP2WSHAddressWithBackup(
-	primaryPubKeyHex string, backupPubKeyHex string, tag []byte, network *chaincfg.Params,
+	primaryPubKey CompressedPubKey, backupPubKey CompressedPubKey, tag []byte, network *chaincfg.Params,
 ) (string, []byte, error) {
-	primaryPubKeyBytes, err := hex.DecodeString(primaryPubKeyHex)
-	if err != nil {
-		return "", nil, err
-	}
-
-	if backupPubKeyHex == "" {
-		return createSimpleP2WSHAddress(primaryPubKeyBytes, tag, network)
-	}
-
-	backupPubKeyBytes, err := hex.DecodeString(backupPubKeyHex)
-	if err != nil {
-		return "", nil, err
-	}
-
 	csvBlocks := constants.BackupCSVBlocks
 
 	if network.Net != chaincfg.MainNetParams.Net {
@@ -48,7 +34,7 @@ func createP2WSHAddressWithBackup(
 	scriptBuilder.AddOp(txscript.OP_IF)
 
 	// primary spending path
-	scriptBuilder.AddData(primaryPubKeyBytes)
+	scriptBuilder.AddData(primaryPubKey[:])
 	if tag == nil || len(tag) > 0 {
 		scriptBuilder.AddOp(txscript.OP_CHECKSIGVERIFY)
 		scriptBuilder.AddData(tag)
@@ -63,7 +49,7 @@ func createP2WSHAddressWithBackup(
 	scriptBuilder.AddOp(txscript.OP_CHECKSEQUENCEVERIFY)
 	scriptBuilder.AddOp(txscript.OP_DROP)
 
-	scriptBuilder.AddData(backupPubKeyBytes)
+	scriptBuilder.AddData(backupPubKey[:])
 	scriptBuilder.AddOp(txscript.OP_CHECKSIG)
 
 	// end if
@@ -539,6 +525,17 @@ func createFeeLog(vscFee, btcFee int64) string {
 	return b.String()
 }
 
+func createUnmapLog(txId string) string {
+	var b strings.Builder
+	b.Grow(71)
+	b.WriteString("unm")
+	b.WriteString(constants.LogDelimiter)
+	b.WriteString("id")
+	b.WriteString(constants.LogKeyDelimiter)
+	b.WriteString(txId)
+	return b.String()
+}
+
 func safeAdd64(a, b int64) (int64, error) {
 	if a > 0 && b > math.MaxInt64-a {
 		return 0, errors.New("overflow detected")
@@ -567,4 +564,22 @@ func getUtxoKey(id uint8) string {
 
 func getObservedKey(utxo Utxo) string {
 	return constants.ObservedPrefix + utxo.TxId + ":" + strconv.FormatUint(uint64(utxo.Vout), 10)
+}
+
+// DecodeCompressedPubKey decodes a hex string into a CompressedPubKey,
+// validating that it is exactly 33 bytes with a 0x02 or 0x03 prefix.
+func DecodeCompressedPubKey(hexStr string) (CompressedPubKey, error) {
+	var key CompressedPubKey
+	b, err := hex.DecodeString(hexStr)
+	if err != nil {
+		return key, err
+	}
+	if len(b) != 33 {
+		return key, errors.New("invalid compressed public key length: expected 33 bytes")
+	}
+	if b[0] != 0x02 && b[0] != 0x03 {
+		return key, errors.New("invalid compressed public key prefix: expected 0x02 or 0x03")
+	}
+	copy(key[:], b)
+	return key, nil
 }

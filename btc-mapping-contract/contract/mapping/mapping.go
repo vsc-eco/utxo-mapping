@@ -4,6 +4,7 @@ import (
 	"btc-mapping-contract/sdk"
 	"bytes"
 	"encoding/hex"
+	"strconv"
 
 	"github.com/CosmWasm/tinyjson"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -167,10 +168,11 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) error {
 			case MapSwap:
 				// get router id and check it only if there is a swap in the tx
 				if routerId == "" {
-					routerId := sdk.StateGetObject(constants.RouterContractIdKey)
-					if *routerId == "" {
+					r := sdk.StateGetObject(constants.RouterContractIdKey)
+					if *r == "" {
 						return ce.NewContractError(ce.ErrInitialization, "router contract not initialized")
 					}
+					routerId = *r
 				}
 
 				ok := metadata.Params.Has(constants.SwapAssetOut)
@@ -183,7 +185,7 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) error {
 					Type:      "swap",
 					Version:   "1.0.0",
 					AssetIn:   BtcAssetValue,
-					AmountIn:  utxo.Amount,
+					AmountIn:  strconv.FormatInt(utxo.Amount, 10),
 					AssetOut:  assetOut,
 					Recipient: metadata.Recipient,
 				}
@@ -197,8 +199,9 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) error {
 						{
 							Type: "transfer.allow",
 							Args: map[string]string{
-								"limit": hex.EncodeToString([]byte{byte(utxo.Amount)}),
-								"token": "btc",
+								"contract_id": env.ContractId,
+								"limit":       strconv.FormatInt(utxo.Amount, 10),
+								"token":       "btc",
 							},
 						},
 					},

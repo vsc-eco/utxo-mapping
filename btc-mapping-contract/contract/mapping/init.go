@@ -10,7 +10,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 )
 
-func IntializeContractState(publicKeys *PublicKeys, networkMode string) (*ContractState, error) {
+func IntializeContractState(publicKeys PublicKeys, networkMode string) (*ContractState, error) {
 	var networkParams *chaincfg.Params
 	switch networkMode {
 	case constants.Testnet3:
@@ -77,7 +77,11 @@ func IntializeContractState(publicKeys *PublicKeys, networkMode string) (*Contra
 	}, nil
 }
 
-func InitializeMappingState(publicKeys *PublicKeys, networkMode string, instructions ...string) (*MappingState, error) {
+func InitializeMappingState(
+	publicKeys PublicKeys,
+	networkMode string,
+	instructions ...string,
+) (*MappingState, error) {
 	contractState, err := IntializeContractState(publicKeys, networkMode)
 	if err != nil {
 		return nil, err
@@ -99,7 +103,7 @@ func InitializeMappingState(publicKeys *PublicKeys, networkMode string, instruct
 }
 
 func (cs *ContractState) parseInstructions(
-	publicKeys *PublicKeys,
+	publicKeys PublicKeys,
 	instrs []string,
 	networkParams *chaincfg.Params,
 ) (map[string]*AddressMetadata, error) {
@@ -146,8 +150,8 @@ func (cs *ContractState) parseInstructions(
 			hasher.Write([]byte(instr))
 			hashBytes := hasher.Sum(nil)
 			address, _, err := createP2WSHAddressWithBackup(
-				publicKeys.PrimaryPubKey,
-				publicKeys.BackupPubKey,
+				publicKeys.Primary,
+				publicKeys.Backup,
 				hashBytes,
 				networkParams,
 			)

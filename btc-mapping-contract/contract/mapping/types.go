@@ -114,7 +114,7 @@ type ContractState struct {
 	UnconfirmedNextId uint8 // next candidate in the unconfirmed pool (0–63,  wraps)
 	TxSpendsList      TxSpendsRegistry
 	Supply            SystemSupply
-	PublicKeys        *PublicKeys
+	PublicKeys        PublicKeys
 	NetworkParams     *chaincfg.Params
 	NetworkOptions    map[NetworkName]Network
 }
@@ -139,22 +139,22 @@ type DexInstruction struct {
 	RefBps        *int              `json:"ref_bps,omitempty"`
 	ReturnAddress *ReturnAddress    `json:"return_address,omitempty"`
 	Metadata      map[string]string `json:"metadata,omitempty"`
-	AmountIn      int64             `json:"amount_in"`
+	AmountIn      string            `json:"amount_in"`
 }
 
 //tinyjson:json
 type PoolInfo struct {
 	Asset0   string `json:"asset0"`
 	Asset1   string `json:"asset1"`
-	Reserve0 uint64 `json:"reserve0"`
-	Reserve1 uint64 `json:"reserve1"`
+	Reserve0 string `json:"reserve0"`
+	Reserve1 string `json:"reserve1"`
 	Fee      uint64 `json:"fee"`
-	TotalLp  uint64 `json:"total_lp"`
+	TotalLp  string `json:"total_lp"`
 }
 
 //tinyjson:json
 type SwapResult struct {
-	AmountOut uint64   `json:"amount_out"`
+	AmountOut string   `json:"amount_out"`
 	PoolState PoolInfo `json:"pool_state"` // Current pool state after swap
 }
 
@@ -166,9 +166,17 @@ type ReturnAddress struct {
 const BtcAssetValue string = "BTC"
 
 //tinyjson:json
-type PublicKeys struct {
+type RegisterKeyParams struct {
 	PrimaryPubKey string `json:"primary_public_key,omitempty"`
 	BackupPubKey  string `json:"backup_public_key,omitempty"`
+}
+
+// CompressedPubKey is a 33-byte SEC1 compressed secp256k1 public key.
+type CompressedPubKey [33]byte
+
+type PublicKeys struct {
+	Primary CompressedPubKey
+	Backup  CompressedPubKey
 }
 
 //tinyjson:json

@@ -1,6 +1,6 @@
 package constants
 
-const DirPathDelimiter = "/"
+const DirPathDelimiter = "-"
 
 const TssKeyName = "main"
 const RouterContractIdKey = "routerid"
@@ -9,18 +9,20 @@ const RouterContractIdKey = "routerid"
 // IDs 0–63  are the unconfirmed pool (change outputs pending confirmation).
 // IDs 64–255 are the confirmed pool   (active mapped UTXOs ready to spend).
 const (
-	UtxoUnconfirmedPoolSize = 64  // number of slots in the unconfirmed pool
-	UtxoConfirmedPoolStart  = 64  // first ID in the confirmed pool
+	UtxoUnconfirmedPoolSize = 64 // number of slots in the unconfirmed pool
+	UtxoConfirmedPoolStart  = 64 // first ID in the confirmed pool
 )
 
-const BalancePrefix = "bal" + DirPathDelimiter
-const ObservedPrefix = "otx" + DirPathDelimiter
-const UtxoPrefix = "utxo" + DirPathDelimiter
-const UtxoRegistryKey = "utxor"
-const UtxoLastIdKey = "utxoid"
-const TxSpendsRegistryKey = "txspdr"
-const TxSpendsPrefix = "txspd" + DirPathDelimiter
-const SupplyKey = "sply"
+const BalancePrefix = "a" + DirPathDelimiter
+const ObservedPrefix = "o" + DirPathDelimiter
+const UtxoPrefix = "u" + DirPathDelimiter
+const UtxoRegistryKey = "r"
+const UtxoLastIdKey = "i"
+const TxSpendsRegistryKey = "p"
+const TxSpendsPrefix = "d" + DirPathDelimiter
+const SupplyKey = "s"
+
+const LastHeightKey = "h"
 
 // Instruction URL search param keys
 const (
@@ -47,14 +49,14 @@ const (
 	IntentContractIdKey     = "contract_id"
 	IntentLimitKey          = "limit"
 	IntentTokenKey          = "token"
-	IntentExpenditurePrefix = "total" + DirPathDelimiter
+	IntentExpenditurePrefix = "l" + DirPathDelimiter
 )
 
 const OracleAddress = "did:vsc:oracle:btc"
 const PrimaryPublicKeyStateKey = "pubkey"
 const BackupPublicKeyStateKey = "backupkey"
 
-const BlockPrefix = "block" + DirPathDelimiter
+const BlockPrefix = "b" + DirPathDelimiter
 
 const (
 	Testnet3 string = "testnet3"

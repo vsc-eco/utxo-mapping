@@ -41,8 +41,8 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	}
 
 	changeAddress, _, err := createP2WSHAddressWithBackup(
-		cs.PublicKeys.PrimaryPubKey,
-		cs.PublicKeys.BackupPubKey,
+		cs.PublicKeys.Primary,
+		cs.PublicKeys.Backup,
 		nil,
 		cs.NetworkParams,
 	)
@@ -95,6 +95,7 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 
 	sdk.StateSetObject(constants.TxSpendsPrefix+tx.TxID(), string(signingDataBytes))
 	cs.TxSpendsList = append(cs.TxSpendsList, tx.TxID())
+	sdk.Log(createUnmapLog(tx.TxID()))
 
 	// update supply
 	newActive, err := safeSubtract64(cs.Supply.ActiveSupply, finalAmt)

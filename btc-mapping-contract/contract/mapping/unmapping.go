@@ -104,10 +104,11 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint8, int64, error) {
 	}
 	unconfirmedTxs := []unconfirmedEntry{}
 
+	var err error
 	for _, entry := range cs.UtxoList {
 		if entry.Id >= constants.UtxoConfirmedPoolStart {
 			inputs = append(inputs, entry.Id)
-			accAmount, err := safeAdd64(accAmount, entry.Amount)
+			accAmount, err = safeAdd64(accAmount, entry.Amount)
 			if err != nil {
 				return nil, 0, ce.WrapContractError(ce.ErrArithmetic, err, "error gathering utxos")
 			}
@@ -129,7 +130,7 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint8, int64, error) {
 	// uses unconfirmed txs only if all confirmed txs are insufficient
 	for _, u := range unconfirmedTxs {
 		inputs = append(inputs, u.id)
-		accAmount, err := safeAdd64(accAmount, u.amount)
+		accAmount, err = safeAdd64(accAmount, u.amount)
 		if err != nil {
 			return nil, 0, ce.WrapContractError(ce.ErrArithmetic, err, "error gathering utxos")
 		}
@@ -180,8 +181,8 @@ func (cs *ContractState) createSpendTransaction(
 		tx.AddTxIn(txIn)
 
 		_, witnessScript, err := createP2WSHAddressWithBackup(
-			cs.PublicKeys.PrimaryPubKey,
-			cs.PublicKeys.BackupPubKey,
+			cs.PublicKeys.Primary,
+			cs.PublicKeys.Backup,
 			utxo.Tag, // already []byte
 			cs.NetworkParams,
 		)
