@@ -94,14 +94,9 @@ func AddBlocks(addBlocksInput *string) *string {
 	}
 
 	var resultBuilder strings.Builder
-	lastHeight, added, err := blocklist.HandleAddBlocks(blockHeaders, NetworkMode)
+	lastHeight, err := blocklist.HandleAddBlocks(blockHeaders, NetworkMode)
 	if err != nil {
-		if err != blocklist.ErrorSequenceIncorrect {
-			ce.CustomAbort(err)
-		} else {
-			resultBuilder.WriteString("error adding blocks: " + err.Error())
-			resultBuilder.WriteString(", added " + strconv.FormatUint(uint64(added), 10) + " blocks, ")
-		}
+		ce.CustomAbort(err)
 	}
 	resultBuilder.WriteString("last height: " + strconv.FormatUint(uint64(lastHeight), 10))
 
