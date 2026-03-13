@@ -25,7 +25,7 @@ func createP2WSHAddressWithBackup(
 	csvBlocks := constants.BackupCSVBlocks
 
 	if network.Net != chaincfg.MainNetParams.Net {
-		csvBlocks = 2
+		csvBlocks = constants.TestnetBackupCSVBlocks
 	}
 
 	scriptBuilder := txscript.NewScriptBuilder()
@@ -34,8 +34,11 @@ func createP2WSHAddressWithBackup(
 	scriptBuilder.AddOp(txscript.OP_IF)
 
 	// primary spending path
+	// uses OP_CHECKSIG instead of OP_CHECKSIGVERIFY for tags of length 0
+	// because an empty tag will leave the stack empty after verificaiton
+	// and the tx will fail
 	scriptBuilder.AddData(primaryPubKey[:])
-	if tag == nil || len(tag) > 0 {
+	if len(tag) > 0 {
 		scriptBuilder.AddOp(txscript.OP_CHECKSIGVERIFY)
 		scriptBuilder.AddData(tag)
 	} else {
@@ -140,9 +143,9 @@ func checkAndDeductBalance(env sdk.Env, account string, amount int64) error {
 				continue
 			}
 			if contractId, ok := intent.Args[constants.IntentContractIdKey]; ok && contractId == env.ContractId {
-				if amount, ok := intent.Args[constants.IntentLimitKey]; ok {
+				if limitStr, ok := intent.Args[constants.IntentLimitKey]; ok {
 					var err error
-					intentAmount, err = strconv.ParseInt(amount, 10, 64)
+					intentAmount, err = strconv.ParseInt(limitStr, 10, 64)
 					if err != nil {
 						return ce.WrapContractError(ce.ErrIntent, err, "invalid intent amount")
 					}
@@ -468,7 +471,7 @@ func getAccExpenditure(contractId, vscAcc string) (int64, error) {
 }
 
 func setAccExpenditure(vscAcc string, newBal int64) {
-	sdk.EphemStateSetObject(constants.BalancePrefix+vscAcc, strconv.FormatInt(newBal, 10))
+	sdk.EphemStateSetObject(constants.IntentExpenditurePrefix+vscAcc, strconv.FormatInt(newBal, 10))
 }
 
 func (cs *ContractState) getNetwork(s string) (Network, error) {

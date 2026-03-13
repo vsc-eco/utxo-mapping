@@ -36,6 +36,7 @@ const (
 
 // Address Creation
 const BackupCSVBlocks = 4320 // ~1 month
+const TestnetBackupCSVBlocks = 2
 
 // Logs
 const (

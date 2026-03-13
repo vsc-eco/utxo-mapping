@@ -1,4 +1,4 @@
-module btc-mapping-contract
+module ltc-mapping-contract
 
 go 1.25.6
 
@@ -15,7 +15,6 @@ require (
 	github.com/btcsuite/btcd/btcutil v1.1.6
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0
 	github.com/stretchr/testify v1.11.1
-	github.com/tinylib/msgp v1.6.3
 )
 
 require (
@@ -223,7 +222,6 @@ require (
 	github.com/eager7/dogd v0.0.0-20200427085516-2caf59f59dbb // indirect
 	github.com/ipfs/go-log v1.0.5 // indirect
 	github.com/opentracing/opentracing-go v1.2.0 // indirect
-	github.com/philhofer/fwd v1.2.0 // indirect
 	golang.org/x/crypto v0.42.0 // indirect
 	golang.org/x/sys v0.36.0 // indirect
 	golang.org/x/telemetry v0.0.0-20250908211612-aef8a434d053 // indirect

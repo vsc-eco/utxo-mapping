@@ -1,7 +1,8 @@
 package mapping
 
 import (
-	"btc-mapping-contract/sdk"
+	"ltc-mapping-contract/sdk"
+	"encoding/hex"
 	"strconv"
 
 	"github.com/CosmWasm/tinyjson"
@@ -9,8 +10,8 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 
-	"btc-mapping-contract/contract/constants"
-	ce "btc-mapping-contract/contract/contracterrors"
+	"ltc-mapping-contract/contract/constants"
+	ce "ltc-mapping-contract/contract/contracterrors"
 )
 
 func isForVscAcc(
@@ -42,7 +43,7 @@ func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) ([]Utxo, error) {
 			return nil, ce.WrapContractError(
 				ce.ErrInput,
 				err,
-				"error extracting address from output in bitcoin transaction",
+				"error extracting address from output in litecoin transaction",
 			)
 		}
 		if ok {
@@ -51,7 +52,7 @@ func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) ([]Utxo, error) {
 				Vout:     uint32(index),
 				Amount:   txOut.Value,
 				PkScript: txOut.PkScript,
-				Tag:      ms.AddressRegistry[addr].Tag, // raw bytes, not hex
+				Tag:      hex.EncodeToString(ms.AddressRegistry[addr].Tag),
 			}
 			outputsForVsc = append(outputsForVsc, utxo)
 		}
@@ -60,57 +61,51 @@ func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) ([]Utxo, error) {
 	return outputsForVsc, nil
 }
 
-// updateUtxoSpends checks whether txId is a known pending spend transaction.
-// If so, it confirms matching unconfirmed UTXOs by transitioning them from the
-// unconfirmed pool (IDs 0–63) to the confirmed pool (IDs 64–255), and removes
-// the signing data entry.
 func (cs *ContractState) updateUtxoSpends(txId string) error {
-	utxoSpendJson := sdk.StateGetObject(constants.TxSpendsPrefix + txId)
+	utxoSpendJson := sdk.StateGetObject(TxSpendsPrefix + txId)
 	if len(*utxoSpendJson) < 1 {
 		return nil
 	}
 
-	utxoSpendPtr, err := UnmarshalSigningData([]byte(*utxoSpendJson))
+	var utxoSpend SigningData
+	err := tinyjson.Unmarshal([]byte(*utxoSpendJson), &utxoSpend)
 	if err != nil {
-		return ce.NewContractError(ce.ErrJson, "error unmarshalling utxo spend: "+err.Error())
+		return ce.NewContractError(ce.ErrJson, "error unmarshalling utxo spend json: "+err.Error())
 	}
-	utxoSpend := *utxoSpendPtr
 
-	type unconfirmedEntry struct {
+	// not the most efficient but there should never be more than a few of these
+	type unconfirmedUtxo struct {
 		indexInRegistry int
 		utxo            *Utxo
 	}
 
-	unconfirmedEntries := []unconfirmedEntry{}
+	unconfirmedUtxos := []unconfirmedUtxo{}
 
-	for i, entry := range cs.UtxoList {
-		if entry.Id < constants.UtxoConfirmedPoolStart {
-			utxo, err := loadUtxo(entry.Id)
+	for i, utxoBytes := range cs.UtxoList {
+		internalId, _, confirmed := unpackUtxo(utxoBytes)
+		if confirmed == 0 {
+			utxo := Utxo{}
+			utxoJson := sdk.StateGetObject(getUtxoKey(internalId))
+			err := tinyjson.Unmarshal([]byte(*utxoJson), &utxo)
 			if err != nil {
-				return err
+				return ce.NewContractError(ce.ErrStateAccess, "error unmarshalling saved utxo: "+err.Error())
 			}
-			unconfirmedEntries = append(unconfirmedEntries, unconfirmedEntry{indexInRegistry: i, utxo: utxo})
+			unconfirmedUtxos = append(unconfirmedUtxos, unconfirmedUtxo{indexInRegistry: i, utxo: &utxo})
 		}
 	}
 
 	for _, sigHash := range utxoSpend.UnsignedSigHashes {
-		for _, unconfirmed := range unconfirmedEntries {
+		// check all unconfirmed utxos
+		for _, unconfirmed := range unconfirmedUtxos {
 			if txId == unconfirmed.utxo.TxId && sigHash.Index == unconfirmed.utxo.Vout {
-				// Promote to confirmed pool: allocate a new confirmed ID,
-				// write data at new key, delete old key, update registry.
-				newId, err := cs.allocateConfirmedId()
-				if err != nil {
-					return err
-				}
-				saveUtxo(newId, unconfirmed.utxo)
-				sdk.StateDeleteObject(getUtxoKey(cs.UtxoList[unconfirmed.indexInRegistry].Id))
-				cs.UtxoList[unconfirmed.indexInRegistry].Id = newId
+				// set the confirmed byte array to 1
+				cs.UtxoList[unconfirmed.indexInRegistry][2] = 1
 				continue
 			}
 		}
 	}
 
-	sdk.StateDeleteObject(constants.TxSpendsPrefix + txId)
+	sdk.StateDeleteObject(TxSpendsPrefix + txId)
 	for i, val := range cs.TxSpendsList {
 		if val == txId {
 			// swap with the last element and shorten
@@ -140,17 +135,22 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) error {
 			// Create UTXO entry
 			observedUtxoKey := getObservedKey(utxo)
 			// proceed if this output has already been observed
+			// TODO: error or some type of acknowledgement here?
 			alreadyObserved := sdk.StateGetObject(observedUtxoKey)
 			if *alreadyObserved != "" {
 				continue
 			}
 
-			utxoInternalId, err := ms.allocateConfirmedId()
+			utxoInternalId := ms.UtxoNextId
+			ms.UtxoNextId++
+			// TODO: change since 'confirmed' was removed
+			ms.UtxoList = append(ms.UtxoList, packUtxo(utxoInternalId, utxo.Amount, 1))
+			utxoJson, err := tinyjson.Marshal(utxo)
 			if err != nil {
-				return err
+				return ce.NewContractError(ce.ErrJson, "error marshalling utxo: "+err.Error())
 			}
-			ms.UtxoList = append(ms.UtxoList, UtxoRegistryEntry{Id: utxoInternalId, Amount: utxo.Amount})
-			saveUtxo(utxoInternalId, &utxo)
+
+			sdk.StateSetObject(getUtxoKey(utxoInternalId), string(utxoJson))
 
 			// set observed
 			sdk.StateSetObject(observedUtxoKey, "1")
@@ -181,17 +181,16 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) error {
 				if metadata.Params == nil {
 					return ce.NewContractError(ce.ErrInput, "swap instruction missing parameters")
 				}
-				ok := metadata.Params.Has(constants.SwapAssetOut)
+				ok := metadata.Params.Has(swapAssetOut)
 				if !ok {
 					return ce.NewContractError(ce.ErrInput, "asset out required to execute a swap")
 				}
-				assetOut := metadata.Params.Get(constants.SwapAssetOut)
+				assetOut := metadata.Params.Get(swapAssetOut)
 
 				instruction := DexInstruction{
 					Type:      "swap",
 					Version:   "1.0.0",
-					AssetIn:   BtcAssetValue,
-					AmountIn:  strconv.FormatInt(utxo.Amount, 10),
+					AssetIn:   LtcAssetValue,
 					AssetOut:  assetOut,
 					Recipient: metadata.Recipient,
 				}
@@ -200,40 +199,41 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) error {
 					return ce.NewContractError(ce.ErrJson, "error marshalling swap instruction: "+err.Error())
 				}
 
+				// TODO: update to new intets system
 				options := sdk.ContractCallOptions{
 					Intents: []sdk.Intent{
 						{
 							Type: "transfer.allow",
 							Args: map[string]string{
-								"contract_id": env.ContractId,
-								"limit":       strconv.FormatInt(utxo.Amount, 10),
-								"token":       "btc",
+								"limit": strconv.FormatInt(utxo.Amount, 10),
+								"token": "ltc",
 							},
 						},
 					},
 				}
 
+				// increment the balance of the sender, since that's the only account that can authorize
+				// the intents for the swap and is calling the swap
 				sender := env.Sender.Address.String()
 				err = incAccBalance(sender, utxo.Amount)
 				if err != nil {
 					return ce.NewContractError(ce.ErrStateAccess, "error getting sender account balance: "+err.Error())
 				}
 
+				// call swap contract
 				swapResultStr := sdk.ContractCall(routerId, "execute", string(instrJson), &options)
 				var swapResult SwapResult
 				err = tinyjson.Unmarshal([]byte(*swapResultStr), &swapResult)
 				if err != nil {
 					return ce.WrapContractError(ce.ErrJson, err)
 				}
+				// TODO: add log
 			default:
 				// should never happen
 				continue
 			}
 			// This increments in all cases, since BTC is always mapped onto VSC
-			totalMapped, err = safeAdd64(totalMapped, utxo.Amount)
-			if err != nil {
-				return ce.WrapContractError(ce.ErrArithmetic, err, "error accumulating mapped amount")
-			}
+			totalMapped += utxo.Amount
 		}
 	}
 

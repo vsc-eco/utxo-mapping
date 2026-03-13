@@ -17,16 +17,16 @@
 package main
 
 import (
-	"btc-mapping-contract/contract/blocklist"
-	"btc-mapping-contract/contract/constants"
-	ce "btc-mapping-contract/contract/contracterrors"
-	"btc-mapping-contract/contract/mapping"
-	_ "btc-mapping-contract/sdk" // ensure sdk is imported
+	"dash-mapping-contract/contract/blocklist"
+	"dash-mapping-contract/contract/constants"
+	ce "dash-mapping-contract/contract/contracterrors"
+	"dash-mapping-contract/contract/mapping"
+	_ "dash-mapping-contract/sdk" // ensure sdk is imported
 	"encoding/hex"
 	"strconv"
 	"strings"
 
-	"btc-mapping-contract/sdk"
+	"dash-mapping-contract/sdk"
 
 	"github.com/CosmWasm/tinyjson"
 )
@@ -92,9 +92,14 @@ func AddBlocks(addBlocksInput *string) *string {
 	}
 
 	var resultBuilder strings.Builder
-	lastHeight, err := blocklist.HandleAddBlocks(blockHeaders, NetworkMode)
+	lastHeight, added, err := blocklist.HandleAddBlocks(blockHeaders, NetworkMode)
 	if err != nil {
-		ce.CustomAbort(err)
+		if err != blocklist.ErrorSequenceIncorrect {
+			ce.CustomAbort(err)
+		} else {
+			resultBuilder.WriteString("error adding blocks: " + err.Error())
+			resultBuilder.WriteString(", added " + strconv.FormatUint(uint64(added), 10) + " blocks, ")
+		}
 	}
 	resultBuilder.WriteString("last height: " + strconv.FormatUint(uint64(lastHeight), 10))
 
@@ -122,12 +127,17 @@ func Map(incomingTx *string) *string {
 		)
 	}
 
-	publicKeys, err := loadPublicKeys()
-	if err != nil {
-		ce.CustomAbort(err)
+	publicKeys := mapping.PublicKeys{
+		PrimaryPubKey: *sdk.StateGetObject(constants.PrimaryPublicKeyStateKey),
+		BackupPubKey:  *sdk.StateGetObject(constants.BackupPublicKeyStateKey),
+	}
+	if publicKeys.PrimaryPubKey == "" {
+		ce.CustomAbort(
+			ce.NewContractError(ce.ErrInitialization, "no registered public key"),
+		)
 	}
 
-	contractState, err := mapping.InitializeMappingState(publicKeys, NetworkMode, mapInstructions.Instructions...)
+	contractState, err := mapping.InitializeMappingState(&publicKeys, NetworkMode, mapInstructions.Instructions...)
 	if err != nil {
 		ce.CustomAbort(err)
 	}
@@ -147,25 +157,28 @@ func Map(incomingTx *string) *string {
 
 //go:wasmexport unmap
 func Unmap(tx *string) *string {
-	publicKeys, err := loadPublicKeys()
-	if err != nil {
-		ce.CustomAbort(err)
+	publicKeys := mapping.PublicKeys{
+		PrimaryPubKey: *sdk.StateGetObject(constants.PrimaryPublicKeyStateKey),
+		BackupPubKey:  *sdk.StateGetObject(constants.BackupPublicKeyStateKey),
+	}
+	if publicKeys.PrimaryPubKey == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInitialization, ce.MsgNoPublicKey))
 	}
 
 	var unmapInstructions mapping.TransferParams
-	err = tinyjson.Unmarshal([]byte(*tx), &unmapInstructions)
+	err := tinyjson.Unmarshal([]byte(*tx), &unmapInstructions)
 	if err != nil {
 		ce.CustomAbort(
 			ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput),
 		)
 	}
-	if unmapInstructions.To == "" {
+	if len(unmapInstructions.To) < 26 {
 		ce.CustomAbort(
-			ce.NewContractError(ce.ErrInput, "destination address required"),
+			ce.NewContractError(ce.ErrInput, "invalid address ["+unmapInstructions.To+"]"),
 		)
 	}
 
-	contractState, err := mapping.IntializeContractState(publicKeys, NetworkMode)
+	contractState, err := mapping.IntializeContractState(&publicKeys, NetworkMode)
 	if err != nil {
 		err = ce.Prepend(err, "error initializing contract state")
 		ce.CustomAbort(err)
@@ -223,31 +236,24 @@ func TransferFrom(tx *string) *string {
 	return mapping.StrPtr("0")
 }
 
-func loadPublicKeys() (mapping.PublicKeys, error) {
-	primaryRaw := *sdk.StateGetObject(constants.PrimaryPublicKeyStateKey)
-	if primaryRaw == "" {
-		return mapping.PublicKeys{}, ce.NewContractError(ce.ErrInitialization, "no registered public key")
-	}
-	backupRaw := *sdk.StateGetObject(constants.BackupPublicKeyStateKey)
-
-	var keys mapping.PublicKeys
-	if len(primaryRaw) != 33 {
-		return keys, ce.NewContractError(ce.ErrInitialization, "stored primary key is not 33 bytes")
-	}
-	copy(keys.Primary[:], primaryRaw)
-	if len(backupRaw) != 33 {
-		return keys, ce.NewContractError(ce.ErrInitialization, "stored backup key is not 33 bytes")
-	}
-	copy(keys.Backup[:], backupRaw)
-	return keys, nil
-}
-
-func validateAndDecodeKey(keyHex string) (mapping.CompressedPubKey, error) {
-	key, err := mapping.DecodeCompressedPubKey(keyHex)
+func validatePublicKey(keyHex string) error {
+	// Check format is valid hex
+	keyBytes, err := hex.DecodeString(keyHex)
 	if err != nil {
-		return key, ce.WrapContractError(ce.ErrInput, err, "invalid compressed public key")
+		return ce.WrapContractError(ce.ErrInvalidHex, err)
 	}
-	return key, nil
+	// Check length for ECDSA compressed (33 bytes) or uncompressed (65 bytes)
+	if len(keyBytes) != 33 && len(keyBytes) != 65 {
+		return ce.NewContractError(
+			ce.ErrInput,
+			"invalid key length: expected 33 or 65 bytes, got "+strconv.Itoa(len(keyBytes)),
+		)
+	}
+	// For compressed keys, check first byte is 0x02 or 0x03
+	if len(keyBytes) == 33 && (keyBytes[0] != 0x02 && keyBytes[0] != 0x03) {
+		return ce.NewContractError(ce.ErrInput, "invalid compressed key prefix")
+	}
+	return nil
 }
 
 //go:wasmexport registerPublicKey
@@ -260,7 +266,7 @@ func RegisterPublicKey(keyStr *string) *string {
 		)
 	}
 
-	var keys mapping.RegisterKeyParams
+	var keys mapping.PublicKeys
 	err := tinyjson.Unmarshal([]byte(*keyStr), &keys)
 	if err != nil {
 		ce.CustomAbort(
@@ -271,21 +277,21 @@ func RegisterPublicKey(keyStr *string) *string {
 	var resultBuilder strings.Builder
 
 	if keys.PrimaryPubKey != "" {
-		key, err := validateAndDecodeKey(keys.PrimaryPubKey)
+		err := validatePublicKey(keys.PrimaryPubKey)
 		if err != nil {
 			ce.CustomAbort(ce.Prepend(err, "error registering primary public key"))
 		}
 		existingPrimary := sdk.StateGetObject(constants.PrimaryPublicKeyStateKey)
 		if *existingPrimary == "" || constants.IsTestnet(NetworkMode) {
-			sdk.StateSetObject(constants.PrimaryPublicKeyStateKey, string(key[:]))
+			sdk.StateSetObject(constants.PrimaryPublicKeyStateKey, keys.PrimaryPubKey)
 			resultBuilder.WriteString("set primary key to: " + keys.PrimaryPubKey)
 		} else {
-			resultBuilder.WriteString("primary key already registered: " + hex.EncodeToString([]byte(*existingPrimary)))
+			resultBuilder.WriteString("primary key already registered: " + *existingPrimary)
 		}
 	}
 
 	if keys.BackupPubKey != "" {
-		key, err := validateAndDecodeKey(keys.BackupPubKey)
+		err := validatePublicKey(keys.BackupPubKey)
 		if err != nil {
 			ce.CustomAbort(ce.Prepend(err, "error registering backup public key"))
 		}
@@ -294,10 +300,10 @@ func RegisterPublicKey(keyStr *string) *string {
 		}
 		existingBackup := sdk.StateGetObject(constants.BackupPublicKeyStateKey)
 		if *existingBackup == "" || constants.IsTestnet(NetworkMode) {
-			sdk.StateSetObject(constants.BackupPublicKeyStateKey, string(key[:]))
+			sdk.StateSetObject(constants.BackupPublicKeyStateKey, keys.BackupPubKey)
 			resultBuilder.WriteString("set backup key to: " + keys.BackupPubKey)
 		} else {
-			resultBuilder.WriteString("backup key already registered: " + hex.EncodeToString([]byte(*existingBackup)))
+			resultBuilder.WriteString("backup key already registered: " + *existingBackup)
 		}
 	}
 
