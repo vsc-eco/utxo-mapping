@@ -9,7 +9,7 @@ go 1.25.6
 // use .
 // replace vsc-node => path-to-local-node
 
-replace vsc-node => github.com/vsc-eco/go-vsc-node v0.0.0-20260313160238-1776d958532b
+replace vsc-node => github.com/vsc-eco/go-vsc-node v0.0.0-20260314153616-193fe15143cf
 
 replace github.com/agl/ed25519 => github.com/binance-chain/edwards25519 v0.0.0-20200305024217-f36fc4b53d43
 
