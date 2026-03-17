@@ -154,9 +154,9 @@ func Unmap(tx *string) *string {
 			ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput),
 		)
 	}
-	if unmapInstructions.To == "" {
+	if len(unmapInstructions.To) < 26 {
 		ce.CustomAbort(
-			ce.NewContractError(ce.ErrInput, "destination address required"),
+			ce.NewContractError(ce.ErrInput, "invalid destination address ["+unmapInstructions.To+"]"),
 		)
 	}
 
@@ -228,12 +228,18 @@ func Approve(input *string) *string {
 	if err != nil {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
 	}
+	if params.Spender == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "spender address required"))
+	}
 	amount, err := strconv.ParseInt(params.Amount, 10, 64)
 	if err != nil {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "invalid amount value"))
 	}
 	if amount < 0 {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "allowance amount must be non-negative"))
+	}
+	if params.Spender == env.Caller.String() {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "cannot approve self as spender"))
 	}
 	mapping.HandleApprove(env.Caller.String(), params.Spender, amount)
 	return mapping.StrPtr("0")
@@ -248,6 +254,9 @@ func IncreaseAllowance(input *string) *string {
 	err := tinyjson.Unmarshal([]byte(*input), &params)
 	if err != nil {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
+	}
+	if params.Spender == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "spender address required"))
 	}
 	amount, err := strconv.ParseInt(params.Amount, 10, 64)
 	if err != nil {
@@ -273,6 +282,9 @@ func DecreaseAllowance(input *string) *string {
 	if err != nil {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
 	}
+	if params.Spender == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "spender address required"))
+	}
 	amount, err := strconv.ParseInt(params.Amount, 10, 64)
 	if err != nil {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "invalid amount value"))
@@ -284,6 +296,45 @@ func DecreaseAllowance(input *string) *string {
 	if err != nil {
 		ce.CustomAbort(err)
 	}
+	return mapping.StrPtr("0")
+}
+
+// Confirms a pending spend transaction, promoting its unconfirmed change UTXOs
+// to the confirmed pool. Called by the bot when a withdrawal TX is broadcast.
+//
+//go:wasmexport confirmSpend
+func ConfirmSpend(input *string) *string {
+	checkAdmin()
+
+	var params mapping.ConfirmSpendParams
+	err := tinyjson.Unmarshal([]byte(*input), &params)
+	if err != nil {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
+	}
+	if params.TxId == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "tx_id required"))
+	}
+
+	publicKeys, err := loadPublicKeys()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+
+	contractState, err := mapping.IntializeContractState(publicKeys, NetworkMode)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+
+	err = contractState.HandleConfirmSpend(params.TxId)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+
+	err = contractState.SaveToState()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+
 	return mapping.StrPtr("0")
 }
 

@@ -1,12 +1,15 @@
 package mapping
 
 import (
+	"dash-mapping-contract/contract/constants"
 	ce "dash-mapping-contract/contract/contracterrors"
 	"dash-mapping-contract/sdk"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"math"
+	"math/bits"
 	"slices"
 	"strconv"
 	"strings"
@@ -132,101 +135,34 @@ func checkAuth(env sdk.Env) error {
 	return nil
 }
 
-func buildIntentError(remaining int64, amount int64, address string) error {
-	return ce.NewContractError(
-		ce.ErrIntent,
-		"insufficient intent ("+
-			strconv.FormatInt(remaining, 10)+
-			") remaining to cover spend ("+
-			strconv.FormatInt(amount, 10)+
-			") for "+
-			address,
-	)
-}
-
-// checks the balance and intents of the account to determine if the amount can be spent, then spends it
 func checkAndDeductBalance(env sdk.Env, account string, amount int64) error {
 	callerAddress := env.Caller.String()
-	senderAddress := env.Sender.Address.String()
-	bal, err := getAccBal(account)
-	if err != nil {
-		return ce.NewContractError(ce.ErrStateAccess, "could not fetch balance for account ("+account+")")
-	}
+	bal := getAccBal(account)
 	if bal < amount {
 		return ce.NewContractError(
 			ce.ErrBalance,
-			"sender balance "+strconv.FormatInt(bal, 10)+" insufficient needs "+strconv.FormatInt(amount, 10),
+			"account ["+account+"] balance "+strconv.FormatInt(bal, 10)+
+				" insufficient needs "+strconv.FormatInt(amount, 10),
 		)
 	}
-	switch account {
-	case senderAddress:
-		intentAmount := int64(0)
-		//check sender's intents
-		for _, intent := range env.SenderIntents {
-			if intent.Type != intentTransferType {
-				continue
-			}
-			if contractId, ok := intent.Args[intentContractIdKey]; ok && contractId == env.ContractId {
-				// sdk.Log("found intent for this contract: " + fmt.Sprintf("%v", intent))
-				if limitStr, ok := intent.Args[intentLimitKey]; ok {
-					intentAmount, err = strconv.ParseInt(limitStr, 10, 64)
-					if err != nil {
-						return ce.WrapContractError(ce.ErrIntent, err, "invalid intent amount")
-					}
-					break
-				}
-			}
+	if account != callerAddress {
+		allowance := getAllowance(account, callerAddress)
+		if allowance < amount {
+			return ce.NewContractError(
+				ce.ErrNoPermission,
+				"allowance ("+strconv.FormatInt(allowance, 10)+
+					") insufficient for spend ("+strconv.FormatInt(amount, 10)+
+					") by "+callerAddress,
+			)
 		}
-
-		expenditure, err := getAccExpenditure(env.ContractId, senderAddress)
-		if err != nil {
-			return ce.WrapContractError(ce.ErrStateAccess, err, "error fetching previous token expenditure")
-		}
-		remaining := intentAmount - expenditure
-		if remaining < amount {
-			return buildIntentError(remaining, amount, senderAddress)
-		}
-
-		// write deducted balance and track spend
-		newBal, err := safeSubtract64(bal, amount)
-		if err != nil {
-			return ce.WrapContractError(ce.ErrArithmetic, err, "error incremting user balance")
-		}
-		setAccBal(account, newBal)
-		setAccExpenditure(account, expenditure+amount)
-		return nil
-	case callerAddress:
-		intentAmount := int64(0)
-		//check caller's intents
-		for _, intent := range env.CallerIntents {
-			if intent.Type != intentTransferType {
-				continue
-			}
-			if contractId, ok := intent.Args[intentContractIdKey]; ok && contractId == env.ContractId {
-				// sdk.Log("found intent for this contract: " + intent.Args[intentLimitKey] + " " + intent.Args["token"])
-				if limitStr, ok := intent.Args[intentLimitKey]; ok {
-					clean := strings.Replace(limitStr, ".", "", 1)
-					intentAmount, err = strconv.ParseInt(clean, 10, 64)
-					if err != nil {
-						return ce.NewContractError(ce.ErrIntent, "invalid intent amount")
-					}
-				}
-			}
-		}
-
-		if intentAmount < amount {
-			return buildIntentError(intentAmount, amount, account)
-		}
-		// write deducted balance and track spend
-		newBal, err := safeSubtract64(bal, amount)
-		if err != nil {
-			return ce.WrapContractError(ce.ErrArithmetic, err, "error incremting user balance")
-		}
-		setAccBal(account, newBal)
-		return nil
-	default:
-		return ce.NewContractError(ce.ErrIntent, account+" is not the sender or caller")
+		setAllowance(account, callerAddress, allowance-amount)
 	}
+	newBal, err := safeSubtract64(bal, amount)
+	if err != nil {
+		return ce.WrapContractError(ce.ErrArithmetic, err, "error decrementing user balance")
+	}
+	setAccBal(account, newBal)
+	return nil
 }
 
 func packUtxo(internalId uint32, amount int64, confirmed uint8) [3]int64 {
@@ -237,28 +173,30 @@ func unpackUtxo(utxo [3]int64) (uint32, int64, uint8) {
 	return uint32(utxo[0]), utxo[1], uint8(utxo[2])
 }
 
-func getAccBal(vscAcc string) (int64, error) {
-	balString := sdk.StateGetObject(BalancePrefix + vscAcc)
-	if *balString == "" {
-		return 0, nil
+func getAccBal(vscAcc string) int64 {
+	s := sdk.StateGetObject(BalancePrefix + vscAcc)
+	if s == nil || *s == "" {
+		return 0
 	}
-	bal, err := strconv.ParseInt(*balString, 10, 64)
-	if err != nil {
-		return 0, err
-	}
-	return bal, nil
+	var buf [8]byte
+	copy(buf[8-len(*s):], *s)
+	return int64(binary.BigEndian.Uint64(buf[:]))
 }
 
-// sets account balance to number (in base 10)
 func setAccBal(vscAcc string, newBal int64) {
-	sdk.StateSetObject(BalancePrefix+vscAcc, strconv.FormatInt(newBal, 10))
+	if newBal == 0 {
+		sdk.StateDeleteObject(BalancePrefix + vscAcc)
+		return
+	}
+	v := uint64(newBal)
+	n := (bits.Len64(v) + 7) / 8
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], v)
+	sdk.StateSetObject(BalancePrefix+vscAcc, string(buf[8-n:]))
 }
 
 func incAccBalance(vscAcc string, amount int64) error {
-	bal, err := getAccBal(vscAcc)
-	if err != nil {
-		return err
-	}
+	bal := getAccBal(vscAcc)
 	newBal, err := safeAdd64(bal, amount)
 	if err != nil {
 		return ce.WrapContractError(ce.ErrArithmetic, err, "error incremting user balance")
@@ -267,28 +205,28 @@ func incAccBalance(vscAcc string, amount int64) error {
 	return nil
 }
 
-// gets the amount spent so far in this transaction
-func getAccExpenditure(contractId, vscAcc string) (int64, error) {
-	balString := sdk.EphemStateGetObject(contractId, intentExpenditurePrefix+vscAcc)
-	if *balString == "" {
-		return 0, nil
+func getAllowance(owner, spender string) int64 {
+	s := sdk.StateGetObject(constants.AllowancePrefix + owner + constants.DirPathDelimiter + spender)
+	if s == nil || *s == "" {
+		return 0
 	}
-	bal, err := strconv.ParseInt(*balString, 10, 64)
-	if err != nil {
-		return 0, err
-	}
-	return bal, nil
+	var buf [8]byte
+	copy(buf[8-len(*s):], *s)
+	return int64(binary.BigEndian.Uint64(buf[:]))
 }
 
-// sets the amount spent so far in this transaction
-func setAccExpenditure(vscAcc string, newBal int64) {
-	sdk.EphemStateSetObject(intentExpenditurePrefix+vscAcc, strconv.FormatInt(newBal, 10))
+func setAllowance(owner, spender string, amount int64) {
+	key := constants.AllowancePrefix + owner + constants.DirPathDelimiter + spender
+	if amount == 0 {
+		sdk.StateDeleteObject(key)
+		return
+	}
+	v := uint64(amount)
+	n := (bits.Len64(v) + 7) / 8
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], v)
+	sdk.StateSetObject(key, string(buf[8-n:]))
 }
-
-// func deduct(vscAcc string, amount, balance, expenditure int64) {
-// 	setAccBal(vscAcc, balance-amount)
-// 	setAccExpenditure(vscAcc, expenditure+amount)
-// }
 
 func (cs *ContractState) getNetwork(s string) (Network, error) {
 	networkName := NetworkName(strings.ToLower(s))
@@ -361,6 +299,17 @@ func createFeeLog(vscFee, btcFee int64) string {
 	b.Write(strconv.AppendInt(buf[:0], btcFee, 10))
 
 	// 5. Final String Conversion (1 allocation)
+	return b.String()
+}
+
+func createUnmapLog(txId string) string {
+	var b strings.Builder
+	b.Grow(71)
+	b.WriteString("unm")
+	b.WriteString(logDelimiter)
+	b.WriteString("id")
+	b.WriteString(logKeyDelimiter)
+	b.WriteString(txId)
 	return b.String()
 }
 

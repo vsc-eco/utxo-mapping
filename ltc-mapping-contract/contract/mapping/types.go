@@ -6,42 +6,6 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 )
 
-const BalancePrefix = "bal/"
-const ObservedPrefix = "otx/"
-const UtxoPrefix = "utxo/"
-const UtxoRegistryKey = "utxor"
-const UtxoLastIdKey = "utxoid"
-const TxSpendsRegistryKey = "txspdr"
-const TxSpendsPrefix = "txspd/"
-const SupplyKey = "sply"
-
-// Instruction URL search param keys
-const (
-	depositKey       = "deposit_to"
-	swapAssetOut     = "swap_asset_out"
-	swapNetworkOut   = "swap_network_out"
-	swapRecipientKey = "swap_to"
-	returnAddressKey = "return_address"
-	returnNetworkKey = "return_network"
-)
-
-// Address Creation
-const backupCSVBlocks = 17280 // ~1 month (2.5 min blocks)
-
-// Logs
-const (
-	logDelimiter      = "|"
-	logKeyDelimiter   = "="
-	logArrayDelimiter = ","
-)
-
-const (
-	intentTransferType      = "transfer.allow"
-	intentContractIdKey     = "contract_id"
-	intentLimitKey          = "limit"
-	intentTokenKey          = "token"
-	intentExpenditurePrefix = "total/"
-)
 
 //tinyjson:json
 type MapParams struct {
@@ -197,4 +161,15 @@ type PublicKeys struct {
 //tinyjson:json
 type RouterContract struct {
 	ContractId string `json:"router_contract"`
+}
+
+//tinyjson:json
+type AllowanceParams struct {
+	Spender string `json:"spender"`
+	Amount  string `json:"amount"`
+}
+
+//tinyjson:json
+type ConfirmSpendParams struct {
+	TxId string `json:"tx_id"`
 }

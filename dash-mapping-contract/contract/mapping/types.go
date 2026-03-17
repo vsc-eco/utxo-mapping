@@ -35,14 +35,6 @@ const (
 	logArrayDelimiter = ","
 )
 
-const (
-	intentTransferType      = "transfer.allow"
-	intentContractIdKey     = "contract_id"
-	intentLimitKey          = "limit"
-	intentTokenKey          = "token"
-	intentExpenditurePrefix = "total/"
-)
-
 //tinyjson:json
 type MapParams struct {
 	TxData *VerificationRequest `json:"tx_data"`
@@ -197,4 +189,15 @@ type PublicKeys struct {
 //tinyjson:json
 type RouterContract struct {
 	ContractId string `json:"router_contract"`
+}
+
+//tinyjson:json
+type AllowanceParams struct {
+	Spender string `json:"spender"`
+	Amount  string `json:"amount"`
+}
+
+//tinyjson:json
+type ConfirmSpendParams struct {
+	TxId string `json:"tx_id"`
 }

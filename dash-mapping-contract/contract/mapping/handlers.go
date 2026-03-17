@@ -66,17 +66,21 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	}
 
 	// Preliminary balance check before expensive UTXO selection and TSS signing
-	prelimBal, err := getAccBal(env.Sender.Address.String())
-	if err != nil {
-		return ce.NewContractError(ce.ErrStateAccess, "could not fetch sender balance")
-	}
+	prelimBal := getAccBal(env.Caller.String())
 	prelimRequired, err := safeAdd64(amount, vscFee)
 	if err != nil {
 		return ce.WrapContractError(ce.ErrArithmetic, err, "error computing preliminary required amount")
 	}
 	if prelimBal < prelimRequired {
-		return ce.NewContractError(ce.ErrBalance,
-			"sender balance "+strconv.FormatInt(prelimBal, 10)+" insufficient for amount+fee "+strconv.FormatInt(prelimRequired, 10),
+		return ce.NewContractError(
+			ce.ErrBalance,
+			"caller balance "+strconv.FormatInt(
+				prelimBal,
+				10,
+			)+" insufficient for amount+fee "+strconv.FormatInt(
+				prelimRequired,
+				10,
+			),
 		)
 	}
 
@@ -123,8 +127,8 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		return ce.WrapContractError(ce.ErrArithmetic, err, "error computing final amount")
 	}
 
-	// check whether sender has enough balance to cover transaction
-	err = checkAndDeductBalance(env, env.Sender.Address.String(), finalAmt)
+	// check whether caller has enough balance to cover transaction
+	err = checkAndDeductBalance(env, env.Caller.String(), finalAmt)
 	if err != nil {
 		return err
 	}
@@ -165,6 +169,7 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	// use this key, then increment
 	sdk.StateSetObject(TxSpendsPrefix+tx.TxID(), string(signingDataJson))
 	cs.TxSpendsList = append(cs.TxSpendsList, tx.TxID())
+	sdk.Log(createUnmapLog(tx.TxID()))
 
 	// update supply
 	newActive, err := safeSubtract64(cs.Supply.ActiveSupply, finalAmt)
@@ -188,6 +193,40 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	return nil
 }
 
+// HandleApprove sets the spending allowance for spender to spend owner's tokens.
+func HandleApprove(owner, spender string, amount int64) {
+	setAllowance(owner, spender, amount)
+}
+
+// HandleIncreaseAllowance increases spender's allowance by amount.
+func HandleIncreaseAllowance(owner, spender string, amount int64) error {
+	current := getAllowance(owner, spender)
+	newAmount, err := safeAdd64(current, amount)
+	if err != nil {
+		return ce.WrapContractError(ce.ErrArithmetic, err, "overflow increasing allowance")
+	}
+	setAllowance(owner, spender, newAmount)
+	return nil
+}
+
+// HandleDecreaseAllowance decreases spender's allowance by amount; reverts if it would go below zero.
+func HandleDecreaseAllowance(owner, spender string, amount int64) error {
+	current := getAllowance(owner, spender)
+	newAmount, err := safeSubtract64(current, amount)
+	if err != nil || newAmount < 0 {
+		return ce.NewContractError(ce.ErrArithmetic, "allowance cannot go below zero")
+	}
+	setAllowance(owner, spender, newAmount)
+	return nil
+}
+
+// HandleConfirmSpend confirms a pending spend transaction by promoting its
+// unconfirmed change UTXOs to the confirmed pool. Called by the bot/oracle
+// when a withdrawal transaction is confirmed on the Dash network.
+func (cs *ContractState) HandleConfirmSpend(txId string) error {
+	return cs.updateUtxoSpends(txId)
+}
+
 // handles a transfer where funds are drawn from the caller
 func HandleTransfer(instructions *TransferParams) error {
 	env := sdk.GetEnv()
@@ -205,27 +244,16 @@ func HandleTransfer(instructions *TransferParams) error {
 		return ce.NewContractError(ce.ErrInput, "invalid recipient address")
 	}
 
-	switch instructions.From {
-	case "":
-		fallthrough
-	case env.Caller.String():
-		err = checkAndDeductBalance(env, env.Caller.String(), amount)
-		if err != nil {
-			return err
-		}
-	case env.Sender.Address.String():
-		err = checkAndDeductBalance(env, env.Sender.Address.String(), amount)
-		if err != nil {
-			return err
-		}
-	default:
-		return ce.NewContractError(ce.ErrInput, "must transfer from caller or sender")
+	from := instructions.From
+	if from == "" {
+		from = env.Caller.String()
 	}
-
-	recipientBal, err := getAccBal(instructions.To)
+	err = checkAndDeductBalance(env, from, amount)
 	if err != nil {
 		return err
 	}
+
+	recipientBal := getAccBal(instructions.To)
 
 	newBal, err := safeAdd64(recipientBal, amount)
 	if err != nil {

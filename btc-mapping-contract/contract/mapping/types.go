@@ -189,3 +189,8 @@ type AllowanceParams struct {
 	Spender string `json:"spender"`
 	Amount  string `json:"amount"`
 }
+
+//tinyjson:json
+type ConfirmSpendParams struct {
+	TxId string `json:"tx_id"`
+}
