@@ -199,29 +199,21 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo) error {
 					return ce.NewContractError(ce.ErrJson, "error marshalling swap instruction: "+err.Error())
 				}
 
-				// TODO: update to new intets system
-				options := sdk.ContractCallOptions{
-					Intents: []sdk.Intent{
-						{
-							Type: "transfer.allow",
-							Args: map[string]string{
-								"limit": strconv.FormatInt(utxo.Amount, 10),
-								"token": "dash",
-							},
-						},
-					},
-				}
-
-				// increment the balance of the sender, since that's the only account that can authorize
-				// the intents for the swap and is calling the swap
 				sender := env.Sender.Address.String()
 				err = incAccBalance(sender, utxo.Amount)
 				if err != nil {
 					return ce.NewContractError(ce.ErrStateAccess, "error getting sender account balance: "+err.Error())
 				}
 
+				// Approve the Router to spend the user's freshly-credited tokens.
+				// Allowance is always 0 here (cleaned up after each Router call),
+				// so we set directly without reading state.
+				setAllowance(sender, routerId, utxo.Amount)
+
 				// call swap contract
-				swapResultStr := sdk.ContractCall(routerId, "execute", string(instrJson), &options)
+				swapResultStr := sdk.ContractCall(routerId, "execute", string(instrJson), &sdk.ContractCallOptions{})
+				// Clean up any remaining allowance after swap
+				setAllowance(sender, routerId, 0)
 				var swapResult SwapResult
 				err = tinyjson.Unmarshal([]byte(*swapResultStr), &swapResult)
 				if err != nil {

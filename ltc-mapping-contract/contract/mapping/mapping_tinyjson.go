@@ -1201,6 +1201,117 @@ func tinyjsonA043f2bcEncodeBtcMappingContractContractMappingTinyjsonTmp14(out *j
 	}
 	out.RawByte('}')
 }
+func tinyjsonA043f2bcDecodeLtcMappingContractContractMappingAllowanceParams(in *jlexer.Lexer, out *AllowanceParams) {
+	isTopLevel := in.IsStart()
+	if in.IsNull() {
+		if isTopLevel {
+			in.Consumed()
+		}
+		in.Skip()
+		return
+	}
+	in.Delim('{')
+	for !in.IsDelim('}') {
+		key := in.UnsafeFieldName(false)
+		in.WantColon()
+		if in.IsNull() {
+			in.Skip()
+			in.WantComma()
+			continue
+		}
+		switch key {
+		case "spender":
+			out.Spender = string(in.String())
+		case "amount":
+			out.Amount = string(in.String())
+		default:
+			in.SkipRecursive()
+		}
+		in.WantComma()
+	}
+	in.Delim('}')
+	if isTopLevel {
+		in.Consumed()
+	}
+}
+func tinyjsonA043f2bcEncodeLtcMappingContractContractMappingAllowanceParams(out *jwriter.Writer, in AllowanceParams) {
+	out.RawByte('{')
+	first := true
+	_ = first
+	{
+		const prefix string = ",\"spender\":"
+		out.RawString(prefix[1:])
+		out.String(string(in.Spender))
+	}
+	{
+		const prefix string = ",\"amount\":"
+		out.RawString(prefix)
+		out.String(string(in.Amount))
+	}
+	out.RawByte('}')
+}
+
+// MarshalTinyJSON supports tinyjson.Marshaler interface
+func (v AllowanceParams) MarshalTinyJSON(w *jwriter.Writer) {
+	tinyjsonA043f2bcEncodeLtcMappingContractContractMappingAllowanceParams(w, v)
+}
+
+// UnmarshalTinyJSON supports tinyjson.Unmarshaler interface
+func (v *AllowanceParams) UnmarshalTinyJSON(l *jlexer.Lexer) {
+	tinyjsonA043f2bcDecodeLtcMappingContractContractMappingAllowanceParams(l, v)
+}
+func tinyjsonA043f2bcDecodeLtcMappingContractContractMappingConfirmSpendParams(in *jlexer.Lexer, out *ConfirmSpendParams) {
+	isTopLevel := in.IsStart()
+	if in.IsNull() {
+		if isTopLevel {
+			in.Consumed()
+		}
+		in.Skip()
+		return
+	}
+	in.Delim('{')
+	for !in.IsDelim('}') {
+		key := in.UnsafeFieldName(false)
+		in.WantColon()
+		if in.IsNull() {
+			in.Skip()
+			in.WantComma()
+			continue
+		}
+		switch key {
+		case "tx_id":
+			out.TxId = string(in.String())
+		default:
+			in.SkipRecursive()
+		}
+		in.WantComma()
+	}
+	in.Delim('}')
+	if isTopLevel {
+		in.Consumed()
+	}
+}
+func tinyjsonA043f2bcEncodeLtcMappingContractContractMappingConfirmSpendParams(out *jwriter.Writer, in ConfirmSpendParams) {
+	out.RawByte('{')
+	first := true
+	_ = first
+	{
+		const prefix string = ",\"tx_id\":"
+		out.RawString(prefix[1:])
+		out.String(string(in.TxId))
+	}
+	out.RawByte('}')
+}
+
+// MarshalTinyJSON supports tinyjson.Marshaler interface
+func (v ConfirmSpendParams) MarshalTinyJSON(w *jwriter.Writer) {
+	tinyjsonA043f2bcEncodeLtcMappingContractContractMappingConfirmSpendParams(w, v)
+}
+
+// UnmarshalTinyJSON supports tinyjson.Unmarshaler interface
+func (v *ConfirmSpendParams) UnmarshalTinyJSON(l *jlexer.Lexer) {
+	tinyjsonA043f2bcDecodeLtcMappingContractContractMappingConfirmSpendParams(l, v)
+}
 func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp15(in *jlexer.Lexer, out *AccountInfo) {
 	isTopLevel := in.IsStart()
 	if in.IsNull() {

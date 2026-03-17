@@ -1,10 +1,12 @@
 package current_test
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	ltcMapping "ltc-mapping-contract"
 	"ltc-mapping-contract/contract/blocklist"
 	"ltc-mapping-contract/contract/constants"
+	"math/bits"
 	"strings"
 	"testing"
 
@@ -15,6 +17,18 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func encodeBalance(t *testing.T, amount int64) string {
+	t.Helper()
+	if amount == 0 {
+		return ""
+	}
+	v := uint64(amount)
+	n := (bits.Len64(v) + 7) / 8
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], v)
+	return string(buf[8-n:])
+}
 
 var ContractWasm = ltcMapping.DevWasm
 
@@ -66,6 +80,7 @@ func seedBlocksViaStateForContract(w *ctWrapper, contractId string) {
 // to avoid Badger DB lock conflicts.
 func TestAllOperations(t *testing.T) {
 	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
 	ct.RegisterContract(testContractId, testOwner, ContractWasm)
 	w := &ctWrapper{ct: &ct}
 
@@ -219,7 +234,7 @@ func TestAllOperations(t *testing.T) {
 	// ========== Transfer ==========
 
 	t.Run("Transfer_InsufficientBalanceFails", func(t *testing.T) {
-		w.ct.StateSet(testContractId, "bal/hive:milo-hpr", "100")
+		w.ct.StateSet(testContractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, 100))
 		payload := `{"amount":5000,"to":"hive:recipient"}`
 		r := callAction(t, w, "transfer", payload, "")
 		assert.False(t, r.Success, "transfer with insufficient balance should fail")
@@ -231,21 +246,21 @@ func TestAllOperations(t *testing.T) {
 	})
 
 	t.Run("Transfer_ZeroAmountFails", func(t *testing.T) {
-		w.ct.StateSet(testContractId, "bal/hive:milo-hpr", "1000")
+		w.ct.StateSet(testContractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, 1000))
 		payload := `{"amount":0,"to":"hive:recipient"}`
 		r := callAction(t, w, "transfer", payload, "")
 		assert.False(t, r.Success, "transfer with zero amount should fail")
 	})
 
 	t.Run("Transfer_NegativeAmountFails", func(t *testing.T) {
-		w.ct.StateSet(testContractId, "bal/hive:milo-hpr", "1000")
+		w.ct.StateSet(testContractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, 1000))
 		payload := `{"amount":-100,"to":"hive:recipient"}`
 		r := callAction(t, w, "transfer", payload, "")
 		assert.False(t, r.Success, "transfer with negative amount should fail")
 	})
 
 	t.Run("Transfer_EmptyRecipientFails", func(t *testing.T) {
-		w.ct.StateSet(testContractId, "bal/hive:milo-hpr", "1000")
+		w.ct.StateSet(testContractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, 1000))
 		payload := `{"amount":100,"to":""}`
 		r := callAction(t, w, "transfer", payload, "")
 		assert.False(t, r.Success, "transfer with empty recipient should fail")
@@ -265,7 +280,7 @@ func TestAllOperations(t *testing.T) {
 	})
 
 	t.Run("Unmap_InsufficientBalanceFails", func(t *testing.T) {
-		w.ct.StateSet(testContractId, "bal/hive:milo-hpr", "100")
+		w.ct.StateSet(testContractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, 100))
 		payload := `{"amount":99999,"to":"ltc1qw508d6qejxtdg4y5r3zarvary0c5xw7kgmn4n9"}`
 		r := callAction(t, w, "unmap", payload, "")
 		assert.False(t, r.Success, "unmap with insufficient balance should fail")
@@ -286,7 +301,7 @@ func TestAllOperations(t *testing.T) {
 	})
 
 	t.Run("TransferFrom_InsufficientBalanceFails", func(t *testing.T) {
-		w.ct.StateSet(testContractId, "bal/hive:milo-hpr", "100")
+		w.ct.StateSet(testContractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, 100))
 		payload := `{"amount":5000,"to":"hive:recipient"}`
 		r := callAction(t, w, "transferFrom", payload, "")
 		assert.False(t, r.Success, "transferFrom with insufficient balance should fail")

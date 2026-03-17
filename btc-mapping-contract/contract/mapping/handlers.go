@@ -215,6 +215,13 @@ func HandleDecreaseAllowance(owner, spender string, amount int64) error {
 	return nil
 }
 
+// HandleConfirmSpend confirms a pending spend transaction by promoting its
+// unconfirmed change UTXOs to the confirmed pool. Called by the bot/oracle
+// when a withdrawal transaction is confirmed on the Bitcoin network.
+func (cs *ContractState) HandleConfirmSpend(txId string) error {
+	return cs.updateUtxoSpends(txId)
+}
+
 // handles a transfer where funds are drawn from the caller
 func HandleTransfer(instructions *TransferParams) error {
 	env := sdk.GetEnv()

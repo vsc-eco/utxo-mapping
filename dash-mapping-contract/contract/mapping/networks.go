@@ -1,7 +1,7 @@
 package mapping
 
 import (
-	"strings"
+	"dash-mapping-contract/sdk"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -18,21 +18,16 @@ const (
 	Hive NetworkName = "hive"
 )
 
-type VscNetwork struct {
-	validPrefixes []string
-}
+type VscNetwork struct{}
 
 func (v *VscNetwork) Name() NetworkName {
 	return Vsc
 }
 
+// ValidateAddress uses the SDK's Address.IsValid() method which validates
+// all supported VSC address types (hive:, did:key:, did:pkh:eip155, contract:, system:).
 func (v *VscNetwork) ValidateAddress(address string) bool {
-	for _, prefix := range v.validPrefixes {
-		if strings.HasPrefix(address, prefix) {
-			return true
-		}
-	}
-	return false
+	return sdk.Address(address).IsValid()
 }
 
 type DashNetwork struct {
@@ -50,9 +45,7 @@ func (b *DashNetwork) ValidateAddress(address string) bool {
 
 func initNetworkLookup(networkParams *chaincfg.Params) map[NetworkName]Network {
 	return map[NetworkName]Network{
-		Vsc: &VscNetwork{
-			validPrefixes: []string{"hive:", "did:"},
-		},
+		Vsc: &VscNetwork{},
 		Dash: &DashNetwork{
 			networkParams: networkParams,
 		},
