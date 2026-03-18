@@ -9,9 +9,10 @@ import (
 	"slices"
 	"strconv"
 
-	"github.com/CosmWasm/tinyjson"
 	"github.com/btcsuite/btcd/wire"
 )
+
+const MaxMerkleProofLength = 33 // 2^33 blocks > total LTC supply
 
 func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 	rawTx, err := hex.DecodeString(txData.RawTxHex)
@@ -19,13 +20,13 @@ func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 		return ce.WrapContractError("", err)
 	}
 	if err := verifyTransaction(txData, rawTx); err != nil {
-		return err
+		return ce.Prepend(err, "error verifying tranasction")
 	}
 
 	var msgTx wire.MsgTx
 	err = msgTx.Deserialize(bytes.NewReader(rawTx))
 	if err != nil {
-		return err
+		return ce.WrapContractError(ce.ErrInput, err, "could not construct LTC transaction from input")
 	}
 
 	// gets all outputs the address of which is specified in the deposit instructions
@@ -40,7 +41,7 @@ func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 	}
 
 	// TODO: return mapping results for each relevenat address as part of contract output, or at least log them
-	err = ms.processUtxos(relevantOutputs)
+	err = ms.processUtxos(relevantOutputs, senderLabel(msgTx.TxIn, ms.NetworkParams))
 	if err != nil {
 		return err
 	}
@@ -55,7 +56,10 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	if err != nil {
 		return err
 	}
-	amount := instructions.Amount
+	amount, err := strconv.ParseInt(instructions.Amount, 10, 64)
+	if err != nil {
+		return ce.WrapContractError(ce.ErrInput, err, "invalid amount value")
+	}
 	if amount <= 0 {
 		return ce.NewContractError(ce.ErrInput, "amount must be positive")
 	}
@@ -72,8 +76,15 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		return ce.WrapContractError(ce.ErrArithmetic, err, "error computing preliminary required amount")
 	}
 	if prelimBal < prelimRequired {
-		return ce.NewContractError(ce.ErrBalance,
-			"caller balance "+strconv.FormatInt(prelimBal, 10)+" insufficient for amount+fee "+strconv.FormatInt(prelimRequired, 10),
+		return ce.NewContractError(
+			ce.ErrBalance,
+			"caller balance "+strconv.FormatInt(
+				prelimBal,
+				10,
+			)+" insufficient for amount+fee "+strconv.FormatInt(
+				prelimRequired,
+				10,
+			),
 		)
 	}
 
@@ -82,16 +93,14 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		return ce.Prepend(err, "error getting input utxos")
 	}
 
-	// sdk.Log(fmt.Sprintf("inputids: %v, totalinputamt: %d", inputUtxoIds, totalInputAmt))
-
 	inputUtxos, err := getInputUtxos(inputUtxoIds)
 	if err != nil {
 		return ce.Prepend(err, "error getting input utxos")
 	}
 
 	changeAddress, _, err := createP2WSHAddressWithBackup(
-		cs.PublicKeys.PrimaryPubKey,
-		cs.PublicKeys.BackupPubKey,
+		cs.PublicKeys.Primary,
+		cs.PublicKeys.Backup,
 		nil,
 		cs.NetworkParams,
 	)
@@ -131,36 +140,28 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		return err
 	}
 	for _, utxo := range unconfirmedUtxos {
-		utxoJson, err := tinyjson.Marshal(utxo)
+		internalId, err := cs.allocateUnconfirmedId()
 		if err != nil {
-			return ce.WrapContractError(ce.ErrJson, err, "error marhalling utxo")
+			return err
 		}
-		// create utxo entry
-		internalId := cs.UtxoNextId
-		cs.UtxoNextId++
-
-		utxoLookup := packUtxo(internalId, utxo.Amount, 0)
-
-		// sdk.Log(fmt.Sprintf("appending utxo with internal id: %d, amount: %d", internalId, utxo.Amount))
-		cs.UtxoList = append(cs.UtxoList, utxoLookup)
-		sdk.StateSetObject(constants.UtxoPrefix+strconv.FormatUint(uint64(internalId), 16), string(utxoJson))
+		cs.UtxoList = append(cs.UtxoList, UtxoRegistryEntry{Id: internalId, Amount: utxo.Amount})
+		saveUtxo(internalId, utxo)
 	}
 
 	for _, inputId := range inputUtxoIds {
 		cs.UtxoList = slices.DeleteFunc(
 			cs.UtxoList,
-			func(utxo [3]int64) bool { return int64(inputId) == utxo[0] },
+			func(entry UtxoRegistryEntry) bool { return entry.Id == inputId },
 		)
 		sdk.StateDeleteObject(getUtxoKey(inputId))
 	}
 
-	signingDataJson, err := tinyjson.Marshal(signingData)
+	signingDataBytes, err := MarshalSigningData(signingData)
 	if err != nil {
 		return ce.WrapContractError(ce.ErrJson, err, "error marshalling signing data")
 	}
 
-	// use this key, then increment
-	sdk.StateSetObject(constants.TxSpendsPrefix+tx.TxID(), string(signingDataJson))
+	sdk.StateSetObject(constants.TxSpendsPrefix+tx.TxID(), string(signingDataBytes))
 	cs.TxSpendsList = append(cs.TxSpendsList, tx.TxID())
 	sdk.Log(createUnmapLog(tx.TxID()))
 
@@ -227,13 +228,15 @@ func HandleTransfer(instructions *TransferParams) error {
 	if err != nil {
 		return err
 	}
-	amount := instructions.Amount
+	amount, err := strconv.ParseInt(instructions.Amount, 10, 64)
+	if err != nil {
+		return ce.WrapContractError(ce.ErrInput, err, "invalid amount value")
+	}
 	if amount <= 0 {
 		return ce.NewContractError(ce.ErrInput, "amount must be positive")
 	}
 
-	recipientAddress := sdk.Address(instructions.To)
-	if !recipientAddress.IsValid() {
+	if sdk.VerifyAddress(instructions.To) == "unknown" {
 		return ce.NewContractError(ce.ErrInput, "invalid recipient address")
 	}
 

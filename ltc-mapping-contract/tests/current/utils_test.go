@@ -1,6 +1,7 @@
 package current_test
 
 import (
+	"encoding/hex"
 	"fmt"
 	"log"
 	"strconv"
@@ -42,6 +43,30 @@ func logStateDiff(t *testing.T, sdm map[string]contract_session.StateDiff) {
 			fmt.Printf("    %*s: %s -> %s\n", 16, key, diff.Previous, diff.Current)
 		}
 	}
+}
+
+func dumpStateDiff(t *testing.T, sdm map[string]contract_session.StateDiff) {
+	t.Helper()
+	for name, sd := range sdm {
+		if len(sd.Deletions) > 0 || len(sd.KeyDiff) > 0 {
+			t.Log("state diff for", name)
+		}
+		for del := range sd.Deletions {
+			t.Logf("    deleted %s\n", del)
+		}
+		for key, diff := range sd.KeyDiff {
+			t.Logf("    %*s: %s -> %s\n", 16, key, fmtStoredVal(diff.Previous), fmtStoredVal(diff.Current))
+		}
+	}
+}
+
+func fmtStoredVal(s []byte) string {
+	for _, c := range s {
+		if c < 0x20 || c > 0x7e {
+			return hex.EncodeToString(s)
+		}
+	}
+	return string(s)
 }
 
 func printKeys(t *testing.T, ct *test_utils.ContractTest, contractId string, keys []string) {

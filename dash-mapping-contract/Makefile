@@ -4,6 +4,7 @@ BIN_DIR			:= bin
 TARGET = contract/main.go
 BASEFLAGS = -gc=custom -scheduler=none -panic=trap -no-debug -target=wasm-unknown
 TESTNETFLAGS = -ldflags="-X 'main.NetworkMode=testnet'"
+REGTESTFLAGS = -ldflags="-X 'main.NetworkMode=regtest'"
 
 TINYJSON		:= tinyjson
 TINYJSON_FLAGS 	:= -snake_case -no_std_marshalers
@@ -46,14 +47,16 @@ CFLAGS = $(BASEFLAGS) $(call netflags,$(NETWORK))
 
 netflags = \
 	$(if $(filter testnet,$1),$(TESTNETFLAGS), \
+	$(if $(filter regtest dev,$1),$(REGTESTFLAGS), \
 	$(if $(filter mainnet,$1),, \
-	$(error Unknown NETWORK: $1)))
+	$(error Unknown NETWORK: $1))))
 
 all: dev
 
 pull-tinygo:
 	docker pull $(TINYGO_IMAGE)
 
+dev: NETWORK = dev
 dev:
 	@echo "Building $@ with $(NETWORK) flags"
 	$(TINYGO_CMD) build $(CFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
@@ -170,8 +173,9 @@ tinyjson:
 		fi; \
 	done
 
+.PHONY: test
 test:
-	cd tests/current && go test -v -run "$(FILTER)"
+	cd tests/current && go test -v -p 1 -parallel 1 -run "$(FILTER)"
 
 clean:
 	rm -rf $(BIN_DIR)/*.wasm

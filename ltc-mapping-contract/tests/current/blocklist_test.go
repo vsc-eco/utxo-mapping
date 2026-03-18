@@ -1,12 +1,11 @@
 package current_test
 
 import (
-	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
-	ltcMapping "ltc-mapping-contract"
 	"ltc-mapping-contract/contract/blocklist"
 	"ltc-mapping-contract/contract/constants"
-	"math/bits"
+	"ltc-mapping-contract/contract/mapping"
 	"strings"
 	"testing"
 
@@ -17,20 +16,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func encodeBalance(t *testing.T, amount int64) string {
-	t.Helper()
-	if amount == 0 {
-		return ""
-	}
-	v := uint64(amount)
-	n := (bits.Len64(v) + 7) / 8
-	var buf [8]byte
-	binary.BigEndian.PutUint64(buf[:], v)
-	return string(buf[8-n:])
-}
-
-var ContractWasm = ltcMapping.DevWasm
 
 const testContractId = "mapping_contract"
 const testOwner = "hive:milo-hpr"
@@ -72,8 +57,10 @@ func seedBlocksViaState(w *ctWrapper) {
 
 func seedBlocksViaStateForContract(w *ctWrapper, contractId string) {
 	w.ct.StateSet(contractId, blocklist.LastHeightKey, lastBlockHeight)
-	w.ct.StateSet(contractId, constants.BlockPrefix+lastBlockHeight, lastBlockHeader)
-	w.ct.StateSet(contractId, "sply", `{"active_supply":0,"user_supply":0,"fee_supply":0,"base_fee_rate":1}`)
+	// Store block header as raw bytes (hex-decoded), matching the contract's storage format
+	headerBytes, _ := hex.DecodeString(lastBlockHeader)
+	w.ct.StateSet(contractId, constants.BlockPrefix+lastBlockHeight, string(headerBytes))
+	w.ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
 }
 
 // TestAllOperations runs all contract tests within a single ContractTest
@@ -145,7 +132,7 @@ func TestAllOperations(t *testing.T) {
 	t.Run("AddBlocks_NoSeedFails", func(t *testing.T) {
 		freshId := "fresh_blocklist"
 		w.ct.RegisterContract(freshId, testOwner, ContractWasm)
-		w.ct.StateSet(freshId, "sply", `{"active_supply":0,"user_supply":0,"fee_supply":0,"base_fee_rate":1}`)
+		w.ct.StateSet(freshId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
 		r := callActionOnContract(t, w, freshId, "addBlocks", twoBlocksPayload, "")
 		assert.False(t, r.Success, "addBlocks without seed should fail")
 	})

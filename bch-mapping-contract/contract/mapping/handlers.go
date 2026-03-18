@@ -237,8 +237,7 @@ func HandleTransfer(instructions *TransferParams) error {
 		return ce.NewContractError(ce.ErrInput, "amount must be positive")
 	}
 
-	recipientAddress := sdk.Address(instructions.To)
-	if !recipientAddress.IsValid() {
+	if sdk.VerifyAddress(instructions.To) == "unknown" {
 		return ce.NewContractError(ce.ErrInput, "invalid recipient address")
 	}
 

@@ -2,9 +2,9 @@ module dash-mapping-contract
 
 go 1.25.6
 
-// replace vsc-node => github.com/vsc-eco/go-vsc-node v0.0.0-20251120092146-ea108c70b7f0
+// replace vsc-node => path-to-local-node
 
-replace vsc-node => ../../testnet/go-vsc-node/
+replace vsc-node => /home/dockeruser/magi/testnet/go-vsc-node
 
 replace github.com/agl/ed25519 => github.com/binance-chain/edwards25519 v0.0.0-20200305024217-f36fc4b53d43
 
@@ -15,6 +15,7 @@ require (
 	github.com/btcsuite/btcd/btcutil v1.1.6
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0
 	github.com/stretchr/testify v1.11.1
+	github.com/tinylib/msgp v1.6.3
 )
 
 require (
@@ -222,6 +223,7 @@ require (
 	github.com/eager7/dogd v0.0.0-20200427085516-2caf59f59dbb // indirect
 	github.com/ipfs/go-log v1.0.5 // indirect
 	github.com/opentracing/opentracing-go v1.2.0 // indirect
+	github.com/philhofer/fwd v1.2.0 // indirect
 	golang.org/x/crypto v0.42.0 // indirect
 	golang.org/x/sys v0.36.0 // indirect
 	golang.org/x/telemetry v0.0.0-20250908211612-aef8a434d053 // indirect

@@ -17,7 +17,7 @@ import (
 func TestTransferToHiveAddress(t *testing.T) {
 	ct, contractId := setupAllowanceContract(t, 5000)
 
-	payload, _ := tinyjson.Marshal(mapping.TransferParams{To: "hive:recipient", Amount: 1000})
+	payload, _ := tinyjson.Marshal(mapping.TransferParams{To: "hive:recipient", Amount: "1000"})
 	r := ct.Call(stateEngine.TxVscCallContract{
 		Self:       *basicSelf(t, allowanceOwner),
 		ContractId: contractId,
@@ -36,7 +36,7 @@ func TestTransferToHiveAddress(t *testing.T) {
 func TestTransferToDidKeyAddress(t *testing.T) {
 	ct, contractId := setupAllowanceContract(t, 5000)
 
-	payload, _ := tinyjson.Marshal(mapping.TransferParams{To: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK", Amount: 1000})
+	payload, _ := tinyjson.Marshal(mapping.TransferParams{To: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK", Amount: "1000"})
 	r := ct.Call(stateEngine.TxVscCallContract{
 		Self:       *basicSelf(t, allowanceOwner),
 		ContractId: contractId,
@@ -53,7 +53,7 @@ func TestTransferToDidKeyAddress(t *testing.T) {
 func TestTransferToContractAddress(t *testing.T) {
 	ct, contractId := setupAllowanceContract(t, 5000)
 
-	payload, _ := tinyjson.Marshal(mapping.TransferParams{To: "contract:some_dex_contract", Amount: 1000})
+	payload, _ := tinyjson.Marshal(mapping.TransferParams{To: "contract:vsc1BemohMM2HKzfQzWquTfMF6LWvb2V9M35c3", Amount: "1000"})
 	r := ct.Call(stateEngine.TxVscCallContract{
 		Self:       *basicSelf(t, allowanceOwner),
 		ContractId: contractId,
@@ -70,7 +70,7 @@ func TestTransferToContractAddress(t *testing.T) {
 func TestTransferToEVMAddress(t *testing.T) {
 	ct, contractId := setupAllowanceContract(t, 5000)
 
-	payload, _ := tinyjson.Marshal(mapping.TransferParams{To: "did:pkh:eip155:1:0x1234567890abcdef1234567890abcdef12345678", Amount: 1000})
+	payload, _ := tinyjson.Marshal(mapping.TransferParams{To: "did:pkh:eip155:1:0x1234567890abcdef1234567890abcdef12345678", Amount: "1000"})
 	r := ct.Call(stateEngine.TxVscCallContract{
 		Self:       *basicSelf(t, allowanceOwner),
 		ContractId: contractId,
@@ -87,7 +87,7 @@ func TestTransferToEVMAddress(t *testing.T) {
 func TestTransferToInvalidAddress(t *testing.T) {
 	ct, contractId := setupAllowanceContract(t, 5000)
 
-	payload, _ := tinyjson.Marshal(mapping.TransferParams{To: "invalid_address_no_prefix", Amount: 1000})
+	payload, _ := tinyjson.Marshal(mapping.TransferParams{To: "invalid_address_no_prefix", Amount: "1000"})
 	r := ct.Call(stateEngine.TxVscCallContract{
 		Self:       *basicSelf(t, allowanceOwner),
 		ContractId: contractId,
@@ -109,7 +109,7 @@ func TestTransferToInvalidAddress(t *testing.T) {
 func TestTransferToEmptyAddress(t *testing.T) {
 	ct, contractId := setupAllowanceContract(t, 5000)
 
-	payload, _ := tinyjson.Marshal(mapping.TransferParams{To: "", Amount: 1000})
+	payload, _ := tinyjson.Marshal(mapping.TransferParams{To: "", Amount: "1000"})
 	r := ct.Call(stateEngine.TxVscCallContract{
 		Self:       *basicSelf(t, allowanceOwner),
 		ContractId: contractId,
@@ -126,7 +126,7 @@ func TestTransferToEmptyAddress(t *testing.T) {
 func TestTransferZeroAmount(t *testing.T) {
 	ct, contractId := setupAllowanceContract(t, 5000)
 
-	payload, _ := tinyjson.Marshal(mapping.TransferParams{To: "hive:bob", Amount: 0})
+	payload, _ := tinyjson.Marshal(mapping.TransferParams{To: "hive:bob", Amount: "0"})
 	r := ct.Call(stateEngine.TxVscCallContract{
 		Self:       *basicSelf(t, allowanceOwner),
 		ContractId: contractId,
@@ -143,7 +143,7 @@ func TestTransferZeroAmount(t *testing.T) {
 func TestTransferNegativeAmount(t *testing.T) {
 	ct, contractId := setupAllowanceContract(t, 5000)
 
-	payload, _ := tinyjson.Marshal(mapping.TransferParams{To: "hive:bob", Amount: -100})
+	payload, _ := tinyjson.Marshal(mapping.TransferParams{To: "hive:bob", Amount: "-100"})
 	r := ct.Call(stateEngine.TxVscCallContract{
 		Self:       *basicSelf(t, allowanceOwner),
 		ContractId: contractId,
@@ -160,7 +160,7 @@ func TestTransferNegativeAmount(t *testing.T) {
 func TestTransferInsufficientBalance(t *testing.T) {
 	ct, contractId := setupAllowanceContract(t, 1000)
 
-	payload, _ := tinyjson.Marshal(mapping.TransferParams{To: "hive:bob", Amount: 5000})
+	payload, _ := tinyjson.Marshal(mapping.TransferParams{To: "hive:bob", Amount: "5000"})
 	r := ct.Call(stateEngine.TxVscCallContract{
 		Self:       *basicSelf(t, allowanceOwner),
 		ContractId: contractId,

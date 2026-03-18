@@ -6,35 +6,6 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 )
 
-const BalancePrefix = "bal/"
-const ObservedPrefix = "otx/"
-const UtxoPrefix = "utxo/"
-const UtxoRegistryKey = "utxor"
-const UtxoLastIdKey = "utxoid"
-const TxSpendsRegistryKey = "txspdr"
-const TxSpendsPrefix = "txspd/"
-const SupplyKey = "sply"
-
-// Instruction URL search param keys
-const (
-	depositKey       = "deposit_to"
-	swapAssetOut     = "swap_asset_out"
-	swapNetworkOut   = "swap_network_out"
-	swapRecipientKey = "swap_to"
-	returnAddressKey = "return_address"
-	returnNetworkKey = "return_network"
-)
-
-// Address Creation
-const backupCSVBlocks = 17280 // ~1 month (2.5 min blocks)
-
-// Logs
-const (
-	logDelimiter      = "|"
-	logKeyDelimiter   = "="
-	logArrayDelimiter = ","
-)
-
 //tinyjson:json
 type MapParams struct {
 	TxData *VerificationRequest `json:"tx_data"`
@@ -52,7 +23,7 @@ type VerificationRequest struct {
 
 type Deposit struct {
 	to     string
-	from   []string
+	from   string
 	amount int64
 }
 
@@ -62,41 +33,42 @@ type AccountInfo struct {
 	Address    string // Caip10address (bitcoin address they can recieve funds at)
 }
 
-// address should be Magi for internal transfers and BTC for unmaps
+// address should be Magi for internal transfers and DASH for unmaps
 //
 //tinyjson:json
 type TransferParams struct {
-	Amount int64  `json:"amount"`
+	Amount string `json:"amount"`
 	To     string `json:"to"`
 	From   string `json:"from,omitempty"`
 }
 
-//tinyjson:json
+// Utxo stores full UTXO data indexed by a single-byte pool ID.
+// Serialised to binary (not JSON) via MarshalUtxo/UnmarshalUtxo.
+// Tag is raw bytes (SHA-256 of the instruction string), not hex.
 type Utxo struct {
-	TxId     string // tx containing the output
-	Vout     uint32 // defined as uint32 in btcd library
+	TxId     string // display-hex txid (64 chars)
+	Vout     uint32
 	Amount   int64
 	PkScript []byte
-	Tag      string // tag used to create the address
+	Tag      []byte // raw tag bytes (32 bytes for deposits, empty for change)
 }
 
-//tinyjson:json
-type UtxoRegistry [][3]int64
+// UtxoRegistryEntry holds the single-byte pool ID and the amount for one UTXO.
+//
+// Binary layout of the registry ("utxor" state key): each entry is 9 bytes.
+//   - Byte 0:   ID (0-63 = unconfirmed pool, 64-255 = confirmed pool)
+//   - Bytes 1-8: Amount in satoshis (int64, big-endian)
+type UtxoRegistryEntry struct {
+	Id     uint8 // 0-63 = unconfirmed, 64-255 = confirmed
+	Amount int64
+}
 
-//tinyjson:json
+// UtxoRegistry is the in-memory UTXO list, serialised as packed binary.
+type UtxoRegistry []UtxoRegistryEntry
+
+// TxSpendsRegistry is the in-memory list of pending spend-tx IDs (display hex).
+// Serialised as packed binary: 32 raw bytes per entry.
 type TxSpendsRegistry []string
-
-//tinyjson:json
-type SigningData struct {
-	Tx                string
-	UnsignedSigHashes []UnsignedSigHash
-}
-
-type UnsignedSigHash struct {
-	Index         uint32
-	SigHash       string
-	WitnessScript string
-}
 
 type MappingType string
 
@@ -116,7 +88,14 @@ type AddressMetadata struct {
 	Type        MappingType
 }
 
-//tinyjson:json
+// SystemSupply tracks protocol-wide DASH accounting.
+// Serialised as 32 raw bytes: four int64 values in big-endian order.
+//
+// Binary layout ("sply" state key):
+//   - Bytes  0- 7: ActiveSupply
+//   - Bytes  8-15: UserSupply
+//   - Bytes 16-23: FeeSupply
+//   - Bytes 24-31: BaseFeeRate (sats per byte)
 type SystemSupply struct {
 	ActiveSupply int64
 	UserSupply   int64
@@ -124,14 +103,20 @@ type SystemSupply struct {
 	BaseFeeRate  int64 // sats per byte
 }
 
+// ContractState is the top-level in-memory state loaded at the start of each
+// contract action and saved at the end.
+//
+// ConfirmedNextId and UnconfirmedNextId replace the old single uint32 counter.
+// They are stored together as 2 bytes at "utxoid": [confirmed, unconfirmed].
 type ContractState struct {
-	UtxoList       UtxoRegistry
-	UtxoNextId     uint32
-	TxSpendsList   TxSpendsRegistry
-	Supply         SystemSupply
-	PublicKeys     *PublicKeys
-	NetworkParams  *chaincfg.Params
-	NetworkOptions map[NetworkName]Network
+	UtxoList          UtxoRegistry
+	ConfirmedNextId   uint8 // next candidate in the confirmed pool   (64-255, wraps)
+	UnconfirmedNextId uint8 // next candidate in the unconfirmed pool (0-63,  wraps)
+	TxSpendsList      TxSpendsRegistry
+	Supply            SystemSupply
+	PublicKeys        PublicKeys
+	NetworkParams     *chaincfg.Params
+	NetworkOptions    map[NetworkName]Network
 }
 
 type MappingState struct {
@@ -154,22 +139,22 @@ type DexInstruction struct {
 	RefBps        *int              `json:"ref_bps,omitempty"`
 	ReturnAddress *ReturnAddress    `json:"return_address,omitempty"`
 	Metadata      map[string]string `json:"metadata,omitempty"`
-	AmountIn      int64             `json:"amount_in"`
+	AmountIn      string            `json:"amount_in"`
 }
 
 //tinyjson:json
 type PoolInfo struct {
 	Asset0   string `json:"asset0"`
 	Asset1   string `json:"asset1"`
-	Reserve0 uint64 `json:"reserve0"`
-	Reserve1 uint64 `json:"reserve1"`
+	Reserve0 string `json:"reserve0"`
+	Reserve1 string `json:"reserve1"`
 	Fee      uint64 `json:"fee"`
-	TotalLp  uint64 `json:"total_lp"`
+	TotalLp  string `json:"total_lp"`
 }
 
 //tinyjson:json
 type SwapResult struct {
-	AmountOut uint64   `json:"amount_out"`
+	AmountOut string   `json:"amount_out"`
 	PoolState PoolInfo `json:"pool_state"` // Current pool state after swap
 }
 
@@ -181,9 +166,17 @@ type ReturnAddress struct {
 const DashAssetValue string = "DASH"
 
 //tinyjson:json
-type PublicKeys struct {
+type RegisterKeyParams struct {
 	PrimaryPubKey string `json:"primary_public_key,omitempty"`
 	BackupPubKey  string `json:"backup_public_key,omitempty"`
+}
+
+// CompressedPubKey is a 33-byte SEC1 compressed secp256k1 public key.
+type CompressedPubKey [33]byte
+
+type PublicKeys struct {
+	Primary CompressedPubKey
+	Backup  CompressedPubKey
 }
 
 //tinyjson:json

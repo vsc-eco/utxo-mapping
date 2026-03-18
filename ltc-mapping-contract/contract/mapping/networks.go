@@ -14,7 +14,7 @@ type Network interface {
 
 const (
 	Ltc  NetworkName = "ltc"
-	Vsc  NetworkName = "vsc"
+	Vsc  NetworkName = "magi"
 	Hive NetworkName = "hive"
 )
 

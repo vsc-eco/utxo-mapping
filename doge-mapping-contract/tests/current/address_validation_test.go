@@ -54,7 +54,7 @@ func TestTransferToDidKeyAddress(t *testing.T) {
 func TestTransferToContractAddress(t *testing.T) {
 	ct, contractId := setupAllowanceContract(t, 5000)
 
-	payload, _ := tinyjson.Marshal(mapping.TransferParams{To: "contract:some_dex_contract", Amount: "1000"})
+	payload, _ := tinyjson.Marshal(mapping.TransferParams{To: "contract:vsc1BemohMM2HKzfQzWquTfMF6LWvb2V9M35c3", Amount: "1000"})
 	r := ct.Call(stateEngine.TxVscCallContract{
 		Self:       *basicSelf(t, allowanceOwner),
 		ContractId: contractId,

@@ -170,8 +170,9 @@ tinyjson:
 		fi; \
 	done
 
+.PHONY: test
 test:
-	cd tests/current && go test -v -run "$(FILTER)"
+	cd tests/current && go test -v -p 1 -parallel 1 -run "$(FILTER)"
 
 clean:
 	rm -rf $(BIN_DIR)/*.wasm

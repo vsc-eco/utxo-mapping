@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"ltc-mapping-contract/contract/constants"
 	"ltc-mapping-contract/contract/mapping"
+	"strconv"
 	"testing"
 
 	stateEngine "vsc-node/modules/state-processing"
@@ -129,7 +130,7 @@ func callTransferFrom(
 	payload, err := tinyjson.Marshal(mapping.TransferParams{
 		From:   from,
 		To:     to,
-		Amount: amount,
+		Amount: strconv.FormatInt(amount, 10),
 	})
 	if err != nil {
 		t.Fatal("marshal transferFrom payload:", err)
@@ -137,23 +138,21 @@ func callTransferFrom(
 	thisTx := txId
 	txId++
 	return ct.Call(stateEngine.TxVscCallContract{
-		// from's account is the source of funds; RequiredAuths authenticates this tx
+		// spender signs and calls the contract; from is in the payload
 		Self: stateEngine.TxSelf{
 			TxId:                 fmt.Sprintf("%d", thisTx),
 			BlockId:              fmt.Sprintf("%d", thisTx),
 			Index:                0,
 			OpIndex:              0,
 			Timestamp:            "2025-10-14T00:00:00",
-			RequiredAuths:        []string{from},
+			RequiredAuths:        []string{spender},
 			RequiredPostingAuths: []string{},
 		},
 		ContractId: contractId,
 		Action:     "transferFrom",
 		Payload:    payload,
 		RcLimit:    1000,
-		// spender is the direct caller (a third-party contract)
-		Caller:  spender,
-		Intents: []contracts.Intent{},
+		Intents:    []contracts.Intent{},
 	})
 }
 
@@ -437,7 +436,7 @@ func TestDirectTransferNoAllowanceRequired(t *testing.T) {
 
 	payload, err := tinyjson.Marshal(mapping.TransferParams{
 		To:     allowanceTarget,
-		Amount: 3000,
+		Amount: "3000",
 	})
 	if err != nil {
 		t.Fatal(err)

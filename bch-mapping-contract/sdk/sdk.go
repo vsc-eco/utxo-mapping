@@ -130,6 +130,12 @@ func GetEnvKey(key string) *string {
 	return getEnvKey(&key)
 }
 
+// VerifyAddress asks the runtime to validate an address and returns its type.
+// Returns one of: "user:hive", "user:evm", "key", "contract", "system", "unknown".
+func VerifyAddress(addr string) string {
+	return *verifyAddress(&addr)
+}
+
 // Get balance of an account
 func GetBalance(address Address, asset Asset) int64 {
 	addr := address.String()

@@ -28,7 +28,7 @@ type SeedBlocksParams struct {
 	BlockHeight uint32
 }
 
-const LastHeightKey = "lsthgt"
+const LastHeightKey = constants.LastHeightKey
 
 var ErrorLastHeightDNE = errors.New("last height does not exist")
 
@@ -80,13 +80,10 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 	}
 	initialLastHeight := lastHeight
 
-	lastBlockHex := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatInt(int64(lastHeight), 10))
-	lastBlockBytes, err := hex.DecodeString(*lastBlockHex)
-	if err != nil {
-		return 0, 0, ce.WrapContractError(ce.ErrInvalidHex, err)
-	}
+	lastBlockRaw := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatInt(int64(lastHeight), 10))
+	lastBlockBytes := []byte(*lastBlockRaw)
 	var lastBlockHeader wire.BlockHeader
-	err = lastBlockHeader.BtcDecode(bytes.NewReader(lastBlockBytes[:]), wire.ProtocolVersion, wire.LatestEncoding)
+	err = lastBlockHeader.BtcDecode(bytes.NewReader(lastBlockBytes), wire.ProtocolVersion, wire.LatestEncoding)
 	if err != nil {
 		return 0, 0, ce.NewContractError(ce.ErrInput, "error decoding block header: "+err.Error())
 	}
@@ -110,7 +107,7 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 
 		sdk.StateSetObject(
 			constants.BlockPrefix+strconv.FormatUint(uint64(blockHeight), 10),
-			hex.EncodeToString(headerBytes[:]),
+			string(headerBytes[:]),
 		)
 		lastHeight = blockHeight
 		lastBlockHeader = blockHeader
@@ -129,9 +126,13 @@ func HandleSeedBlocks(seedParams SeedBlocksParams, allowReseed bool) (uint32, er
 	}
 
 	if lastHeight == 0 || lastHeight < seedParams.BlockHeight {
+		headerBytes, err := hex.DecodeString(seedParams.BlockHeader)
+		if err != nil {
+			return 0, ce.WrapContractError(ce.ErrInvalidHex, err, "error decoding seed block header hex")
+		}
 		sdk.StateSetObject(
 			constants.BlockPrefix+strconv.FormatInt(int64(seedParams.BlockHeight), 10),
-			seedParams.BlockHeader,
+			string(headerBytes),
 		)
 		sdk.StateSetObject(LastHeightKey, strconv.FormatInt(int64(seedParams.BlockHeight), 10))
 		return seedParams.BlockHeight, nil
