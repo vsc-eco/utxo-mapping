@@ -116,7 +116,6 @@ type ContractState struct {
 	Supply            SystemSupply
 	PublicKeys        PublicKeys
 	NetworkParams     *chaincfg.Params
-	NetworkOptions    map[NetworkName]Network
 }
 
 type MappingState struct {

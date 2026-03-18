@@ -6,6 +6,7 @@ import (
 	"btc-mapping-contract/sdk"
 	"crypto/sha256"
 	"net/url"
+	"strings"
 
 	"github.com/btcsuite/btcd/chaincfg"
 )
@@ -73,7 +74,6 @@ func IntializeContractState(publicKeys PublicKeys, networkMode string) (*Contrac
 		Supply:            supply,
 		PublicKeys:        publicKeys,
 		NetworkParams:     networkParams,
-		NetworkOptions:    initNetworkLookup(networkParams),
 	}, nil
 }
 
@@ -122,25 +122,25 @@ func (cs *ContractState) parseInstructions(
 		var mappingType MappingType
 		if params.Has(constants.DepositToKey) {
 			recipient = params.Get(constants.DepositToKey)
-			if !cs.NetworkOptions[Vsc].ValidateAddress(recipient) {
+			if sdk.VerifyAddress(recipient) == string(sdk.AddressDomainUnknown) {
 				return nil, ce.NewContractError(
 					ce.ErrInput,
-					"address \""+recipient+"\" invalid on network \""+string(Vsc)+"\"",
+					"address \""+recipient+"\" invalid on magi",
 					"bad instruction \""+instr+"\"",
 				)
 			}
 			mappingType = MapDeposit
 		} else if params.Has(constants.SwapToKey) {
 			recipient = params.Get(constants.SwapToKey)
-			recipientNetwork, err := cs.getNetwork(params.Get(constants.SwapNetworkOut))
-			if err != nil {
-				recipientNetwork = cs.NetworkOptions[Vsc]
+			recipientNetwork := params.Get(constants.SwapNetworkOut)
+			if recipientNetwork == "btc" {
+				return nil, ce.NewContractError(ce.ErrInput, "output network cannot be btc")
 			}
 			mappingType = MapSwap
-			if !recipientNetwork.ValidateAddress(recipient) {
+			if !strings.HasPrefix("user:", sdk.VerifyAddress(recipient)) {
 				return nil, ce.NewContractError(
 					ce.ErrInput,
-					"address \""+recipient+"\" invalid on network \""+string(recipientNetwork.Name())+"\"",
+					"address \""+recipient+"\" is not a user address",
 					"bad instruction \""+instr+"\"",
 				)
 			}

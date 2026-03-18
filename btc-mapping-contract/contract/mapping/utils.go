@@ -422,15 +422,6 @@ func setAllowance(owner, spender string, amount int64) {
 	sdk.StateSetObject(key, string(buf[8-n:]))
 }
 
-func (cs *ContractState) getNetwork(s string) (Network, error) {
-	networkName := NetworkName(strings.ToLower(s))
-	network, ok := cs.NetworkOptions[networkName]
-	if ok {
-		return network, nil
-	}
-	return nil, ce.NewContractError(ce.ErrInput, "invalid network \""+s+"\"")
-}
-
 func StrPtr(s string) *string {
 	return &s
 }

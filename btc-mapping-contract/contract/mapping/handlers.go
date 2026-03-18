@@ -238,7 +238,7 @@ func HandleTransfer(instructions *TransferParams) error {
 	}
 
 	if sdk.VerifyAddress(instructions.To) == "unknown" {
-		return ce.NewContractError(ce.ErrInput, "invalid recipient address")
+		return ce.NewContractError(ce.ErrInput, "invalid recipient address \""+instructions.To+"\"")
 	}
 
 	from := instructions.From
