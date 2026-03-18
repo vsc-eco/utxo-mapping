@@ -33,6 +33,9 @@ func getEnv(arg *string) *string { return nil }
 //go:wasmimport sdk system.get_env_key
 func getEnvKey(arg *string) *string { return nil }
 
+//go:wasmimport sdk system.verify_address
+func verifyAddress(arg *string) *string { return nil }
+
 //go:wasmimport sdk hive.get_balance
 func getBalance(arg1 *string, arg2 *string) *string { return nil }
 

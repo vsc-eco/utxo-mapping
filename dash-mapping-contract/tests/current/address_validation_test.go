@@ -1,7 +1,9 @@
 package current_test
 
 import (
+	"dash-mapping-contract/contract/constants"
 	"dash-mapping-contract/contract/mapping"
+	"fmt"
 	"testing"
 
 	"vsc-node/lib/test_utils"
@@ -21,7 +23,7 @@ func setupAddrContract(t *testing.T, balance int64) (*test_utils.ContractTest, s
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, addrTestOwner, ContractWasm)
 	if balance > 0 {
-		ct.StateSet(contractId, mapping.BalancePrefix+addrTestOwner, encodeBalance(t, balance))
+		ct.StateSet(contractId, constants.BalancePrefix+addrTestOwner, encodeBalance(t, balance))
 	}
 	return &ct, contractId
 }
@@ -35,7 +37,7 @@ func callTransfer(
 	t.Helper()
 	payload, err := tinyjson.Marshal(mapping.TransferParams{
 		To:     to,
-		Amount: amount,
+		Amount: fmt.Sprintf("%d", amount),
 	})
 	if err != nil {
 		t.Fatal("marshal transfer payload:", err)
@@ -57,29 +59,29 @@ func TestTransferToHiveAddress(t *testing.T) {
 	ct, contractId := setupAddrContract(t, 10000)
 	r := callTransfer(t, ct, contractId, addrTestOwner, "hive:recipient", 1000)
 	assert.True(t, r.Success, "transfer to hive: address should succeed: %s %s", r.Err, r.ErrMsg)
-	assert.Equal(t, encodeBalance(t, 9000), ct.StateGet(contractId, mapping.BalancePrefix+addrTestOwner))
-	assert.Equal(t, encodeBalance(t, 1000), ct.StateGet(contractId, mapping.BalancePrefix+"hive:recipient"))
+	assert.Equal(t, encodeBalance(t, 9000), ct.StateGet(contractId, constants.BalancePrefix+addrTestOwner))
+	assert.Equal(t, encodeBalance(t, 1000), ct.StateGet(contractId, constants.BalancePrefix+"hive:recipient"))
 }
 
 func TestTransferToDidKeyAddress(t *testing.T) {
 	ct, contractId := setupAddrContract(t, 10000)
 	r := callTransfer(t, ct, contractId, addrTestOwner, "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK", 500)
 	assert.True(t, r.Success, "transfer to did:key: address should succeed: %s %s", r.Err, r.ErrMsg)
-	assert.Equal(t, encodeBalance(t, 9500), ct.StateGet(contractId, mapping.BalancePrefix+addrTestOwner))
+	assert.Equal(t, encodeBalance(t, 9500), ct.StateGet(contractId, constants.BalancePrefix+addrTestOwner))
 }
 
 func TestTransferToContractAddress(t *testing.T) {
 	ct, contractId := setupAddrContract(t, 10000)
-	r := callTransfer(t, ct, contractId, addrTestOwner, "contract:vsc1abc123def456", 2000)
+	r := callTransfer(t, ct, contractId, addrTestOwner, "contract:vsc1BemohMM2HKzfQzWquTfMF6LWvb2V9M35c3", 2000)
 	assert.True(t, r.Success, "transfer to contract: address should succeed: %s %s", r.Err, r.ErrMsg)
-	assert.Equal(t, encodeBalance(t, 8000), ct.StateGet(contractId, mapping.BalancePrefix+addrTestOwner))
+	assert.Equal(t, encodeBalance(t, 8000), ct.StateGet(contractId, constants.BalancePrefix+addrTestOwner))
 }
 
 func TestTransferToDidPkhEip155Address(t *testing.T) {
 	ct, contractId := setupAddrContract(t, 10000)
 	r := callTransfer(t, ct, contractId, addrTestOwner, "did:pkh:eip155:1:0x1234567890abcdef1234567890abcdef12345678", 1500)
 	assert.True(t, r.Success, "transfer to did:pkh:eip155 address should succeed: %s %s", r.Err, r.ErrMsg)
-	assert.Equal(t, encodeBalance(t, 8500), ct.StateGet(contractId, mapping.BalancePrefix+addrTestOwner))
+	assert.Equal(t, encodeBalance(t, 8500), ct.StateGet(contractId, constants.BalancePrefix+addrTestOwner))
 }
 
 // ==================== Invalid Address Tests ====================
@@ -114,5 +116,5 @@ func TestTransferInsufficientBalanceFails(t *testing.T) {
 	ct, contractId := setupAddrContract(t, 500)
 	r := callTransfer(t, ct, contractId, addrTestOwner, "hive:recipient", 1000)
 	assert.False(t, r.Success, "transfer with insufficient balance should fail")
-	assert.Equal(t, encodeBalance(t, 500), ct.StateGet(contractId, mapping.BalancePrefix+addrTestOwner))
+	assert.Equal(t, encodeBalance(t, 500), ct.StateGet(contractId, constants.BalancePrefix+addrTestOwner))
 }

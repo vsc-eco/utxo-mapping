@@ -6,31 +6,48 @@ import (
 	"ltc-mapping-contract/sdk"
 	"crypto/sha256"
 	"net/url"
-	"strconv"
 
-	"github.com/CosmWasm/tinyjson"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/wire"
 )
 
 // LTC-specific network params for address validation.
 // Litecoin uses different address version bytes and bech32 HRP than Bitcoin.
-func ltcTestNetParams() *chaincfg.Params {
-	p := chaincfg.TestNet3Params
-	p.PubKeyHashAddrID = 0x6f // 'm'/'n' prefix (same as BTC testnet)
-	p.ScriptHashAddrID = 0xc4 // '2' prefix
-	p.Bech32HRPSegwit = "tltc"
+// Params are registered once so btcutil.DecodeAddress works correctly.
+
+var ltcTestNet = func() *chaincfg.Params {
+	p := chaincfg.Params{
+		Name:             "ltc-testnet",
+		Net:              wire.BitcoinNet(0xfdd2c8f1),
+		PubKeyHashAddrID: 0x6f,
+		ScriptHashAddrID: 0xc4,
+		Bech32HRPSegwit:  "tltc",
+	}
+	chaincfg.Register(&p)
 	return &p
+}()
+
+var ltcMainNet = func() *chaincfg.Params {
+	p := chaincfg.Params{
+		Name:             "ltc-mainnet",
+		Net:              wire.BitcoinNet(0xfbc0b6db),
+		PubKeyHashAddrID: 0x30,
+		ScriptHashAddrID: 0x32,
+		Bech32HRPSegwit:  "ltc",
+	}
+	chaincfg.Register(&p)
+	return &p
+}()
+
+func ltcTestNetParams() *chaincfg.Params {
+	return ltcTestNet
 }
 
 func ltcMainNetParams() *chaincfg.Params {
-	p := chaincfg.MainNetParams
-	p.PubKeyHashAddrID = 0x30 // 'L' prefix
-	p.ScriptHashAddrID = 0x32 // 'M' prefix
-	p.Bech32HRPSegwit = "ltc"
-	return &p
+	return ltcMainNet
 }
 
-func IntializeContractState(publicKeys *PublicKeys, networkMode string) (*ContractState, error) {
+func IntializeContractState(publicKeys PublicKeys, networkMode string) (*ContractState, error) {
 	var networkParams *chaincfg.Params
 	switch networkMode {
 	case constants.Testnet:
@@ -39,54 +56,65 @@ func IntializeContractState(publicKeys *PublicKeys, networkMode string) (*Contra
 		networkParams = ltcMainNetParams()
 	}
 
+	// Load UTXO registry (binary: 9 bytes/entry)
 	var utxos UtxoRegistry
 	utxoState := sdk.StateGetObject(constants.UtxoRegistryKey)
 	if len(*utxoState) > 0 {
-		err := tinyjson.Unmarshal([]byte(*utxoState), &utxos)
+		var err error
+		utxos, err = UnmarshalUtxoRegistry([]byte(*utxoState))
 		if err != nil {
-			return nil, ce.NewContractError(ce.ErrJson, "error unmarshaling utxo registry: "+err.Error())
+			return nil, ce.NewContractError(ce.ErrStateAccess, "error decoding utxo registry: "+err.Error())
 		}
 	}
 
-	lastUtxoIdHex := sdk.StateGetObject(constants.UtxoLastIdKey)
-	lastUtxoId, err := strconv.ParseUint(*lastUtxoIdHex, 16, 32)
-	if err != nil {
-		if *lastUtxoIdHex == "" {
-			lastUtxoId = 0
-		} else {
-			return nil, ce.NewContractError(ce.ErrStateAccess, "error fetching last utxo internal id: "+err.Error())
-		}
+	// Load UTXO pool counters (2 bytes: [confirmedNext, unconfirmedNext])
+	confirmedNextId := uint8(constants.UtxoConfirmedPoolStart)
+	unconfirmedNextId := uint8(0)
+	counterState := sdk.StateGetObject(constants.UtxoLastIdKey)
+	if len(*counterState) == 2 {
+		confirmedNextId = (*counterState)[0]
+		unconfirmedNextId = (*counterState)[1]
 	}
 
+	// Load TX spends registry (binary: 32 bytes/entry)
 	var txSpends TxSpendsRegistry
 	txSpendsState := sdk.StateGetObject(constants.TxSpendsRegistryKey)
 	if len(*txSpendsState) > 0 {
-		err := tinyjson.Unmarshal([]byte(*txSpendsState), &txSpends)
+		var err error
+		txSpends, err = UnmarshalTxSpendsRegistry([]byte(*txSpendsState))
 		if err != nil {
-			return nil, ce.NewContractError(ce.ErrStateAccess, "error unmarshaling txspends registry: "+err.Error())
+			return nil, ce.NewContractError(ce.ErrStateAccess, "error decoding txspends registry: "+err.Error())
 		}
 	}
 
+	// Load supply (binary: 32 bytes)
 	var supply SystemSupply
 	supplyState := sdk.StateGetObject(constants.SupplyKey)
 	if len(*supplyState) > 0 {
-		err := tinyjson.Unmarshal([]byte(*supplyState), &supply)
+		s, err := UnmarshalSupply([]byte(*supplyState))
 		if err != nil {
-			return nil, ce.NewContractError(ce.ErrStateAccess, "error unmarshalling supply: "+err.Error())
+			return nil, ce.NewContractError(ce.ErrStateAccess, "error decoding supply: "+err.Error())
 		}
+		supply = *s
 	}
 
 	return &ContractState{
-		UtxoList:       utxos,
-		UtxoNextId:     uint32(lastUtxoId),
-		Supply:         supply,
-		PublicKeys:     publicKeys,
-		NetworkParams:  networkParams,
-		NetworkOptions: initNetworkLookup(networkParams),
+		UtxoList:          utxos,
+		ConfirmedNextId:   confirmedNextId,
+		UnconfirmedNextId: unconfirmedNextId,
+		TxSpendsList:      txSpends,
+		Supply:            supply,
+		PublicKeys:        publicKeys,
+		NetworkParams:     networkParams,
+		NetworkOptions:    initNetworkLookup(networkParams),
 	}, nil
 }
 
-func InitializeMappingState(publicKeys *PublicKeys, networkMode string, instructions ...string) (*MappingState, error) {
+func InitializeMappingState(
+	publicKeys PublicKeys,
+	networkMode string,
+	instructions ...string,
+) (*MappingState, error) {
 	contractState, err := IntializeContractState(publicKeys, networkMode)
 	if err != nil {
 		return nil, err
@@ -108,7 +136,7 @@ func InitializeMappingState(publicKeys *PublicKeys, networkMode string, instruct
 }
 
 func (cs *ContractState) parseInstructions(
-	publicKeys *PublicKeys,
+	publicKeys PublicKeys,
 	instrs []string,
 	networkParams *chaincfg.Params,
 ) (map[string]*AddressMetadata, error) {
@@ -155,8 +183,8 @@ func (cs *ContractState) parseInstructions(
 			hasher.Write([]byte(instr))
 			hashBytes := hasher.Sum(nil)
 			address, _, err := createP2WSHAddressWithBackup(
-				publicKeys.PrimaryPubKey,
-				publicKeys.BackupPubKey,
+				publicKeys.Primary,
+				publicKeys.Backup,
 				hashBytes,
 				networkParams,
 			)
@@ -171,61 +199,44 @@ func (cs *ContractState) parseInstructions(
 				Type:        mappingType,
 			}
 		}
+		// should error for unsupported instruction?
 	}
 	return registry, nil
 }
 
 func (cs *ContractState) SaveToState() error {
-	utxosJson, err := tinyjson.Marshal(cs.UtxoList)
-	if err != nil {
-		return ce.NewContractError(ce.ErrJson, "error marshaling utxo listings: "+err.Error())
-	}
-	sdk.StateSetObject(constants.UtxoRegistryKey, string(utxosJson))
+	// UTXO registry (binary)
+	sdk.StateSetObject(constants.UtxoRegistryKey, string(MarshalUtxoRegistry(cs.UtxoList)))
 
-	sdk.StateSetObject(constants.UtxoLastIdKey, strconv.FormatUint(uint64(cs.UtxoNextId), 16))
+	// UTXO pool counters (2 bytes: [confirmedNext, unconfirmedNext])
+	sdk.StateSetObject(constants.UtxoLastIdKey, string([]byte{cs.ConfirmedNextId, cs.UnconfirmedNextId}))
 
-	txSpendsJson, err := tinyjson.Marshal(cs.TxSpendsList)
-	if err != nil {
-		return ce.NewContractError(ce.ErrJson, "error marshaling tx spends: "+err.Error())
-	}
-	sdk.StateSetObject(constants.TxSpendsRegistryKey, string(txSpendsJson))
+	// TX spends registry (binary)
+	sdk.StateSetObject(constants.TxSpendsRegistryKey, string(MarshalTxSpendsRegistry(cs.TxSpendsList)))
 
-	supplyJson, err := tinyjson.Marshal(cs.Supply)
-	if err != nil {
-		return ce.NewContractError(ce.ErrJson, "error marshaling supply: "+err.Error())
-	}
-	sdk.StateSetObject(constants.SupplyKey, string(supplyJson))
+	// Supply (binary)
+	sdk.StateSetObject(constants.SupplyKey, string(MarshalSupply(&cs.Supply)))
 
 	return nil
 }
 
 func (ms *MappingState) SaveToState() error {
-	err := ms.ContractState.SaveToState()
-	if err != nil {
-		return err
-	}
-	return nil
+	return ms.ContractState.SaveToState()
 }
 
 func SupplyFromState() (*SystemSupply, error) {
-	var supply SystemSupply
 	supplyState := sdk.StateGetObject(constants.SupplyKey)
-	if len(*supplyState) > 0 {
-		err := tinyjson.Unmarshal([]byte(*supplyState), &supply)
-		if err != nil {
-			return nil, ce.NewContractError(ce.ErrStateAccess, "error unmarshalling supply: "+err.Error())
-		}
+	if len(*supplyState) == 0 {
+		return &SystemSupply{}, nil
 	}
-
-	return &supply, nil
+	s, err := UnmarshalSupply([]byte(*supplyState))
+	if err != nil {
+		return nil, ce.NewContractError(ce.ErrStateAccess, "error decoding supply: "+err.Error())
+	}
+	return s, nil
 }
 
 func SaveSupplyToState(supply *SystemSupply) error {
-	supplyJson, err := tinyjson.Marshal(supply)
-	if err != nil {
-		return err
-	}
-	sdk.StateSetObject(constants.SupplyKey, string(supplyJson))
-
+	sdk.StateSetObject(constants.SupplyKey, string(MarshalSupply(supply)))
 	return nil
 }

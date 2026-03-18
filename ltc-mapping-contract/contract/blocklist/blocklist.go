@@ -24,18 +24,20 @@ type AddBlocksParams struct {
 
 //tinyjson:json
 type SeedBlocksParams struct {
-	BlockHeader string
-	BlockHeight uint32
+	BlockHeader string `json:"block_header"`
+	BlockHeight uint32 `json:"block_height"`
 }
 
-const LastHeightKey = "lsthgt"
+// LastHeightKey is an alias for constants.LastHeightKey for backwards
+// compatibility with test code that references blocklist.LastHeightKey.
+const LastHeightKey = constants.LastHeightKey
 
 var ErrorLastHeightDNE = errors.New("last height does not exist")
 
 var ErrorSequenceIncorrect = errors.New("block sequence incorrect")
 
 func LastHeightFromState() (uint32, error) {
-	lastHeightString := sdk.StateGetObject(LastHeightKey)
+	lastHeightString := sdk.StateGetObject(constants.LastHeightKey)
 	if *lastHeightString == "" {
 		return 0, ErrorLastHeightDNE
 	}
@@ -48,7 +50,7 @@ func LastHeightFromState() (uint32, error) {
 }
 
 func LastHeightToState(lastHeight uint32) {
-	sdk.StateSetObject(LastHeightKey, strconv.FormatUint(uint64(lastHeight), 10))
+	sdk.StateSetObject(constants.LastHeightKey, strconv.FormatUint(uint64(lastHeight), 10))
 }
 
 func DivideHeaderList(blocksHex *string) ([]BlockHeaderBytes, error) {
@@ -80,13 +82,11 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 	}
 	initialLastHeight := lastHeight
 
-	lastBlockHex := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatInt(int64(lastHeight), 10))
-	lastBlockBytes, err := hex.DecodeString(*lastBlockHex)
-	if err != nil {
-		return 0, 0, ce.WrapContractError(ce.ErrInvalidHex, err)
-	}
+	// block headers stored as raw 80 bytes
+	lastBlockRaw := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatInt(int64(lastHeight), 10))
+	lastBlockBytes := []byte(*lastBlockRaw)
 	var lastBlockHeader wire.BlockHeader
-	err = lastBlockHeader.BtcDecode(bytes.NewReader(lastBlockBytes[:]), wire.ProtocolVersion, wire.LatestEncoding)
+	err = lastBlockHeader.BtcDecode(bytes.NewReader(lastBlockBytes), wire.ProtocolVersion, wire.LatestEncoding)
 	if err != nil {
 		return 0, 0, ce.NewContractError(ce.ErrInput, "error decoding block header: "+err.Error())
 	}
@@ -108,9 +108,10 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 			return 0, 0, ErrorSequenceIncorrect
 		}
 
+		// store raw 80 bytes (not hex)
 		sdk.StateSetObject(
 			constants.BlockPrefix+strconv.FormatUint(uint64(blockHeight), 10),
-			hex.EncodeToString(headerBytes[:]),
+			string(headerBytes[:]),
 		)
 		lastHeight = blockHeight
 		lastBlockHeader = blockHeader
@@ -129,11 +130,16 @@ func HandleSeedBlocks(seedParams SeedBlocksParams, allowReseed bool) (uint32, er
 	}
 
 	if lastHeight == 0 || lastHeight < seedParams.BlockHeight {
+		// decode hex input → store raw bytes
+		headerBytes, err := hex.DecodeString(seedParams.BlockHeader)
+		if err != nil {
+			return 0, ce.WrapContractError(ce.ErrInvalidHex, err, "invalid block header hex")
+		}
 		sdk.StateSetObject(
 			constants.BlockPrefix+strconv.FormatInt(int64(seedParams.BlockHeight), 10),
-			seedParams.BlockHeader,
+			string(headerBytes),
 		)
-		sdk.StateSetObject(LastHeightKey, strconv.FormatInt(int64(seedParams.BlockHeight), 10))
+		sdk.StateSetObject(constants.LastHeightKey, strconv.FormatInt(int64(seedParams.BlockHeight), 10))
 		return seedParams.BlockHeight, nil
 	}
 

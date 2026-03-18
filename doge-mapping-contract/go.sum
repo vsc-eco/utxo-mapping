@@ -667,8 +667,8 @@ github.com/viant/assertly v0.4.8/go.mod h1:aGifi++jvCrUaklKEKT0BU95igDNaqkvz+49u
 github.com/viant/toolbox v0.24.0/go.mod h1:OxMCG57V0PXuIP2HNQrtJf2CjqdmbrOx5EkMILuUhzM=
 github.com/vsc-eco/go-ethereum v0.0.1 h1:FlOvDj10WZCwzDK7bmcOVBaDuTBtUkWeoZGqrErJ7J0=
 github.com/vsc-eco/go-ethereum v0.0.1/go.mod h1:hjzsxodERJCS+XYc169Nz36F/7d1GKvMBya4E7MjFWs=
-github.com/vsc-eco/go-vsc-node v0.0.0-20260314153616-193fe15143cf h1:U5xAFp3b1rVqwlnZLxmMgV+Pu2p4qxYtR2yJ6b2G/jI=
-github.com/vsc-eco/go-vsc-node v0.0.0-20260314153616-193fe15143cf/go.mod h1:AMMJsLjjhLkCP3Ch6DcQCv64E1LKbyP4iHTQtaEXmAo=
+github.com/vsc-eco/go-vsc-node v0.0.0-20260318170902-801dff8f7739 h1:tbeuFSPVO7xyM4ADORkftl3xTn375rggWLIJoyZyhDc=
+github.com/vsc-eco/go-vsc-node v0.0.0-20260318170902-801dff8f7739/go.mod h1:AMMJsLjjhLkCP3Ch6DcQCv64E1LKbyP4iHTQtaEXmAo=
 github.com/vsc-eco/hivego v0.0.0-20260224180332-508b8c394435 h1:ecSftlzwXr/JmFicV67CiPAtQRyx6mk91lhGXmRG1aY=
 github.com/vsc-eco/hivego v0.0.0-20260224180332-508b8c394435/go.mod h1:YTtRIiFkjGYkThkqWE4zf+mKZIJkNXrjJDiRW5D2Py8=
 github.com/warpfork/go-testmark v0.12.1 h1:rMgCpJfwy1sJ50x0M0NgyphxYYPMOODIJHhsXyEHU0s=

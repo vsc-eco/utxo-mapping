@@ -69,7 +69,9 @@ update-vsc-node:
 .PHONY: update-vsc-node
 
 # Run update-vsc-node before any build or test target.
-all dev testnet3 testnet4 mainnet regtest test: | update-vsc-node
+all dev testnet3 testnet4 mainnet regtest: | update-vsc-node
+
+.PHONY: test
 
 pull-tinygo:
 	docker pull $(TINYGO_IMAGE)

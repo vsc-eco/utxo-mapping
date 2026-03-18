@@ -1,26 +1,28 @@
 package constants
 
-const DirPathDelimiter = "/"
+const DirPathDelimiter = "-"
 
 const TssKeyName = "main"
 const RouterContractIdKey = "routerid"
 
-const OracleAddress = "did:vsc:oracle:ltc"
-const PrimaryPublicKeyStateKey = "pubkey"
-const BackupPublicKeyStateKey = "backupkey"
+// UTXO ID pool layout (single-byte ID, 256 slots total).
+// IDs 0–63  are the unconfirmed pool (change outputs pending confirmation).
+// IDs 64–255 are the confirmed pool   (active mapped UTXOs ready to spend).
+const (
+	UtxoUnconfirmedPoolSize = 64 // number of slots in the unconfirmed pool
+	UtxoConfirmedPoolStart  = 64 // first ID in the confirmed pool
+)
 
-const BlockPrefix = "block" + DirPathDelimiter
+const BalancePrefix = "a" + DirPathDelimiter
+const ObservedPrefix = "o" + DirPathDelimiter
+const UtxoPrefix = "u" + DirPathDelimiter
+const UtxoRegistryKey = "r"
+const UtxoLastIdKey = "i"
+const TxSpendsRegistryKey = "p"
+const TxSpendsPrefix = "d" + DirPathDelimiter
+const SupplyKey = "s"
 
-const BalancePrefix = "bal" + DirPathDelimiter
-const ObservedPrefix = "otx" + DirPathDelimiter
-const UtxoPrefix = "utxo" + DirPathDelimiter
-const UtxoRegistryKey = "utxor"
-const UtxoLastIdKey = "utxoid"
-const TxSpendsRegistryKey = "txspdr"
-const TxSpendsPrefix = "txspd" + DirPathDelimiter
-const SupplyKey = "sply"
-
-const AllowancePrefix = "q" + DirPathDelimiter
+const LastHeightKey = "h"
 
 // Instruction URL search param keys
 const (
@@ -42,6 +44,14 @@ const (
 	LogKeyDelimiter   = "="
 	LogArrayDelimiter = ","
 )
+
+const AllowancePrefix = "q" + DirPathDelimiter
+
+const OracleAddress = "did:vsc:oracle:ltc"
+const PrimaryPublicKeyStateKey = "pubkey"
+const BackupPublicKeyStateKey = "backupkey"
+
+const BlockPrefix = "b" + DirPathDelimiter
 
 const (
 	Testnet string = "testnet"

@@ -14,7 +14,7 @@ type Network interface {
 
 const (
 	Dash NetworkName = "dash"
-	Vsc  NetworkName = "vsc"
+	Vsc  NetworkName = "magi"
 	Hive NetworkName = "hive"
 )
 

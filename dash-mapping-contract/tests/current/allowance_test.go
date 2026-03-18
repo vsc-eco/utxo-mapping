@@ -32,7 +32,7 @@ func setupAllowanceContract(t *testing.T, balance int64) (*test_utils.ContractTe
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, allowanceOwner, ContractWasm)
 	if balance > 0 {
-		ct.StateSet(contractId, mapping.BalancePrefix+allowanceOwner, encodeBalance(t, balance))
+		ct.StateSet(contractId, constants.BalancePrefix+allowanceOwner, encodeBalance(t, balance))
 	}
 	return &ct, contractId
 }
@@ -122,7 +122,7 @@ func callTransferFrom(
 	payload, err := tinyjson.Marshal(mapping.TransferParams{
 		From:   from,
 		To:     to,
-		Amount: amount,
+		Amount: fmt.Sprintf("%d", amount),
 	})
 	if err != nil {
 		t.Fatal("marshal transferFrom payload:", err)
@@ -130,20 +130,20 @@ func callTransferFrom(
 	thisTx := txId
 	txId++
 	return ct.Call(stateEngine.TxVscCallContract{
+		// spender signs and calls the contract; from is in the payload
 		Self: stateEngine.TxSelf{
 			TxId:                 fmt.Sprintf("%d", thisTx),
 			BlockId:              fmt.Sprintf("%d", thisTx),
 			Index:                0,
 			OpIndex:              0,
 			Timestamp:            "2025-10-14T00:00:00",
-			RequiredAuths:        []string{from},
+			RequiredAuths:        []string{spender},
 			RequiredPostingAuths: []string{},
 		},
 		ContractId: contractId,
 		Action:     "transferFrom",
 		Payload:    payload,
 		RcLimit:    1000,
-		Caller:     spender,
 		Intents:    []contracts.Intent{},
 	})
 }
@@ -274,8 +274,8 @@ func TestTransferFrom(t *testing.T) {
 		t.Fatalf("transferFrom failed: %s: %s", r.Err, r.ErrMsg)
 	}
 	assert.True(t, r.Success)
-	assert.Equal(t, encodeBalance(t, 7000), ct.StateGet(contractId, mapping.BalancePrefix+allowanceOwner))
-	assert.Equal(t, encodeBalance(t, 3000), ct.StateGet(contractId, mapping.BalancePrefix+allowanceTarget))
+	assert.Equal(t, encodeBalance(t, 7000), ct.StateGet(contractId, constants.BalancePrefix+allowanceOwner))
+	assert.Equal(t, encodeBalance(t, 3000), ct.StateGet(contractId, constants.BalancePrefix+allowanceTarget))
 	assert.Equal(t, encodeBalance(t, 2000), ct.StateGet(contractId, allowanceKey(allowanceOwner, allowanceSpender)))
 }
 
@@ -286,7 +286,7 @@ func TestTransferFromExhaustsAllowance(t *testing.T) {
 	assert.True(t, r.Success)
 	assert.Equal(t, "", ct.StateGet(contractId, allowanceKey(allowanceOwner, allowanceSpender)),
 		"allowance key should be deleted after full spend")
-	assert.Equal(t, encodeBalance(t, 6000), ct.StateGet(contractId, mapping.BalancePrefix+allowanceOwner))
+	assert.Equal(t, encodeBalance(t, 6000), ct.StateGet(contractId, constants.BalancePrefix+allowanceOwner))
 }
 
 func TestTransferFromExceedsAllowanceFails(t *testing.T) {
@@ -294,7 +294,7 @@ func TestTransferFromExceedsAllowanceFails(t *testing.T) {
 	callApprove(t, ct, contractId, allowanceOwner, allowanceSpender, 1000)
 	r := callTransferFrom(t, ct, contractId, allowanceSpender, allowanceOwner, allowanceTarget, 2000)
 	assert.False(t, r.Success, "transferFrom exceeding allowance should fail")
-	assert.Equal(t, encodeBalance(t, 10000), ct.StateGet(contractId, mapping.BalancePrefix+allowanceOwner))
+	assert.Equal(t, encodeBalance(t, 10000), ct.StateGet(contractId, constants.BalancePrefix+allowanceOwner))
 	assert.Equal(t, encodeBalance(t, 1000), ct.StateGet(contractId, allowanceKey(allowanceOwner, allowanceSpender)))
 }
 
@@ -302,7 +302,7 @@ func TestTransferFromNoAllowanceFails(t *testing.T) {
 	ct, contractId := setupAllowanceContract(t, 10000)
 	r := callTransferFrom(t, ct, contractId, allowanceSpender, allowanceOwner, allowanceTarget, 1000)
 	assert.False(t, r.Success, "transferFrom with no allowance should fail")
-	assert.Equal(t, encodeBalance(t, 10000), ct.StateGet(contractId, mapping.BalancePrefix+allowanceOwner))
+	assert.Equal(t, encodeBalance(t, 10000), ct.StateGet(contractId, constants.BalancePrefix+allowanceOwner))
 }
 
 func TestTransferFromAllowanceDecrements(t *testing.T) {
@@ -336,7 +336,7 @@ func TestDirectTransferNoAllowanceRequired(t *testing.T) {
 	ct, contractId := setupAllowanceContract(t, 5000)
 	payload, err := tinyjson.Marshal(mapping.TransferParams{
 		To:     allowanceTarget,
-		Amount: 3000,
+		Amount: "3000",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -351,6 +351,6 @@ func TestDirectTransferNoAllowanceRequired(t *testing.T) {
 		Intents:    []contracts.Intent{},
 	})
 	assert.True(t, r.Success)
-	assert.Equal(t, encodeBalance(t, 2000), ct.StateGet(contractId, mapping.BalancePrefix+allowanceOwner))
-	assert.Equal(t, encodeBalance(t, 3000), ct.StateGet(contractId, mapping.BalancePrefix+allowanceTarget))
+	assert.Equal(t, encodeBalance(t, 2000), ct.StateGet(contractId, constants.BalancePrefix+allowanceOwner))
+	assert.Equal(t, encodeBalance(t, 3000), ct.StateGet(contractId, constants.BalancePrefix+allowanceTarget))
 }
