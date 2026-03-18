@@ -419,8 +419,8 @@ func RegisterPublicKey(keyStr *string) *string {
 	return mapping.StrPtr(resultBuilder.String())
 }
 
-//go:wasmexport createKeyPair
-func CreateKeyPair(_ *string) *string {
+//go:wasmexport createKey
+func CreateKey(_ *string) *string {
 	// leave this as owner always
 	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
 		ce.CustomAbort(
@@ -429,8 +429,22 @@ func CreateKeyPair(_ *string) *string {
 	}
 
 	keyId := constants.TssKeyName
-	sdk.TssCreateKey(keyId, "ecdsa")
+	sdk.TssCreateKey(keyId, "ecdsa", 365)
 	return mapping.StrPtr("key created, id: " + keyId)
+}
+
+//go:wasmexport renewKey
+func RenewKey(_ *string) *string {
+	// leave this as owner always
+	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
+		ce.CustomAbort(
+			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
+		)
+	}
+
+	keyId := constants.TssKeyName
+	sdk.TssRenewKey(keyId, 365)
+	return mapping.StrPtr("key \"" + keyId + "\" renewed")
 }
 
 //go:wasmexport registerRouter

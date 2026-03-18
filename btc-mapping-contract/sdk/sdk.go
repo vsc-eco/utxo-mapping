@@ -153,12 +153,17 @@ func ContractCall(contractId string, method string, payload string, options *Con
 	return contractCall(&contractId, &method, &payload, &optStr)
 }
 
-func TssCreateKey(keyId string, algo string) string {
+func TssCreateKey(keyId string, algo string, epochs uint64) string {
 	if algo != "ecdsa" && algo != "eddsa" {
 		Abort("algo must be ecdsa or eddsa")
 	}
+	epochsStr := strconv.FormatUint(epochs, 10)
+	return *tssCreateKey(&keyId, &algo, &epochsStr)
+}
 
-	return *tssCreateKey(&keyId, &algo)
+func TssRenewKey(keyId string, additionalEpochs uint64) string {
+	epochsStr := strconv.FormatUint(additionalEpochs, 10)
+	return *tssRenewKey(&keyId, &epochsStr)
 }
 
 func TssGetKey(keyId string) string {
