@@ -35,17 +35,16 @@ import (
 var NetworkMode string
 
 func checkAdmin() {
-	var adminAddress string
-	if constants.IsTestnet(NetworkMode) {
-		adminAddress = *sdk.GetEnvKey("contract.owner")
-	} else {
-		adminAddress = constants.OracleAddress
+	caller := sdk.GetEnv().Caller.String()
+	if caller == constants.OracleAddress {
+		return
 	}
-	if sdk.GetEnv().Caller.String() != adminAddress {
-		ce.CustomAbort(
-			ce.NewContractError(ce.ErrNoPermission, "this action must be performed by a contract administrator"),
-		)
+	if constants.IsTestnet(NetworkMode) && caller == *sdk.GetEnvKey("contract.owner") {
+		return
 	}
+	ce.CustomAbort(
+		ce.NewContractError(ce.ErrNoPermission, "this action must be performed by a contract administrator"),
+	)
 }
 
 //go:wasmexport seedBlocks
