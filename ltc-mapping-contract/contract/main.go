@@ -111,6 +111,30 @@ func AddBlocks(addBlocksInput *string) *string {
 	return mapping.StrPtr(resultBuilder.String())
 }
 
+//go:wasmexport replaceBlock
+func ReplaceBlock(input *string) *string {
+	checkAdmin()
+
+	blockBytes, err := hex.DecodeString(*input)
+	if err != nil {
+		ce.CustomAbort(ce.WrapContractError(ce.ErrInvalidHex, err))
+	}
+	if len(blockBytes) != 80 {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "expected exactly 80 bytes (one block header)"))
+	}
+
+	var header blocklist.BlockHeaderBytes
+	copy(header[:], blockBytes)
+
+	height, err := blocklist.HandleReplaceBlock(header, NetworkMode)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+
+	outMsg := "replaced block at height: " + strconv.FormatUint(uint64(height), 10)
+	return &outMsg
+}
+
 //go:wasmexport map
 func Map(incomingTx *string) *string {
 	var mapInstructions mapping.MapParams

@@ -131,6 +131,66 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 	return lastHeight, nil
 }
 
+// HandleReplaceBlock replaces the block at the current tip height with a
+// corrected header. This is used to fix a stale/orphaned tip that prevents
+// new blocks from being appended. The replacement must pass PoW and chain
+// correctly to the block at height-1.
+func HandleReplaceBlock(rawHeader BlockHeaderBytes, networkMode string) (uint32, error) {
+	var networkParams *chaincfg.Params
+	switch networkMode {
+	case constants.Testnet3:
+		networkParams = &chaincfg.TestNet3Params
+	case constants.Testnet4:
+		networkParams = &chaincfg.TestNet4Params
+	case constants.Regtest:
+		networkParams = &chaincfg.RegressionNetParams
+	default:
+		networkParams = &chaincfg.MainNetParams
+	}
+
+	lastHeight, err := LastHeightFromState()
+	if err != nil {
+		return 0, ce.WrapContractError(ce.ErrStateAccess, err)
+	}
+
+	// decode the replacement header
+	var newHeader wire.BlockHeader
+	err = newHeader.BtcDecode(bytes.NewReader(rawHeader[:]), wire.ProtocolVersion, wire.LatestEncoding)
+	if err != nil {
+		return 0, ce.NewContractError(ce.ErrInput, "error decoding replacement header: "+err.Error())
+	}
+
+	// PoW check
+	msgBlock := wire.MsgBlock{Header: newHeader}
+	if err := blockchain.CheckProofOfWork(btcutil.NewBlock(&msgBlock), networkParams.PowLimit); err != nil {
+		return 0, ce.NewContractError(ce.ErrInput, "replacement block failed PoW check: "+err.Error())
+	}
+
+	// validate that the replacement chains to height-1
+	prevHeight := lastHeight - 1
+	prevBlockRaw := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatUint(uint64(prevHeight), 10))
+	if *prevBlockRaw == "" {
+		return 0, ce.NewContractError(ce.ErrStateAccess, "no block found at height "+strconv.FormatUint(uint64(prevHeight), 10))
+	}
+	var prevHeader wire.BlockHeader
+	err = prevHeader.BtcDecode(bytes.NewReader([]byte(*prevBlockRaw)), wire.ProtocolVersion, wire.LatestEncoding)
+	if err != nil {
+		return 0, ce.NewContractError(ce.ErrStateAccess, "error decoding block at height "+strconv.FormatUint(uint64(prevHeight), 10))
+	}
+	prevHash := prevHeader.BlockHash()
+	if !newHeader.PrevBlock.IsEqual(&prevHash) {
+		return 0, ce.NewContractError(ce.ErrInput, "replacement block does not chain to block at height "+strconv.FormatUint(uint64(prevHeight), 10))
+	}
+
+	// overwrite the tip
+	sdk.StateSetObject(
+		constants.BlockPrefix+strconv.FormatUint(uint64(lastHeight), 10),
+		string(rawHeader[:]),
+	)
+
+	return lastHeight, nil
+}
+
 func HandleSeedBlocks(seedParams SeedBlocksParams, allowReseed bool) (uint32, error) {
 	lastHeight, err := LastHeightFromState()
 	if err != nil {

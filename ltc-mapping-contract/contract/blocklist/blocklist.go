@@ -119,6 +119,50 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 	return lastHeight, lastHeight - initialLastHeight, nil
 }
 
+// HandleReplaceBlock replaces the block at the current tip height with a
+// corrected header. This is used to fix a stale/orphaned tip that prevents
+// new blocks from being appended. The replacement must chain correctly to
+// the block at height-1. PoW is not checked (LTC uses Scrypt).
+func HandleReplaceBlock(rawHeader BlockHeaderBytes, networkMode string) (uint32, error) {
+	_ = networkMode
+
+	lastHeight, err := LastHeightFromState()
+	if err != nil {
+		return 0, ce.WrapContractError(ce.ErrStateAccess, err)
+	}
+
+	// decode the replacement header
+	var newHeader wire.BlockHeader
+	err = newHeader.BtcDecode(bytes.NewReader(rawHeader[:]), wire.ProtocolVersion, wire.LatestEncoding)
+	if err != nil {
+		return 0, ce.NewContractError(ce.ErrInput, "error decoding replacement header: "+err.Error())
+	}
+
+	// validate that the replacement chains to height-1
+	prevHeight := lastHeight - 1
+	prevBlockRaw := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatUint(uint64(prevHeight), 10))
+	if *prevBlockRaw == "" {
+		return 0, ce.NewContractError(ce.ErrStateAccess, "no block found at height "+strconv.FormatUint(uint64(prevHeight), 10))
+	}
+	var prevHeader wire.BlockHeader
+	err = prevHeader.BtcDecode(bytes.NewReader([]byte(*prevBlockRaw)), wire.ProtocolVersion, wire.LatestEncoding)
+	if err != nil {
+		return 0, ce.NewContractError(ce.ErrStateAccess, "error decoding block at height "+strconv.FormatUint(uint64(prevHeight), 10))
+	}
+	prevHash := prevHeader.BlockHash()
+	if !newHeader.PrevBlock.IsEqual(&prevHash) {
+		return 0, ce.NewContractError(ce.ErrInput, "replacement block does not chain to block at height "+strconv.FormatUint(uint64(prevHeight), 10))
+	}
+
+	// overwrite the tip
+	sdk.StateSetObject(
+		constants.BlockPrefix+strconv.FormatUint(uint64(lastHeight), 10),
+		string(rawHeader[:]),
+	)
+
+	return lastHeight, nil
+}
+
 func HandleSeedBlocks(seedParams SeedBlocksParams, allowReseed bool) (uint32, error) {
 	lastHeight, err := LastHeightFromState()
 	if err != nil {
