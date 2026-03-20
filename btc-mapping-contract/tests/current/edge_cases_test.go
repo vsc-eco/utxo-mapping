@@ -933,7 +933,8 @@ func TestMapUpdatesSupply(t *testing.T) {
 func TestConfirmSpendPromotesUtxos(t *testing.T) {
 	const instruction = "deposit_to=hive:milo-hpr"
 	const fakeTxId0 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	const pendingTxId = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	// Build a real spend tx so its TxID can be verified via Merkle proof.
+	fixture := buildConfirmSpendFixture(t, 101)
 
 	ct := test_utils.NewContractTest()
 	t.Cleanup(func() { ct.DataLayer.Stop() })
@@ -947,28 +948,42 @@ func TestConfirmSpendPromotesUtxos(t *testing.T) {
 		{Id: 0, Amount: 2000},
 	})))
 	ct.StateSet(contractId, constants.UtxoPrefix+"40", depositUtxoBinary(t, fakeTxId0, 0, 5000, instruction))
-	ct.StateSet(contractId, constants.UtxoPrefix+"00", changeUtxoBinary(t, pendingTxId, 1, 2000))
+	ct.StateSet(contractId, constants.UtxoPrefix+"0", changeUtxoBinary(t, fixture.TxId, 0, 2000))
 	ct.StateSet(contractId, constants.UtxoLastIdKey, string([]byte{65, 1}))
-	ct.StateSet(contractId, constants.TxSpendsRegistryKey, string(mapping.MarshalTxSpendsRegistry(mapping.TxSpendsRegistry{pendingTxId})))
+	ct.StateSet(contractId, constants.TxSpendsRegistryKey, string(mapping.MarshalTxSpendsRegistry(mapping.TxSpendsRegistry{fixture.TxId})))
 
-	// The signing data is stored at d-<txid>; for confirmSpend to find the pending tx
-	// We need valid signing data with the change output's txid
-	ct.StateSet(contractId, constants.TxSpendsPrefix+pendingTxId, "dummy_signing_data")
+	sigData := mapping.SigningData{
+		Tx: []byte{0x01},
+		UnsignedSigHashes: []mapping.UnsignedSigHash{
+			{Index: 0, SigHash: []byte{0x00}, WitnessScript: []byte{0x00}},
+		},
+	}
+	sigDataBytes, err := mapping.MarshalSigningData(&sigData)
+	if err != nil {
+		t.Fatal("error marshalling signing data:", err)
+	}
+	ct.StateSet(contractId, constants.TxSpendsPrefix+fixture.TxId, string(sigDataBytes))
 
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
 		ActiveSupply: 7000,
 		UserSupply:   5000,
 		BaseFeeRate:  1,
 	})))
-	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.LastHeightKey, "101")
 	ct.StateSet(contractId, constants.BlockPrefix+"100", buildSeedHeaderRaw(t, time.Unix(0, 0)))
+	ct.StateSet(contractId, constants.BlockPrefix+"101", fixture.BlockHeaderRaw)
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
 
-	// Build a confirmation tx — this is what the mapping contract receives as proof
-	// that the pending spend was confirmed. We need to build a tx whose TxID matches pendingTxId.
-	// In practice confirmSpend just looks up the pending tx by ID and promotes the change UTXOs.
-	confirmPayload, _ := tinyjson.Marshal(mapping.ConfirmSpendParams{TxId: pendingTxId})
+	confirmPayload, _ := tinyjson.Marshal(mapping.ConfirmSpendParams{
+		TxData: &mapping.VerificationRequest{
+			BlockHeight:    fixture.BlockHeight,
+			RawTxHex:       fixture.RawTxHex,
+			MerkleProofHex: fixture.MerkleProofHex,
+			TxIndex:        fixture.TxIndex,
+		},
+		Indices: []uint32{0},
+	})
 
 	r := ct.Call(stateEngine.TxVscCallContract{
 		Self:       *basicSelf(t, "hive:milo-hpr"),
@@ -981,14 +996,7 @@ func TestConfirmSpendPromotesUtxos(t *testing.T) {
 
 	dumpStateDiff(t, r.StateDiff)
 
-	if r.Success {
-		t.Log("confirmSpend succeeded — UTXOs should be promoted")
-		// Signing data should be deleted
-		assert.Empty(t, ct.StateGet(contractId, constants.TxSpendsPrefix+pendingTxId),
-			"signing data should be removed after confirmation")
-	} else {
-		// confirmSpend may fail if the signing data format is invalid (we used "dummy")
-		// That's fine — the test verifies the action is callable and the path exists
-		t.Logf("confirmSpend result: success=%v err=%s", r.Success, r.ErrMsg)
-	}
+	assert.True(t, r.Success, "confirmSpend should succeed")
+	assert.Empty(t, ct.StateGet(contractId, constants.TxSpendsPrefix+fixture.TxId),
+		"signing data should be removed after confirmation")
 }

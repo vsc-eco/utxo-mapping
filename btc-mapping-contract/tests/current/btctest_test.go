@@ -232,6 +232,39 @@ func buildMapFixture(t *testing.T, instruction string, amount int64, blockHeight
 	}
 }
 
+// ConfirmSpendFixture holds all data needed to call the confirmSpend contract action.
+type ConfirmSpendFixture struct {
+	TxId           string
+	RawTxHex       string
+	MerkleProofHex string
+	TxIndex        uint32
+	BlockHeight    uint32
+	BlockHeaderRaw string // raw bytes as string, for state seeding
+}
+
+// buildConfirmSpendFixture creates a minimal "spend tx" paying to the contract's
+// change address, then wraps it in a single-tx block (MerkleRoot = TxHash,
+// empty proof, TxIndex = 0) so the on-chain Merkle verification trivially passes.
+func buildConfirmSpendFixture(t *testing.T, blockHeight uint32) ConfirmSpendFixture {
+	t.Helper()
+	changeAddr, _, err := mapping.AddressWithBackup(TestPrimaryPubKeyHex, TestBackupPubKeyHex, nil, regtestParams())
+	if err != nil {
+		t.Fatal("failed to derive change address:", err)
+	}
+	tx := buildTestTx(t, changeAddr, 2000)
+	txHash := tx.TxHash()
+	ts := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	header := buildRegtestHeader(chainhash.Hash{}, txHash, ts)
+	return ConfirmSpendFixture{
+		TxId:           tx.TxID(),
+		RawTxHex:       serializeTx(t, tx),
+		MerkleProofHex: "",
+		TxIndex:        0,
+		BlockHeight:    blockHeight,
+		BlockHeaderRaw: serializeHeaderRaw(t, header),
+	}
+}
+
 // buildSeedHeader creates a single standalone regtest block header (no prev
 // block) serialized to hex, ready for use in SeedBlocksParams.BlockHeader.
 func buildSeedHeader(t *testing.T, ts time.Time) string {

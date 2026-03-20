@@ -322,20 +322,19 @@ func DecreaseAllowance(input *string) *string {
 	return mapping.StrPtr("0")
 }
 
-// Confirms a pending spend transaction, promoting its unconfirmed change UTXOs
-// to the confirmed pool. Called by the bot when a withdrawal TX is broadcast.
+// Confirms a pending spend transaction by verifying its Merkle inclusion proof,
+// then promoting the unconfirmed change UTXOs at the specified output indices
+// to the confirmed pool.
 //
 //go:wasmexport confirmSpend
 func ConfirmSpend(input *string) *string {
-	checkAdmin()
-
 	var params mapping.ConfirmSpendParams
 	err := tinyjson.Unmarshal([]byte(*input), &params)
 	if err != nil {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
 	}
-	if params.TxId == "" {
-		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "tx_id required"))
+	if params.TxData == nil || params.TxData.RawTxHex == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "tx_data.raw_tx_hex required"))
 	}
 
 	publicKeys, err := loadPublicKeys()
@@ -348,7 +347,7 @@ func ConfirmSpend(input *string) *string {
 		ce.CustomAbort(err)
 	}
 
-	err = contractState.HandleConfirmSpend(params.TxId)
+	err = contractState.HandleConfirmSpend(params.TxData, params.Indices)
 	if err != nil {
 		ce.CustomAbort(err)
 	}

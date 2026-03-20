@@ -192,5 +192,7 @@ type AllowanceParams struct {
 
 //tinyjson:json
 type ConfirmSpendParams struct {
-	TxId string `json:"tx_id"`
+	TxData  *VerificationRequest `json:"tx_data"`
+	Indices []uint32             `json:"indices"`
 }
+

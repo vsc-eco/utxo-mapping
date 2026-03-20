@@ -248,11 +248,62 @@ func HandleDecreaseAllowance(owner, spender string, amount int64) error {
 	return nil
 }
 
-// HandleConfirmSpend confirms a pending spend transaction by promoting its
-// unconfirmed change UTXOs to the confirmed pool. Called by the bot/oracle
-// when a withdrawal transaction is confirmed on the Bitcoin network.
-func (cs *ContractState) HandleConfirmSpend(txId string) error {
-	return cs.updateUtxoSpends(txId)
+// HandleConfirmSpend confirms a pending spend transaction by verifying its
+// Merkle inclusion proof against the stored block headers, then promoting the
+// unconfirmed change UTXOs at the specified output indices to the confirmed pool.
+func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices []uint32) error {
+	rawTx, err := hex.DecodeString(txData.RawTxHex)
+	if err != nil {
+		return ce.WrapContractError(ce.ErrInput, err, "invalid raw tx hex")
+	}
+	if err := verifyTransaction(txData, rawTx); err != nil {
+		return ce.Prepend(err, "error verifying transaction")
+	}
+	var msgTx wire.MsgTx
+	if err := msgTx.Deserialize(bytes.NewReader(rawTx)); err != nil {
+		return ce.WrapContractError(ce.ErrInput, err, "could not deserialize transaction")
+	}
+	txId := msgTx.TxID()
+
+	indexSet := make(map[uint32]struct{}, len(indices))
+	for _, idx := range indices {
+		indexSet[idx] = struct{}{}
+	}
+
+	for i, entry := range cs.UtxoList {
+		if entry.Id >= constants.UtxoConfirmedPoolStart {
+			continue
+		}
+		utxo, err := loadUtxo(entry.Id)
+		if err != nil {
+			return err
+		}
+		if utxo.TxId != txId {
+			continue
+		}
+		if _, ok := indexSet[utxo.Vout]; !ok {
+			continue
+		}
+		newId, err := cs.allocateConfirmedId()
+		if err != nil {
+			return err
+		}
+		saveUtxo(newId, utxo)
+		sdk.StateDeleteObject(getUtxoKey(cs.UtxoList[i].Id))
+		cs.UtxoList[i].Id = newId
+	}
+
+	// Clean up signing data for this tx if present.
+	sdk.StateDeleteObject(constants.TxSpendsPrefix + txId)
+	for i, val := range cs.TxSpendsList {
+		if val == txId {
+			cs.TxSpendsList[i] = cs.TxSpendsList[len(cs.TxSpendsList)-1]
+			cs.TxSpendsList = cs.TxSpendsList[:len(cs.TxSpendsList)-1]
+			break
+		}
+	}
+
+	return nil
 }
 
 // handles a transfer where funds are drawn from the caller

@@ -17,12 +17,14 @@ import (
 
 // setupConfirmSpendContract creates a contract with an unmap state:
 // two confirmed UTXOs, a pending spend that consumed one and produced an unconfirmed change.
-func setupConfirmSpendContract(t *testing.T) (*test_utils.ContractTest, string, string) {
+// Returns the contract test, contract ID, and a ConfirmSpendFixture with the spend tx data.
+func setupConfirmSpendContract(t *testing.T) (*test_utils.ContractTest, string, ConfirmSpendFixture) {
 	t.Helper()
 	const instruction = "deposit_to=hive:milo-hpr"
 	const fakeTxId0 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	// spendTxId is the txId of the withdrawal transaction (what the bot broadcasts)
-	const spendTxId = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
+	// Build a real spend tx so its TxID can be verified via Merkle proof.
+	fixture := buildConfirmSpendFixture(t, 101)
 
 	ct := test_utils.NewContractTest()
 	t.Cleanup(func() { ct.DataLayer.Stop() })
@@ -36,46 +38,47 @@ func setupConfirmSpendContract(t *testing.T) (*test_utils.ContractTest, string, 
 		{Id: 0, Amount: 2000}, // unconfirmed change from the spend
 	})))
 	ct.StateSet(contractId, constants.UtxoPrefix+"40", depositUtxoBinary(t, fakeTxId0, 0, 5000, instruction))
-	ct.StateSet(contractId, constants.UtxoPrefix+"0", changeUtxoBinary(t, spendTxId, 1, 2000))
+	ct.StateSet(contractId, constants.UtxoPrefix+"0", changeUtxoBinary(t, fixture.TxId, 0, 2000))
 	ct.StateSet(contractId, constants.UtxoLastIdKey, string([]byte{65, 1}))
 
 	// Create signing data for the pending spend so updateUtxoSpends can find it.
-	// The signing data contains UnsignedSigHashes with the spend tx's change output index.
 	sigData := mapping.SigningData{
-		Tx: []byte{0x01}, // dummy tx bytes
+		Tx: []byte{0x01},
 		UnsignedSigHashes: []mapping.UnsignedSigHash{
-			{Index: 1, SigHash: []byte{0x00}, WitnessScript: []byte{0x00}},
+			{Index: 0, SigHash: []byte{0x00}, WitnessScript: []byte{0x00}},
 		},
 	}
 	sigDataBytes, err := mapping.MarshalSigningData(&sigData)
 	if err != nil {
 		t.Fatal("error marshalling signing data:", err)
 	}
-	ct.StateSet(contractId, constants.TxSpendsPrefix+spendTxId, string(sigDataBytes))
+	ct.StateSet(contractId, constants.TxSpendsPrefix+fixture.TxId, string(sigDataBytes))
 
 	// Tx spends registry with the pending spend
-	ct.StateSet(contractId, constants.TxSpendsRegistryKey, string(mapping.MarshalTxSpendsRegistry(mapping.TxSpendsRegistry{spendTxId})))
+	ct.StateSet(contractId, constants.TxSpendsRegistryKey, string(mapping.MarshalTxSpendsRegistry(mapping.TxSpendsRegistry{fixture.TxId})))
 
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
 		ActiveSupply: 5000,
 		UserSupply:   5000,
 		BaseFeeRate:  1,
 	})))
-	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.LastHeightKey, "101")
 	ct.StateSet(contractId, constants.BlockPrefix+"100", buildSeedHeaderRaw(t, time.Unix(0, 0)))
+	ct.StateSet(contractId, constants.BlockPrefix+"101", fixture.BlockHeaderRaw)
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
 
-	return &ct, contractId, spendTxId
+	return &ct, contractId, fixture
 }
 
 func callConfirmSpend(
 	t *testing.T,
 	ct *test_utils.ContractTest,
-	contractId, caller, txId string,
+	contractId, caller string,
+	params mapping.ConfirmSpendParams,
 ) test_utils.ContractTestCallResult {
 	t.Helper()
-	payload, err := tinyjson.Marshal(mapping.ConfirmSpendParams{TxId: txId})
+	payload, err := tinyjson.Marshal(params)
 	if err != nil {
 		t.Fatal("marshal confirmSpend payload:", err)
 	}
@@ -90,13 +93,21 @@ func callConfirmSpend(
 	})
 }
 
-// TestConfirmSpend verifies that calling confirmSpend with a known pending
-// spend txId promotes unconfirmed change UTXOs to the confirmed pool and
-// removes the spend from the pending registry.
+// TestConfirmSpend verifies that calling confirmSpend with a valid Merkle proof
+// and explicit UTXO indices promotes those unconfirmed UTXOs to the confirmed pool.
 func TestConfirmSpend(t *testing.T) {
-	ct, contractId, spendTxId := setupConfirmSpendContract(t)
+	ct, contractId, fixture := setupConfirmSpendContract(t)
 
-	r := callConfirmSpend(t, ct, contractId, "hive:milo-hpr", spendTxId)
+	params := mapping.ConfirmSpendParams{
+		TxData: &mapping.VerificationRequest{
+			BlockHeight:    fixture.BlockHeight,
+			RawTxHex:       fixture.RawTxHex,
+			MerkleProofHex: fixture.MerkleProofHex,
+			TxIndex:        fixture.TxIndex,
+		},
+		Indices: []uint32{0},
+	}
+	r := callConfirmSpend(t, ct, contractId, "hive:milo-hpr", params)
 	if r.Err != "" {
 		fmt.Printf("%s: %s\n", r.Err, r.ErrMsg)
 	}
@@ -105,7 +116,7 @@ func TestConfirmSpend(t *testing.T) {
 	dumpStateDiff(t, r.StateDiff)
 
 	// The pending spend entry should be removed
-	assert.Equal(t, "", ct.StateGet(contractId, constants.TxSpendsPrefix+spendTxId),
+	assert.Equal(t, "", ct.StateGet(contractId, constants.TxSpendsPrefix+fixture.TxId),
 		"signing data for confirmed spend should be deleted")
 
 	// The tx spends registry should be empty (no more pending spends)
@@ -113,34 +124,55 @@ func TestConfirmSpend(t *testing.T) {
 	if registryRaw != "" {
 		txSpends, err := mapping.UnmarshalTxSpendsRegistry([]byte(registryRaw))
 		assert.NoError(t, err)
-		assert.NotContains(t, txSpends, spendTxId, "spendTxId should be removed from registry")
+		assert.NotContains(t, txSpends, fixture.TxId, "spendTxId should be removed from registry")
 	}
 }
 
-// TestConfirmSpendUnknownTxId verifies that calling confirmSpend with a
-// non-existent txId is a successful no-op.
+// TestConfirmSpendUnknownTxId verifies that calling confirmSpend with a valid
+// proof for a tx not in the pending list is a successful no-op.
 func TestConfirmSpendUnknownTxId(t *testing.T) {
 	ct, contractId, _ := setupConfirmSpendContract(t)
 
-	unknownTxId := "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-	r := callConfirmSpend(t, ct, contractId, "hive:milo-hpr", unknownTxId)
+	// Build a different tx (not in the pending list) with its own block proof.
+	unknownFixture := buildConfirmSpendFixture(t, 102)
+	ct.StateSet(contractId, constants.BlockPrefix+"102", unknownFixture.BlockHeaderRaw)
+
+	params := mapping.ConfirmSpendParams{
+		TxData: &mapping.VerificationRequest{
+			BlockHeight:    unknownFixture.BlockHeight,
+			RawTxHex:       unknownFixture.RawTxHex,
+			MerkleProofHex: unknownFixture.MerkleProofHex,
+			TxIndex:        unknownFixture.TxIndex,
+		},
+		Indices: []uint32{0},
+	}
+	r := callConfirmSpend(t, ct, contractId, "hive:milo-hpr", params)
 	assert.True(t, r.Success, "confirmSpend with unknown txId should succeed (no-op)")
 }
 
-// TestConfirmSpendNotAdmin verifies that a non-admin caller is rejected.
-func TestConfirmSpendNotAdmin(t *testing.T) {
-	ct, contractId, spendTxId := setupConfirmSpendContract(t)
+// TestConfirmSpendAnyCallerCanConfirm verifies that any caller can call confirmSpend
+// (no admin requirement).
+func TestConfirmSpendAnyCallerCanConfirm(t *testing.T) {
+	ct, contractId, fixture := setupConfirmSpendContract(t)
 
-	r := callConfirmSpend(t, ct, contractId, "hive:unauthorized-user", spendTxId)
-	assert.False(t, r.Success, "confirmSpend by non-admin should fail")
-	assert.NotEmpty(t, r.Err)
+	params := mapping.ConfirmSpendParams{
+		TxData: &mapping.VerificationRequest{
+			BlockHeight:    fixture.BlockHeight,
+			RawTxHex:       fixture.RawTxHex,
+			MerkleProofHex: fixture.MerkleProofHex,
+			TxIndex:        fixture.TxIndex,
+		},
+		Indices: []uint32{0},
+	}
+	r := callConfirmSpend(t, ct, contractId, "hive:unauthorized-user", params)
+	assert.True(t, r.Success, "confirmSpend should succeed for any caller")
 }
 
-// TestConfirmSpendEmptyTxId verifies that an empty tx_id is rejected.
-func TestConfirmSpendEmptyTxId(t *testing.T) {
+// TestConfirmSpendEmptyRawTx verifies that a missing tx_data is rejected.
+func TestConfirmSpendEmptyRawTx(t *testing.T) {
 	ct, contractId, _ := setupConfirmSpendContract(t)
 
-	r := callConfirmSpend(t, ct, contractId, "hive:milo-hpr", "")
-	assert.False(t, r.Success, "confirmSpend with empty txId should fail")
+	r := callConfirmSpend(t, ct, contractId, "hive:milo-hpr", mapping.ConfirmSpendParams{})
+	assert.False(t, r.Success, "confirmSpend with missing tx_data should fail")
 	assert.NotEmpty(t, r.Err)
 }
