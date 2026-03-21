@@ -19,15 +19,20 @@ const dustThreshold = 546
 const splitThreshold = 1000000 // 0.01 BTC
 const maxChangeOutputs = 4
 
+// VscFeeMinSats is the minimum VSC protocol fee in satoshis.
+const VscFeeMinSats int64 = 0
+
+// VscFeeRateBps is the VSC protocol fee as basis points (1 bps = 0.01%).
+const VscFeeRateBps int64 = 0
+
 func calcVscFee(amount int64) (int64, error) {
-	const minFee int64 = 1000
-	const feeRateBps int64 = 100 // 100 basis points, 1%
+	if VscFeeMinSats == 0 && VscFeeRateBps == 0 {
+		return 0, nil
+	}
 	// divide first to avoid overflow on large amounts, then compensate for remainder
-	percentageFee := (amount / 10000) * feeRateBps
-	remainder := (amount % 10000) * feeRateBps / 10000
-	percentageFee += remainder
-	finalFee := minFee
-	if percentageFee > minFee {
+	percentageFee := (amount/10000)*VscFeeRateBps + (amount%10000)*VscFeeRateBps/10000
+	finalFee := VscFeeMinSats
+	if percentageFee > VscFeeMinSats {
 		finalFee = percentageFee
 	}
 	if finalFee >= amount {

@@ -151,10 +151,10 @@ func TestUnmapInsufficientBalance(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TestUnmapAmountLessThanFee — Unmap a very small amount (e.g., 100 sats)
-// that would be less than the minimum fee. Should fail.
+// TestUnmapAmountBelowDust — Unmap an amount below the dust threshold (546 sats).
+// Should fail because the BTC output would be unspendable.
 // ---------------------------------------------------------------------------
-func TestUnmapAmountLessThanFee(t *testing.T) {
+func TestUnmapAmountBelowDust(t *testing.T) {
 	const instruction = "deposit_to=hive:milo-hpr"
 	const fakeTxId0 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
@@ -179,8 +179,7 @@ func TestUnmapAmountLessThanFee(t *testing.T) {
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
 
-	// 100 sats is below the minimum VSC fee of 1000 sats
-	// calcVscFee returns error "transaction too small to cover fee" when fee >= amount
+	// 100 sats is below the dust threshold (546 sats) so the BTC output would be unspendable.
 	payload, err := tinyjson.Marshal(mapping.TransferParams{
 		Amount: "100",
 		To:     regtestDestAddress(t),
@@ -198,7 +197,7 @@ func TestUnmapAmountLessThanFee(t *testing.T) {
 		Intents:    []contracts.Intent{},
 	})
 
-	assert.False(t, r.Success, "unmap with amount less than minimum fee should fail")
+	assert.False(t, r.Success, "unmap with amount below dust threshold should fail")
 	assert.NotEmpty(t, r.Err, "should have an error message")
 	t.Logf("Expected error: %s: %s", r.Err, r.ErrMsg)
 }
@@ -450,8 +449,8 @@ func TestUnmapExactBalance(t *testing.T) {
 
 	// After unmap, balance should be less than original
 	remainingBal := ct.StateGet(contractId, constants.BalancePrefix+"hive:milo-hpr")
-	// vscFee for 50000 = max(1000, 50000*100/10000) = max(1000, 500) = 1000
-	// So remaining should be 100000 - 50000 - 1000 - btcFee = 49000 - btcFee
+	// vscFee = 0 (VscFeeMinSats=0, VscFeeRateBps=0)
+	// So remaining should be 100000 - 50000 - btcFee = 50000 - btcFee
 	t.Logf("remaining balance after unmap: %q", remainingBal)
 	// Verify it decreased significantly
 	if remainingBal != "" {
@@ -676,12 +675,11 @@ func TestUnmapSupplyUpdates(t *testing.T) {
 
 	t.Logf("supply after unmap: active=%d, user=%d, fee=%d", supply.ActiveSupply, supply.UserSupply, supply.FeeSupply)
 
-	// vscFee = max(1000, 20000*100/10000) = max(1000, 200) = 1000
-	// ActiveSupply should decrease by (amount + vscFee + btcFee)
+	// vscFee = 0 (VscFeeMinSats=0, VscFeeRateBps=0)
+	// ActiveSupply should decrease by (amount + btcFee)
 	assert.True(t, supply.ActiveSupply < balance, "active supply should decrease")
 	assert.True(t, supply.UserSupply < balance, "user supply should decrease")
-	assert.True(t, supply.FeeSupply > 0, "fee supply should increase (vsc fee collected)")
-	assert.Equal(t, int64(1000), supply.FeeSupply, "vsc fee for 20000 sats should be 1000 (minimum)")
+	assert.Equal(t, int64(0), supply.FeeSupply, "vsc fee should be 0")
 }
 
 // ---------------------------------------------------------------------------
