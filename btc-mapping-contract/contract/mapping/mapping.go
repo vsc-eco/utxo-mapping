@@ -219,6 +219,9 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string) error {
 				if err != nil {
 					return ce.WrapContractError(ce.ErrJson, err)
 				}
+				if swapResult.AmountOut == "" || swapResult.AmountOut == "0" {
+					return ce.NewContractError(ce.ErrInput, "swap returned zero amount out")
+				}
 			default:
 				// should never happen
 				continue

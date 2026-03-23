@@ -99,7 +99,11 @@ func AddBlocks(addBlocksInput *string) *string {
 	if err != nil {
 		ce.CustomAbort(err)
 	}
-	systemSupply.BaseFeeRate = addBlocksObj.LatestFee
+	latestFee := addBlocksObj.LatestFee
+	if latestFee == 0 {
+		latestFee = 1
+	}
+	systemSupply.BaseFeeRate = latestFee
 	mapping.SaveSupplyToState(systemSupply)
 	resultBuilder.WriteString(", base fee: " + strconv.FormatInt(systemSupply.BaseFeeRate, 10))
 

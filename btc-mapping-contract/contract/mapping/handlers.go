@@ -251,6 +251,11 @@ func HandleDecreaseAllowance(owner, spender string, amount int64) error {
 // HandleConfirmSpend confirms a pending spend transaction by verifying its
 // Merkle inclusion proof against the stored block headers, then promoting the
 // unconfirmed change UTXOs at the specified output indices to the confirmed pool.
+//
+// This function has no access control by design: it is trustlessly permissionless
+// because the caller must supply a valid SPV Merkle proof linking the transaction
+// to a block header already accepted by the contract. Without a valid proof the
+// call reverts, so no authorization check is needed.
 func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices []uint32) error {
 	rawTx, err := hex.DecodeString(txData.RawTxHex)
 	if err != nil {

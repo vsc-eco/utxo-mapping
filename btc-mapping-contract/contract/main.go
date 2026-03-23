@@ -205,7 +205,8 @@ func Unmap(tx *string) *string {
 	return mapping.StrPtr("0")
 }
 
-// Transfers funds from the Caller (immediate caller of the contract)
+// Transfers funds from the Caller (immediate caller of the contract).
+// The `from` field is ignored — transfers always draw from the caller's balance.
 //
 //go:wasmexport transfer
 func Transfer(tx *string) *string {
@@ -217,6 +218,9 @@ func Transfer(tx *string) *string {
 		)
 	}
 
+	// Enforce: transfer always uses caller as source
+	transferInstructions.From = ""
+
 	err = mapping.HandleTransfer(&transferInstructions)
 	if err != nil {
 		ce.CustomAbort(err)
@@ -226,6 +230,7 @@ func Transfer(tx *string) *string {
 }
 
 // Draws funds from a third-party account that has approved the caller.
+// Requires the `from` account to have set an allowance for the caller via `approve`.
 //
 //go:wasmexport transferFrom
 func TransferFrom(tx *string) *string {

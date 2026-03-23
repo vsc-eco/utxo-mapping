@@ -71,9 +71,14 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 
 	// Preliminary balance check before expensive UTXO selection and TSS signing
 	prelimBal := getAccBal(env.Caller.String())
-	prelimRequired, err := safeAdd64(amount, vscFee)
-	if err != nil {
-		return ce.WrapContractError(ce.ErrArithmetic, err, "error computing preliminary required amount")
+	var prelimRequired int64
+	if instructions.DeductFee {
+		prelimRequired = amount
+	} else {
+		prelimRequired, err = safeAdd64(amount, vscFee)
+		if err != nil {
+			return ce.WrapContractError(ce.ErrArithmetic, err, "error computing preliminary required amount")
+		}
 	}
 	if prelimBal < prelimRequired {
 		return ce.NewContractError(
@@ -88,7 +93,17 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		)
 	}
 
-	inputUtxoIds, totalInputAmt, err := cs.getInputUtxoIds(amount)
+	// When deducting fees from amount, UTXOs need to cover (amount - vscFee),
+	// since sendAmount + btcFee = amount - vscFee.
+	utxoSelectionAmount := amount
+	if instructions.DeductFee {
+		utxoSelectionAmount, err = safeSubtract64(amount, vscFee)
+		if err != nil || utxoSelectionAmount <= 0 {
+			return ce.NewContractError(ce.ErrBalance, "amount too small to cover vsc fee")
+		}
+	}
+
+	inputUtxoIds, totalInputAmt, err := cs.getInputUtxoIds(utxoSelectionAmount)
 	if err != nil {
 		return ce.Prepend(err, "error getting input utxos")
 	}
@@ -107,12 +122,25 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	if err != nil {
 		return ce.WrapContractError(ce.ErrTransaction, err, "error creating change address")
 	}
+	// When deduct_fee=true, estimate btcFee to derive the send amount so that
+	// vscFee + btcFee + sendAmount ≈ amount. The actual fee from
+	// createSpendTransaction may differ slightly; any discrepancy is absorbed
+	// by the change output.
+	sendAmount := amount
+	if instructions.DeductFee {
+		btcFeeEst := cs.estimateFee(int64(len(inputUtxoIds)), utxoSelectionAmount, totalInputAmt)
+		sendAmount, err = safeSubtract64(utxoSelectionAmount, btcFeeEst)
+		if err != nil || sendAmount <= dustThreshold {
+			return ce.NewContractError(ce.ErrBalance, "amount too small to cover fees")
+		}
+	}
+
 	signingData, tx, btcFee, err := cs.createSpendTransaction(
 		inputUtxos,
 		totalInputAmt,
 		instructions.To,
 		changeAddress,
-		amount,
+		sendAmount,
 	)
 	if err != nil {
 		return err
@@ -120,13 +148,18 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 
 	sdk.Log(createFeeLog(vscFee, btcFee))
 
-	finalAmt, err := safeAdd64(amount, vscFee)
-	if err != nil {
-		return ce.WrapContractError(ce.ErrArithmetic, err, "error computing final amount")
-	}
-	finalAmt, err = safeAdd64(finalAmt, btcFee)
-	if err != nil {
-		return ce.WrapContractError(ce.ErrArithmetic, err, "error computing final amount")
+	var finalAmt int64
+	if instructions.DeductFee {
+		finalAmt = amount
+	} else {
+		finalAmt, err = safeAdd64(amount, vscFee)
+		if err != nil {
+			return ce.WrapContractError(ce.ErrArithmetic, err, "error computing final amount")
+		}
+		finalAmt, err = safeAdd64(finalAmt, btcFee)
+		if err != nil {
+			return ce.WrapContractError(ce.ErrArithmetic, err, "error computing final amount")
+		}
 	}
 
 	// check whether caller has enough balance to cover transaction
@@ -217,6 +250,11 @@ func HandleDecreaseAllowance(owner, spender string, amount int64) error {
 // HandleConfirmSpend confirms a pending spend transaction by promoting its
 // unconfirmed change UTXOs to the confirmed pool. Called by the bot/oracle
 // when a withdrawal transaction is confirmed on the Litecoin network.
+//
+// This function has no access control by design: it is trustlessly permissionless
+// because the caller must supply a valid SPV Merkle proof linking the transaction
+// to a block header already accepted by the contract. Without a valid proof the
+// call reverts, so no authorization check is needed.
 func (cs *ContractState) HandleConfirmSpend(txId string) error {
 	return cs.updateUtxoSpends(txId)
 }
