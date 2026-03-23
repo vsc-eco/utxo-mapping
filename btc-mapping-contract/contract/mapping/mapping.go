@@ -199,20 +199,21 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string) error {
 					return ce.NewContractError(ce.ErrJson, "error marshalling swap instruction: "+err.Error())
 				}
 
-				sender := env.Sender.Address.String()
-				err = incAccBalance(sender, utxo.Amount)
+				selfAddr := "contract:" + env.ContractId
+				err = incAccBalance(selfAddr, utxo.Amount)
 				if err != nil {
 					return ce.NewContractError(ce.ErrStateAccess, "error getting sender account balance: "+err.Error())
 				}
 
-				// Approve the Router to spend the user's freshly-credited tokens.
-				// Allowance is always 0 here (cleaned up after each Router call),
-				// so we set directly without reading state.
-				setAllowance(sender, routerId, utxo.Amount)
+				// Approve the Router to spend the contract's freshly-credited tokens.
+				// The Router's preFundAsset uses env.Caller (this contract) as the From,
+				// and env.Caller when the Router calls back is "contract:<routerId>".
+				routerAddr := "contract:" + routerId
+				setAllowance(selfAddr, routerAddr, utxo.Amount)
 
 				swapResultStr := sdk.ContractCall(routerId, "execute", string(instrJson), &sdk.ContractCallOptions{})
 				// Clean up any remaining allowance after swap to prevent lingering authorization
-				setAllowance(sender, routerId, 0)
+				setAllowance(selfAddr, routerAddr, 0)
 				var swapResult SwapResult
 				err = tinyjson.Unmarshal([]byte(*swapResultStr), &swapResult)
 				if err != nil {

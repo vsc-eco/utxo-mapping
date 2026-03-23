@@ -137,7 +137,7 @@ func (cs *ContractState) parseInstructions(
 				return nil, ce.NewContractError(ce.ErrInput, "output network cannot be btc")
 			}
 			mappingType = MapSwap
-			if !strings.HasPrefix("user:", sdk.VerifyAddress(recipient)) {
+			if !strings.HasPrefix(sdk.VerifyAddress(recipient), "user:") {
 				return nil, ce.NewContractError(
 					ce.ErrInput,
 					"address \""+recipient+"\" is not a user address",
