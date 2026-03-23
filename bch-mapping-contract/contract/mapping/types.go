@@ -37,9 +37,10 @@ type AccountInfo struct {
 //
 //tinyjson:json
 type TransferParams struct {
-	Amount string `json:"amount"`
-	To     string `json:"to"`
-	From   string `json:"from,omitempty"`
+	Amount    string `json:"amount"`
+	To        string `json:"to"`
+	From      string `json:"from,omitempty"`
+	DeductFee bool   `json:"deduct_fee,omitempty"`
 }
 
 // Utxo stores full UTXO data indexed by a single-byte pool ID.

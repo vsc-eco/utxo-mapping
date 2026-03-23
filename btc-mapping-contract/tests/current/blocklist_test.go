@@ -1,6 +1,7 @@
 package current_test
 
 import (
+	btcMapping "btc-mapping-contract"
 	"btc-mapping-contract/contract/constants"
 	"encoding/json"
 	"strings"
@@ -259,6 +260,60 @@ func TestAllOperations(t *testing.T) {
 		// Self-transfer may or may not be allowed by the contract
 		// This tests the behavior either way
 		t.Logf("Self-transfer result: success=%v ret=%s", r.Success, r.Ret)
+	})
+
+	// ========== AddBlocks round-trip (block sequence bug) ==========
+	// Reproduces the testnet bug: after addBlocks stores block headers as raw
+	// bytes, the next addBlocks must read them back and verify chain continuity.
+	// Uses real BTC testnet3 block headers at heights 4888515 → 4888516 → 4888517.
+
+	t.Run("AddBlocks_RoundTrip_ChainContinuity", func(t *testing.T) {
+		rtId := "roundtrip_blocklist"
+		// Use testnet3 WASM since we're testing with real testnet3 block headers
+		w.ct.RegisterContract(rtId, testOwner, btcMapping.Testnet3Wasm)
+
+		// Real BTC testnet3 block headers fetched from btcd RPC.
+		// hash(4888515) = 00000000f570586692e115a950b812f359b27ac1441c91b91223163843504515
+		// hash(4888516) = 000000000923f265408b69969242b68fbec135b24761ac2f51cd60b53855dc1c
+		// hash(4888517) = 000000002e42abbf29b8d01a647c0b42521966edb88e87e11c80720de1135a39
+		block4888515Hex := "000000209bfa65ae0af2ba13fd4403312a44554123c4b972374fd1995adce62c0000000081af5bae21b11430df381ee109e51181f5ff4164f744f0747ce980cf43c6c73797b4bc69ffff001d28ffa61f"
+		block4888516Hex := "000000201545504338162312b9911c44c17ab259f312b850a915e192665870f500000000d2684baebc7ac8401ac29754247d1091bd3c6604bb4b26aeff107b6cfde0787648b9bc69ffff001d176c1809"
+		block4888517Hex := "000000201cdc5538b560cd512fac6147b235c1be8fb6429296698b4065f22309000000000061c5ef9468eb91177b04aabf349991b9000774ac4f87f747f07935d4ad9e3ffbbdbc69ffff001d89201fc7"
+
+		// Seed with block 4888515 stored as raw bytes (matching what the
+		// contract itself does in HandleAddBlocks line 124-126).
+		seedRaw := decodeHex(t, block4888515Hex)
+		w.ct.StateSet(rtId, constants.LastHeightKey, "4888515")
+		w.ct.StateSet(rtId, constants.BlockPrefix+"4888515", seedRaw)
+		// Supply: 4x int64 BE = 32 zero bytes for all-zero supply with base_fee=1
+		supply := make([]byte, 32)
+		supply[31] = 1 // base_fee_rate = 1
+		w.ct.StateSet(rtId, constants.SupplyKey, string(supply))
+
+		// Debug: verify the stored seed is readable
+		stored := w.ct.StateGet(rtId, constants.BlockPrefix+"4888515")
+		t.Logf("Stored seed length: %d, expected: 80", len(stored))
+		t.Logf("Stored seed hex: %x", []byte(stored)[:min(20, len(stored))])
+		t.Logf("Stored height: %s", w.ct.StateGet(rtId, constants.LastHeightKey))
+		t.Logf("Stored supply length: %d", len(w.ct.StateGet(rtId, constants.SupplyKey)))
+
+		// First addBlocks: submit block 4888516.
+		// Use oracle DID as caller (always allowed) to bypass auth issues in test
+		oracleCaller := "did:vsc:oracle:btc"
+		payload1 := `{"blocks":"` + block4888516Hex + `","latest_fee":0}`
+		r1 := callActionOnContract(t, w, rtId, "addBlocks", payload1, oracleCaller)
+		t.Logf("r1: success=%v err=%q errMsg=%q ret=%q", r1.Success, r1.Err, r1.ErrMsg, r1.Ret)
+		require.True(t, r1.Success, "first addBlocks (4888516) should succeed: %s %s", r1.Err, r1.ErrMsg)
+		assert.Contains(t, r1.Ret, "4888516")
+
+		// Second addBlocks: submit block 4888517.
+		// This reads back the raw bytes stored by the first call.
+		// If the raw byte round-trip corrupts the header, BlockHash()
+		// will differ and we get "block sequence incorrect".
+		payload2 := `{"blocks":"` + block4888517Hex + `","latest_fee":0}`
+		r2 := callActionOnContract(t, w, rtId, "addBlocks", payload2, oracleCaller)
+		require.True(t, r2.Success, "second addBlocks (4888517) should succeed: %s %s", r2.Err, r2.ErrMsg)
+		assert.Contains(t, r2.Ret, "4888517")
 	})
 
 	// ========== Unmap ==========

@@ -113,6 +113,8 @@ func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp1(in *jle
 			out.To = string(in.String())
 		case "from":
 			out.From = string(in.String())
+		case "deduct_fee":
+			out.DeductFee = bool(in.Bool())
 		default:
 			in.SkipRecursive()
 		}
@@ -141,6 +143,11 @@ func tinyjsonA043f2bcEncodeBtcMappingContractContractMappingTinyjsonTmp1(out *jw
 		const prefix string = ",\"from\":"
 		out.RawString(prefix)
 		out.String(string(in.From))
+	}
+	if in.DeductFee {
+		const prefix string = ",\"deduct_fee\":"
+		out.RawString(prefix)
+		out.Bool(bool(in.DeductFee))
 	}
 	out.RawByte('}')
 }

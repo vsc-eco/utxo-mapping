@@ -86,14 +86,9 @@ func AddBlocks(addBlocksInput *string) *string {
 	}
 
 	var resultBuilder strings.Builder
-	lastHeight, added, err := blocklist.HandleAddBlocks(blockHeaders, NetworkMode)
+	lastHeight, _, err := blocklist.HandleAddBlocks(blockHeaders, NetworkMode)
 	if err != nil {
-		if err != blocklist.ErrorSequenceIncorrect {
-			ce.CustomAbort(err)
-		} else {
-			resultBuilder.WriteString("error adding blocks: " + err.Error())
-			resultBuilder.WriteString(", added " + strconv.FormatUint(uint64(added), 10) + " blocks, ")
-		}
+		ce.CustomAbort(err)
 	}
 	resultBuilder.WriteString("last height: " + strconv.FormatUint(uint64(lastHeight), 10))
 
@@ -104,7 +99,11 @@ func AddBlocks(addBlocksInput *string) *string {
 	if err != nil {
 		ce.CustomAbort(err)
 	}
-	systemSupply.BaseFeeRate = addBlocksObj.LatestFee
+	latestFee := addBlocksObj.LatestFee
+	if latestFee == 0 {
+		latestFee = 1
+	}
+	systemSupply.BaseFeeRate = latestFee
 	mapping.SaveSupplyToState(systemSupply)
 	resultBuilder.WriteString(", base fee: " + strconv.FormatInt(systemSupply.BaseFeeRate, 10))
 

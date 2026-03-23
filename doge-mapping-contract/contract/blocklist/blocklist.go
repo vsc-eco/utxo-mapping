@@ -11,9 +11,6 @@ import (
 	"doge-mapping-contract/contract/constants"
 	ce "doge-mapping-contract/contract/contracterrors"
 
-	"github.com/btcsuite/btcd/blockchain"
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
 )
 
@@ -66,16 +63,12 @@ func DivideHeaderList(blocksHex *string) ([]BlockHeaderBytes, error) {
 	return blockHeaders, nil
 }
 
+// HandleAddBlocks validates and stores DOGE block headers.
+// DOGE uses Scrypt for PoW which is not available in btcsuite, so we skip PoW
+// validation and only verify header format and prev-block chain linkage.
+// The oracle consensus (2/3+ BLS signatures) provides the trust guarantee.
 func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32, error) {
-	var networkParams *chaincfg.Params
-	switch networkMode {
-	case constants.Testnet:
-		networkParams = &chaincfg.TestNet3Params
-	case constants.Regtest:
-		networkParams = &chaincfg.RegressionNetParams
-	default:
-		networkParams = &chaincfg.MainNetParams
-	}
+	_ = networkMode // DOGE testnet/mainnet use same 80-byte header format
 
 	lastHeight, err := LastHeightFromState()
 	if err != nil {
@@ -91,12 +84,9 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 		return 0, ce.NewContractError(ce.ErrInput, "error decoding block header: "+err.Error())
 	}
 
-	powLimit := networkParams.PowLimit
-
 	for _, headerBytes := range rawHeaders {
-		// won't happen for 130 years but just in case
 		if lastHeight == math.MaxUint32 {
-			return 0, ce.NewContractError(ce.ErrArithmetic, "bitcoin block height exceeds max possible")
+			return 0, ce.NewContractError(ce.ErrArithmetic, "block height exceeds max possible")
 		}
 		blockHeight := lastHeight + 1
 
@@ -104,13 +94,6 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 		err = blockHeader.BtcDecode(bytes.NewReader(headerBytes[:]), wire.ProtocolVersion, wire.LatestEncoding)
 		if err != nil {
 			return 0, ce.NewContractError(ce.ErrInput, "error decoding block header: "+err.Error())
-		}
-		msgBlock := wire.MsgBlock{Header: blockHeader}
-		if err := blockchain.CheckProofOfWork(btcutil.NewBlock(&msgBlock), powLimit); err != nil {
-			return 0, ce.NewContractError(
-				ce.ErrInput,
-				"block "+strconv.FormatUint(uint64(blockHeight), 10)+" failed PoW check: "+err.Error(),
-			)
 		}
 
 		lastBlockHash := lastBlockHeader.BlockHash()
@@ -131,18 +114,10 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 
 // HandleReplaceBlock replaces the block at the current tip height with a
 // corrected header. This is used to fix a stale/orphaned tip that prevents
-// new blocks from being appended. The replacement must pass PoW and chain
-// correctly to the block at height-1.
+// new blocks from being appended. The replacement must chain correctly to
+// the block at height-1. PoW is not checked (DOGE uses Scrypt).
 func HandleReplaceBlock(rawHeader BlockHeaderBytes, networkMode string) (uint32, error) {
-	var networkParams *chaincfg.Params
-	switch networkMode {
-	case constants.Testnet:
-		networkParams = &chaincfg.TestNet3Params
-	case constants.Regtest:
-		networkParams = &chaincfg.RegressionNetParams
-	default:
-		networkParams = &chaincfg.MainNetParams
-	}
+	_ = networkMode
 
 	lastHeight, err := LastHeightFromState()
 	if err != nil {
@@ -154,12 +129,6 @@ func HandleReplaceBlock(rawHeader BlockHeaderBytes, networkMode string) (uint32,
 	err = newHeader.BtcDecode(bytes.NewReader(rawHeader[:]), wire.ProtocolVersion, wire.LatestEncoding)
 	if err != nil {
 		return 0, ce.NewContractError(ce.ErrInput, "error decoding replacement header: "+err.Error())
-	}
-
-	// PoW check
-	msgBlock := wire.MsgBlock{Header: newHeader}
-	if err := blockchain.CheckProofOfWork(btcutil.NewBlock(&msgBlock), networkParams.PowLimit); err != nil {
-		return 0, ce.NewContractError(ce.ErrInput, "replacement block failed PoW check: "+err.Error())
 	}
 
 	// validate that the replacement chains to height-1
