@@ -50,6 +50,33 @@ func LastHeightToState(lastHeight uint32) {
 	sdk.StateSetObject(constants.LastHeightKey, strconv.FormatUint(uint64(lastHeight), 10))
 }
 
+// seedHeightFromState returns the original seed height, or 0 if not set.
+func seedHeightFromState() uint32 {
+	s := sdk.StateGetObject(constants.SeedHeightKey)
+	if *s == "" {
+		return 0
+	}
+	h, err := strconv.ParseUint(*s, 10, 32)
+	if err != nil {
+		return 0
+	}
+	return uint32(h)
+}
+
+// pruneFloorFromState returns the lowest height that hasn't been pruned yet.
+// This cursor avoids re-scanning already-pruned regions on each call.
+func pruneFloorFromState() uint32 {
+	s := sdk.StateGetObject(constants.PruneFloorKey)
+	if *s == "" {
+		return 0
+	}
+	h, err := strconv.ParseUint(*s, 10, 32)
+	if err != nil {
+		return 0
+	}
+	return uint32(h)
+}
+
 func DivideHeaderList(blocksHex *string) ([]BlockHeaderBytes, error) {
 	blockBytes, err := hex.DecodeString(*blocksHex)
 	if err != nil {
@@ -128,6 +155,34 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 		lastHeight = blockHeight
 		lastBlockHeader = blockHeader
 	}
+
+	// Prune old block headers beyond the retention window.
+	// Uses a floor cursor to avoid re-scanning already-pruned regions.
+	// When no cursor exists, defaults to the seed height. If the seed height
+	// is also unset (legacy), skips pruning until the cursor is established
+	// by a future seedBlocks call or manual state update.
+	retainFrom := int64(lastHeight) - int64(constants.MaxBlockRetention) + 1
+	if retainFrom > 0 {
+		pruneFloor := pruneFloorFromState()
+		if pruneFloor == 0 {
+			pruneFloor = seedHeightFromState()
+		}
+		if pruneFloor > 0 && int64(pruneFloor) < retainFrom {
+			pruned := 0
+			h := int64(pruneFloor)
+			for ; h < retainFrom && pruned < constants.MaxPrunePerCall; h++ {
+				key := constants.BlockPrefix + strconv.FormatInt(h, 10)
+				existing := sdk.StateGetObject(key)
+				if *existing != "" {
+					sdk.StateDeleteObject(key)
+					pruned++
+				}
+			}
+			// Save cursor so next call continues where we left off
+			sdk.StateSetObject(constants.PruneFloorKey, strconv.FormatInt(h, 10))
+		}
+	}
+
 	return lastHeight, nil
 }
 
@@ -212,6 +267,7 @@ func HandleSeedBlocks(seedParams SeedBlocksParams, allowReseed bool) (uint32, er
 			string(headerBytes),
 		)
 		sdk.StateSetObject(constants.LastHeightKey, strconv.FormatInt(int64(seedParams.BlockHeight), 10))
+		sdk.StateSetObject(constants.SeedHeightKey, strconv.FormatInt(int64(seedParams.BlockHeight), 10))
 		return seedParams.BlockHeight, nil
 	}
 
