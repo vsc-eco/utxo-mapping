@@ -159,34 +159,38 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 		lastBlockHeader = blockHeader
 	}
 
-	// Prune old block headers beyond the retention window.
-	// Uses a floor cursor to avoid re-scanning already-pruned regions.
-	// When no cursor exists, defaults to the seed height. If the seed height
-	// is also unset (legacy), skips pruning until the cursor is established
-	// by a future seedBlocks call or manual state update.
-	retainFrom := int64(lastHeight) - int64(constants.MaxBlockRetention) + 1
-	if retainFrom > 0 {
-		pruneFloor := pruneFloorFromState()
-		if pruneFloor == 0 {
-			pruneFloor = seedHeightFromState()
-		}
-		if pruneFloor > 0 && int64(pruneFloor) < retainFrom {
-			pruned := 0
-			h := int64(pruneFloor)
-			for ; h < retainFrom && pruned < constants.MaxPrunePerCall; h++ {
-				key := constants.BlockPrefix + strconv.FormatInt(h, 10)
-				existing := sdk.StateGetObject(key)
-				if existing != nil && *existing != "" {
-					sdk.StateDeleteObject(key)
-					pruned++
-				}
-			}
-			// Save cursor so next call continues where we left off
-			sdk.StateSetObject(constants.PruneFloorKey, strconv.FormatInt(h, 10))
-		}
-	}
+	PruneOldHeaders(lastHeight)
 
 	return lastHeight, nil
+}
+
+// PruneOldHeaders removes block headers beyond the retention window.
+// Uses a floor cursor to avoid re-scanning already-pruned regions.
+// Returns the number of headers pruned in this call.
+func PruneOldHeaders(lastHeight uint32) int {
+	retainFrom := int64(lastHeight) - int64(constants.MaxBlockRetention) + 1
+	if retainFrom <= 0 {
+		return 0
+	}
+	pruneFloor := pruneFloorFromState()
+	if pruneFloor == 0 {
+		pruneFloor = seedHeightFromState()
+	}
+	if pruneFloor == 0 || int64(pruneFloor) >= retainFrom {
+		return 0
+	}
+	pruned := 0
+	h := int64(pruneFloor)
+	for ; h < retainFrom && pruned < constants.MaxPrunePerCall; h++ {
+		key := constants.BlockPrefix + strconv.FormatInt(h, 10)
+		existing := sdk.StateGetObject(key)
+		if existing != nil && *existing != "" {
+			sdk.StateDeleteObject(key)
+			pruned++
+		}
+	}
+	sdk.StateSetObject(constants.PruneFloorKey, strconv.FormatInt(h, 10))
+	return pruned
 }
 
 // HandleReplaceBlock replaces the block at the current tip height with a

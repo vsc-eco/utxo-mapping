@@ -91,6 +91,24 @@ func InitPruning(input *string) *string {
 	return mapping.StrPtr("prune floor set to " + strconv.FormatUint(floor, 10))
 }
 
+// prune removes old block headers beyond the retention window.
+// Can be called independently of addBlocks to reduce state size.
+// Returns the number of headers pruned and the current prune floor.
+//
+//go:wasmexport prune
+func Prune(_ *string) *string {
+	checkAdmin()
+
+	lastHeight, err := blocklist.LastHeightFromState()
+	if err != nil {
+		ce.CustomAbort(ce.WrapContractError(ce.ErrStateAccess, err))
+	}
+
+	pruned := blocklist.PruneOldHeaders(lastHeight)
+
+	return mapping.StrPtr("pruned " + strconv.Itoa(pruned) + " headers, last height: " + strconv.FormatUint(uint64(lastHeight), 10))
+}
+
 //go:wasmexport addBlocks
 func AddBlocks(addBlocksInput *string) *string {
 	checkAdmin()
