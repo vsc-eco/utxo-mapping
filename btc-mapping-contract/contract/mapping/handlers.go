@@ -197,7 +197,7 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 
 	sdk.StateSetObject(constants.TxSpendsPrefix+tx.TxID(), string(signingDataBytes))
 	cs.TxSpendsList = append(cs.TxSpendsList, tx.TxID())
-	sdk.Log(createUnmapLog(tx.TxID()))
+	sdk.Log(createUnmapLog(tx.TxID(), env.Caller.String(), finalAmt, sendAmount))
 
 	// update supply
 	newActive, err := safeSubtract64(cs.Supply.ActiveSupply, finalAmt)
@@ -346,6 +346,8 @@ func HandleTransfer(instructions *TransferParams) error {
 		return ce.WrapContractError(ce.ErrArithmetic, err, "error incremting user balance")
 	}
 	setAccBal(instructions.To, newBal)
+
+	sdk.Log(createTransferLog(from, instructions.To, amount))
 
 	return nil
 }

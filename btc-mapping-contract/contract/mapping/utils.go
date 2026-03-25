@@ -487,14 +487,47 @@ func createFeeLog(vscFee, btcFee int64) string {
 	return b.String()
 }
 
-func createUnmapLog(txId string) string {
+func createTransferLog(from, to string, amount int64) string {
 	var b strings.Builder
-	b.Grow(71)
+	b.Grow(128)
+	b.WriteString("xfer")
+	b.WriteString(constants.LogDelimiter)
+	b.WriteString("f")
+	b.WriteString(constants.LogKeyDelimiter)
+	b.WriteString(from)
+	b.WriteString(constants.LogDelimiter)
+	b.WriteString("t")
+	b.WriteString(constants.LogKeyDelimiter)
+	b.WriteString(to)
+	b.WriteString(constants.LogDelimiter)
+	b.WriteString("a")
+	b.WriteString(constants.LogKeyDelimiter)
+	var buf [20]byte
+	b.Write(strconv.AppendInt(buf[:0], amount, 10))
+	return b.String()
+}
+
+func createUnmapLog(txId, from string, deducted, sent int64) string {
+	var b strings.Builder
+	b.Grow(128)
 	b.WriteString("unm")
 	b.WriteString(constants.LogDelimiter)
 	b.WriteString("id")
 	b.WriteString(constants.LogKeyDelimiter)
 	b.WriteString(txId)
+	b.WriteString(constants.LogDelimiter)
+	b.WriteString("f")
+	b.WriteString(constants.LogKeyDelimiter)
+	b.WriteString(from)
+	b.WriteString(constants.LogDelimiter)
+	b.WriteString("d")
+	b.WriteString(constants.LogKeyDelimiter)
+	var buf [20]byte
+	b.Write(strconv.AppendInt(buf[:0], deducted, 10))
+	b.WriteString(constants.LogDelimiter)
+	b.WriteString("s")
+	b.WriteString(constants.LogKeyDelimiter)
+	b.Write(strconv.AppendInt(buf[:0], sent, 10))
 	return b.String()
 }
 
