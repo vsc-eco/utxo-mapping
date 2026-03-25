@@ -62,6 +62,11 @@ func legacyBlockKey(height uint32) string {
 	return constants.BlockPrefix + strconv.FormatUint(uint64(height), 10)
 }
 
+// For heights 0-99, blockSlotKey(h) equals legacyBlockKey(h) (same state key).
+// Production chains use tip heights in the millions, so this overlap is irrelevant.
+// Reads still disambiguate: modulus values are blockSlotPayloadLen bytes (LE height + header);
+// legacy values are exactly 80 raw header bytes (see GetBlockHeaderBytes).
+
 func encodeBlockSlot(height uint32, raw [80]byte) string {
 	var buf [blockSlotPayloadLen]byte
 	binary.LittleEndian.PutUint32(buf[0:4], height)
@@ -81,6 +86,7 @@ func EncodeBlockSlot(height uint32, raw80 []byte) (string, error) {
 
 // GetBlockHeaderBytes returns the raw 80-byte header at height, using the modulus
 // ring buffer, with fallback to legacy per-height keys (pre-modulus deployments).
+// When slot and legacy keys collide (heights 0-99), len 84 vs len 80 distinguishes formats.
 func GetBlockHeaderBytes(height uint32) ([]byte, error) {
 	slot := sdk.StateGetObject(blockSlotKey(height))
 	if *slot != "" {
