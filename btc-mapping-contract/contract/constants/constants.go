@@ -23,6 +23,8 @@ const TxSpendsPrefix = "d" + DirPathDelimiter
 const SupplyKey = "s"
 
 const LastHeightKey = "h"
+const SeedHeightKey = "sh"
+const PruneFloorKey = "pf" // lowest unpruned block height, updated during pruning
 
 // Instruction URL search param keys
 const (
@@ -52,6 +54,15 @@ const PrimaryPublicKeyStateKey = "pubkey"
 const BackupPublicKeyStateKey = "backupkey"
 
 const BlockPrefix = "b" + DirPathDelimiter
+
+// MaxBlockRetention is the number of recent block headers to keep.
+// Older headers are pruned during addBlocks to prevent unbounded state growth.
+// 101 confirmations exceeds Thorchain's 100-confirmation security threshold.
+const MaxBlockRetention = 101
+
+// MaxPrunePerCall limits how many old headers are deleted in a single
+// addBlocks invocation to keep gas usage predictable.
+const MaxPrunePerCall = 50
 
 const (
 	Testnet3 string = "testnet3"

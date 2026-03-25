@@ -66,6 +66,31 @@ func SeedBlocks(blockSeedInput *string) *string {
 	return &outMsg
 }
 
+// initPruning sets the prune floor for contracts deployed before pruning was
+// added. Must be called once by the contract owner after a code upgrade.
+// The floor should be the original seed height (the lowest block header
+// stored in state). After this, addBlocks will automatically prune old headers.
+//
+//go:wasmexport initPruning
+func InitPruning(input *string) *string {
+	checkAdmin()
+
+	floor, err := strconv.ParseUint(*input, 10, 32)
+	if err != nil {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "expected block height as integer string"))
+	}
+
+	existing := sdk.StateGetObject(constants.PruneFloorKey)
+	if existing != nil && *existing != "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "prune floor already set"))
+	}
+
+	sdk.StateSetObject(constants.PruneFloorKey, strconv.FormatUint(floor, 10))
+	sdk.StateSetObject(constants.SeedHeightKey, strconv.FormatUint(floor, 10))
+
+	return mapping.StrPtr("prune floor set to " + strconv.FormatUint(floor, 10))
+}
+
 //go:wasmexport addBlocks
 func AddBlocks(addBlocksInput *string) *string {
 	checkAdmin()
