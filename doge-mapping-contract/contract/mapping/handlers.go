@@ -18,7 +18,7 @@ const MaxMerkleProofLength = 33 // 2^33 blocks > total BTC supply
 func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 	rawTx, err := hex.DecodeString(txData.RawTxHex)
 	if err != nil {
-		return ce.WrapContractError("", err)
+		return ce.WrapContractError(ce.ErrInvalidHex, err, "error decoding raw transaction hex")
 	}
 	if err := verifyTransaction(txData, rawTx); err != nil {
 		return ce.Prepend(err, "error verifying tranasction")
@@ -292,7 +292,7 @@ func HandleTransfer(instructions *TransferParams) error {
 
 	newBal, err := safeAdd64(recipientBal, amount)
 	if err != nil {
-		return ce.WrapContractError(ce.ErrArithmetic, err, "error incremting user balance")
+		return ce.WrapContractError(ce.ErrArithmetic, err, "error incrementing user balance")
 	}
 	setAccBal(instructions.To, newBal)
 

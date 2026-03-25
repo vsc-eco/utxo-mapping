@@ -56,7 +56,7 @@ func LastHeightToState(lastHeight uint32) {
 func DivideHeaderList(blocksHex *string) ([]BlockHeaderBytes, error) {
 	blockBytes, err := hex.DecodeString(*blocksHex)
 	if err != nil {
-		return nil, ce.WrapContractError(ce.ErrInvalidHex, err)
+		return nil, ce.WrapContractError(ce.ErrInvalidHex, err, "error decoding block headers hex")
 	}
 	if len(blockBytes)%80 != 0 {
 		return nil, ce.NewContractError(ce.ErrInput, "incorrect block length")
@@ -78,7 +78,7 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 
 	lastHeight, err := LastHeightFromState()
 	if err != nil {
-		return 0, 0, ce.WrapContractError(ce.ErrStateAccess, err)
+		return 0, 0, ce.WrapContractError(ce.ErrStateAccess, err, "error reading last block height")
 	}
 	initialLastHeight := lastHeight
 
@@ -128,7 +128,7 @@ func HandleReplaceBlock(rawHeader BlockHeaderBytes, networkMode string) (uint32,
 
 	lastHeight, err := LastHeightFromState()
 	if err != nil {
-		return 0, ce.WrapContractError(ce.ErrStateAccess, err)
+		return 0, ce.WrapContractError(ce.ErrStateAccess, err, "error reading last block height")
 	}
 
 	// decode the replacement header
