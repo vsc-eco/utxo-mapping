@@ -53,7 +53,7 @@ func LastHeightToState(lastHeight uint32) {
 // seedHeightFromState returns the original seed height, or 0 if not set.
 func seedHeightFromState() uint32 {
 	s := sdk.StateGetObject(constants.SeedHeightKey)
-	if *s == "" {
+	if s == nil || *s == "" {
 		return 0
 	}
 	h, err := strconv.ParseUint(*s, 10, 32)
@@ -67,7 +67,7 @@ func seedHeightFromState() uint32 {
 // This cursor avoids re-scanning already-pruned regions on each call.
 func pruneFloorFromState() uint32 {
 	s := sdk.StateGetObject(constants.PruneFloorKey)
-	if *s == "" {
+	if s == nil || *s == "" {
 		return 0
 	}
 	h, err := strconv.ParseUint(*s, 10, 32)
@@ -173,7 +173,7 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 			for ; h < retainFrom && pruned < constants.MaxPrunePerCall; h++ {
 				key := constants.BlockPrefix + strconv.FormatInt(h, 10)
 				existing := sdk.StateGetObject(key)
-				if *existing != "" {
+				if existing != nil && *existing != "" {
 					sdk.StateDeleteObject(key)
 					pruned++
 				}

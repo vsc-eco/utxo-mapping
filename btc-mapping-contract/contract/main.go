@@ -81,7 +81,7 @@ func InitPruning(input *string) *string {
 	}
 
 	existing := sdk.StateGetObject(constants.PruneFloorKey)
-	if *existing != "" {
+	if existing != nil && *existing != "" {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "prune floor already set"))
 	}
 
