@@ -3,6 +3,7 @@ package blocklist
 import (
 	"btc-mapping-contract/sdk"
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"math"
@@ -18,6 +19,8 @@ import (
 )
 
 type BlockHeaderBytes [80]byte
+
+const blockSlotPayloadLen = 4 + 80 // LE uint32 height + raw header
 
 //tinyjson:json
 type AddBlocksParams struct {
@@ -50,31 +53,55 @@ func LastHeightToState(lastHeight uint32) {
 	sdk.StateSetObject(constants.LastHeightKey, strconv.FormatUint(uint64(lastHeight), 10))
 }
 
-// seedHeightFromState returns the original seed height, or 0 if not set.
-func seedHeightFromState() uint32 {
-	s := sdk.StateGetObject(constants.SeedHeightKey)
-	if *s == "" {
-		return 0
-	}
-	h, err := strconv.ParseUint(*s, 10, 32)
-	if err != nil {
-		return 0
-	}
-	return uint32(h)
+func blockSlotKey(height uint32) string {
+	mod := height % constants.BlockHeaderModulus
+	return constants.BlockPrefix + strconv.FormatUint(uint64(mod), 10)
 }
 
-// pruneFloorFromState returns the lowest height that hasn't been pruned yet.
-// This cursor avoids re-scanning already-pruned regions on each call.
-func pruneFloorFromState() uint32 {
-	s := sdk.StateGetObject(constants.PruneFloorKey)
-	if *s == "" {
-		return 0
+func legacyBlockKey(height uint32) string {
+	return constants.BlockPrefix + strconv.FormatUint(uint64(height), 10)
+}
+
+func encodeBlockSlot(height uint32, raw [80]byte) string {
+	var buf [blockSlotPayloadLen]byte
+	binary.LittleEndian.PutUint32(buf[0:4], height)
+	copy(buf[4:], raw[:])
+	return string(buf[:])
+}
+
+// EncodeBlockSlot packs height + 80-byte header for contract state (tests / tooling).
+func EncodeBlockSlot(height uint32, raw80 []byte) (string, error) {
+	if len(raw80) != 80 {
+		return "", ce.NewContractError(ce.ErrInput, "header must be 80 bytes")
 	}
-	h, err := strconv.ParseUint(*s, 10, 32)
-	if err != nil {
-		return 0
+	var fixed [80]byte
+	copy(fixed[:], raw80)
+	return encodeBlockSlot(height, fixed), nil
+}
+
+// GetBlockHeaderBytes returns the raw 80-byte header at height, using the modulus
+// ring buffer, with fallback to legacy per-height keys (pre-modulus deployments).
+func GetBlockHeaderBytes(height uint32) ([]byte, error) {
+	slot := sdk.StateGetObject(blockSlotKey(height))
+	if *slot != "" {
+		b := []byte(*slot)
+		if len(b) == blockSlotPayloadLen {
+			got := binary.LittleEndian.Uint32(b[0:4])
+			if uint32(got) == height {
+				out := make([]byte, 80)
+				copy(out, b[4:])
+				return out, nil
+			}
+		}
 	}
-	return uint32(h)
+	legacy := sdk.StateGetObject(legacyBlockKey(height))
+	if *legacy != "" && len(*legacy) == 80 {
+		return []byte(*legacy), nil
+	}
+	return nil, ce.NewContractError(
+		ce.ErrStateAccess,
+		"no block header at height "+strconv.FormatUint(uint64(height), 10),
+	)
 }
 
 func DivideHeaderList(blocksHex *string) ([]BlockHeaderBytes, error) {
@@ -111,9 +138,10 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 		return 0, ce.WrapContractError(ce.ErrStateAccess, err)
 	}
 
-	// block headers stored as raw 80 bytes
-	lastBlockRaw := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatInt(int64(lastHeight), 10))
-	lastBlockBytes := []byte(*lastBlockRaw)
+	lastBlockBytes, err := GetBlockHeaderBytes(lastHeight)
+	if err != nil {
+		return 0, err
+	}
 	var lastBlockHeader wire.BlockHeader
 	err = lastBlockHeader.BtcDecode(bytes.NewReader(lastBlockBytes), wire.ProtocolVersion, wire.LatestEncoding)
 	if err != nil {
@@ -123,7 +151,6 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 	powLimit := networkParams.PowLimit
 
 	for _, headerBytes := range rawHeaders {
-		// won't happen for 130 years but just in case
 		if lastHeight == math.MaxUint32 {
 			return 0, ce.NewContractError(ce.ErrArithmetic, "bitcoin block height exceeds max possible")
 		}
@@ -147,49 +174,14 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 			return 0, ce.NewContractError(ce.ErrInput, "block sequence incorrect")
 		}
 
-		// store raw 80 bytes (not hex)
-		sdk.StateSetObject(
-			constants.BlockPrefix+strconv.FormatUint(uint64(blockHeight), 10),
-			string(headerBytes[:]),
-		)
+		sdk.StateSetObject(blockSlotKey(blockHeight), encodeBlockSlot(blockHeight, headerBytes))
 		lastHeight = blockHeight
 		lastBlockHeader = blockHeader
-	}
-
-	// Prune old block headers beyond the retention window.
-	// Uses a floor cursor to avoid re-scanning already-pruned regions.
-	// When no cursor exists, defaults to the seed height. If the seed height
-	// is also unset (legacy), skips pruning until the cursor is established
-	// by a future seedBlocks call or manual state update.
-	retainFrom := int64(lastHeight) - int64(constants.MaxBlockRetention) + 1
-	if retainFrom > 0 {
-		pruneFloor := pruneFloorFromState()
-		if pruneFloor == 0 {
-			pruneFloor = seedHeightFromState()
-		}
-		if pruneFloor > 0 && int64(pruneFloor) < retainFrom {
-			pruned := 0
-			h := int64(pruneFloor)
-			for ; h < retainFrom && pruned < constants.MaxPrunePerCall; h++ {
-				key := constants.BlockPrefix + strconv.FormatInt(h, 10)
-				existing := sdk.StateGetObject(key)
-				if *existing != "" {
-					sdk.StateDeleteObject(key)
-					pruned++
-				}
-			}
-			// Save cursor so next call continues where we left off
-			sdk.StateSetObject(constants.PruneFloorKey, strconv.FormatInt(h, 10))
-		}
 	}
 
 	return lastHeight, nil
 }
 
-// HandleReplaceBlock replaces the block at the current tip height with a
-// corrected header. This is used to fix a stale/orphaned tip that prevents
-// new blocks from being appended. The replacement must pass PoW and chain
-// correctly to the block at height-1.
 func HandleReplaceBlock(rawHeader BlockHeaderBytes, networkMode string) (uint32, error) {
 	var networkParams *chaincfg.Params
 	switch networkMode {
@@ -208,27 +200,24 @@ func HandleReplaceBlock(rawHeader BlockHeaderBytes, networkMode string) (uint32,
 		return 0, ce.WrapContractError(ce.ErrStateAccess, err)
 	}
 
-	// decode the replacement header
 	var newHeader wire.BlockHeader
 	err = newHeader.BtcDecode(bytes.NewReader(rawHeader[:]), wire.ProtocolVersion, wire.LatestEncoding)
 	if err != nil {
 		return 0, ce.NewContractError(ce.ErrInput, "error decoding replacement header: "+err.Error())
 	}
 
-	// PoW check
 	msgBlock := wire.MsgBlock{Header: newHeader}
 	if err := blockchain.CheckProofOfWork(btcutil.NewBlock(&msgBlock), networkParams.PowLimit); err != nil {
 		return 0, ce.NewContractError(ce.ErrInput, "replacement block failed PoW check: "+err.Error())
 	}
 
-	// validate that the replacement chains to height-1
 	prevHeight := lastHeight - 1
-	prevBlockRaw := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatUint(uint64(prevHeight), 10))
-	if *prevBlockRaw == "" {
-		return 0, ce.NewContractError(ce.ErrStateAccess, "no block found at height "+strconv.FormatUint(uint64(prevHeight), 10))
+	prevBlockBytes, err := GetBlockHeaderBytes(prevHeight)
+	if err != nil {
+		return 0, err
 	}
 	var prevHeader wire.BlockHeader
-	err = prevHeader.BtcDecode(bytes.NewReader([]byte(*prevBlockRaw)), wire.ProtocolVersion, wire.LatestEncoding)
+	err = prevHeader.BtcDecode(bytes.NewReader(prevBlockBytes), wire.ProtocolVersion, wire.LatestEncoding)
 	if err != nil {
 		return 0, ce.NewContractError(ce.ErrStateAccess, "error decoding block at height "+strconv.FormatUint(uint64(prevHeight), 10))
 	}
@@ -237,11 +226,7 @@ func HandleReplaceBlock(rawHeader BlockHeaderBytes, networkMode string) (uint32,
 		return 0, ce.NewContractError(ce.ErrInput, "replacement block does not chain to block at height "+strconv.FormatUint(uint64(prevHeight), 10))
 	}
 
-	// overwrite the tip
-	sdk.StateSetObject(
-		constants.BlockPrefix+strconv.FormatUint(uint64(lastHeight), 10),
-		string(rawHeader[:]),
-	)
+	sdk.StateSetObject(blockSlotKey(lastHeight), encodeBlockSlot(lastHeight, rawHeader))
 
 	return lastHeight, nil
 }
@@ -257,15 +242,16 @@ func HandleSeedBlocks(seedParams SeedBlocksParams, allowReseed bool) (uint32, er
 	}
 
 	if lastHeight == 0 || lastHeight < seedParams.BlockHeight {
-		// decode hex input → store raw bytes
 		headerBytes, err := hex.DecodeString(seedParams.BlockHeader)
 		if err != nil {
 			return 0, ce.WrapContractError(ce.ErrInvalidHex, err, "invalid block header hex")
 		}
-		sdk.StateSetObject(
-			constants.BlockPrefix+strconv.FormatInt(int64(seedParams.BlockHeight), 10),
-			string(headerBytes),
-		)
+		if len(headerBytes) != 80 {
+			return 0, ce.NewContractError(ce.ErrInput, "block header must be 80 bytes")
+		}
+		var fixed [80]byte
+		copy(fixed[:], headerBytes)
+		sdk.StateSetObject(blockSlotKey(seedParams.BlockHeight), encodeBlockSlot(seedParams.BlockHeight, fixed))
 		sdk.StateSetObject(constants.LastHeightKey, strconv.FormatInt(int64(seedParams.BlockHeight), 10))
 		sdk.StateSetObject(constants.SeedHeightKey, strconv.FormatInt(int64(seedParams.BlockHeight), 10))
 		return seedParams.BlockHeight, nil

@@ -32,7 +32,7 @@ func TestMap(t *testing.T) {
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
 	ct.StateSet(contractId, constants.LastHeightKey, "100")
-	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
+	setBlockHeaderForHeight(t, &ct, contractId, 100, decodeHex(t, fixture.BlockHeaderHex))
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
 
@@ -110,7 +110,7 @@ func TestUnmap(t *testing.T) {
 		BaseFeeRate:  1,
 	})))
 	ct.StateSet(contractId, constants.LastHeightKey, "100")
-	ct.StateSet(contractId, constants.BlockPrefix+"100", buildSeedHeaderRaw(t, time.Unix(0, 0)))
+	setBlockHeaderForHeight(t, &ct, contractId, 100, buildSeedHeaderRaw(t, time.Unix(0, 0)))
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
 
@@ -247,7 +247,7 @@ func TestAddBlocks(t *testing.T) {
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 	ct.StateSet(contractId, constants.LastHeightKey, "100")
-	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, seedHex))
+	setBlockHeaderForHeight(t, &ct, contractId, 100, decodeHex(t, seedHex))
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
 
 	payload, err := tinyjson.Marshal(blocklist.AddBlocksParams{

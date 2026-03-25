@@ -24,7 +24,6 @@ const SupplyKey = "s"
 
 const LastHeightKey = "h"
 const SeedHeightKey = "sh"
-const PruneFloorKey = "pf" // lowest unpruned block height, updated during pruning
 
 // Instruction URL search param keys
 const (
@@ -55,14 +54,10 @@ const BackupPublicKeyStateKey = "backupkey"
 
 const BlockPrefix = "b" + DirPathDelimiter
 
-// MaxBlockRetention is the number of recent block headers to keep.
-// Older headers are pruned during addBlocks to prevent unbounded state growth.
-// 101 confirmations exceeds Thorchain's 100-confirmation security threshold.
-const MaxBlockRetention = 101
-
-// MaxPrunePerCall limits how many old headers are deleted in a single
-// addBlocks invocation to keep gas usage predictable.
-const MaxPrunePerCall = 50
+// BlockHeaderModulus is the number of state slots for recent headers (b/0 … b/99).
+// Each slot stores height (4-byte LE) + 80-byte header; key is height % modulus.
+// Proofs need the header at a specific height within the last ~100 blocks of the tip.
+const BlockHeaderModulus = 100
 
 const (
 	Testnet3 string = "testnet3"

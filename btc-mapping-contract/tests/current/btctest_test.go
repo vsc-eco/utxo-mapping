@@ -6,10 +6,14 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"math/bits"
+	"strconv"
 	"testing"
 	"time"
 
+	"btc-mapping-contract/contract/blocklist"
+	"btc-mapping-contract/contract/constants"
 	"btc-mapping-contract/contract/mapping"
+	"vsc-node/lib/test_utils"
 
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/btcutil"
@@ -17,7 +21,19 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/stretchr/testify/require"
 )
+
+// setBlockHeaderForHeight seeds state for a BTC header at height using the contract's
+// modulus ring (key = height % BlockHeaderModulus, value = LE height + 80-byte header).
+func setBlockHeaderForHeight(t *testing.T, ct *test_utils.ContractTest, contractId string, height uint32, raw80 string) {
+	t.Helper()
+	require.Len(t, raw80, 80)
+	packed, err := blocklist.EncodeBlockSlot(height, []byte(raw80))
+	require.NoError(t, err)
+	slot := strconv.FormatUint(uint64(height%constants.BlockHeaderModulus), 10)
+	ct.StateSet(contractId, constants.BlockPrefix+slot, packed)
+}
 
 // Well-known secp256k1 test vectors: private keys 1 and 2.
 const (

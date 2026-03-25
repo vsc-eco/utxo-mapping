@@ -134,6 +134,8 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		if err != nil || sendAmount <= dustThreshold {
 			return ce.NewContractError(ce.ErrBalance, "amount too small to cover fees")
 		}
+	} else if amount <= dustThreshold {
+		return ce.NewContractError(ce.ErrInput, "amount below dust threshold")
 	}
 
 	signingData, tx, btcFee, err := cs.createSpendTransaction(

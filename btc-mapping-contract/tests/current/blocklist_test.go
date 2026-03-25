@@ -4,6 +4,7 @@ import (
 	btcMapping "btc-mapping-contract"
 	"btc-mapping-contract/contract/constants"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -24,6 +25,18 @@ const lastBlockHeight = "116087"
 const lastBlockHeader = "00c0a520165303733ee5b0561d46da9dcce685fd12a807d64472931c46d5920c00000000c96f929654fc44fb69783b6cc4f2340ad85de5b10c5047836561901299ed23d162525469ffff001dda00dd53"
 
 const twoBlocksPayload = `{"blocks":"00c0fa213b04801d1b66efcf8f41290a675777893f5c6ac158a585654263ba0900000000fdf6162d92eee3af012f1ddab30a401bb371a0da32371d185fc25eb3655fd6d013575469ffff001db80220f80000002002883f9d7847a35a0d371cd11bf95c0f9d252ed41f46dde04172bf0c000000003d2af3ae86b3638665e6214df4dc12712fd7486348c3c319cedb3c69bc8a4ddac45b5469ffff001d1adfdc74","latest_fee":1}`
+
+func seedBlocksViaState(t *testing.T, w *ctWrapper) {
+	seedBlocksViaStateForContract(t, w, testContractId)
+}
+
+func seedBlocksViaStateForContract(t *testing.T, w *ctWrapper, contractId string) {
+	w.ct.StateSet(contractId, constants.LastHeightKey, lastBlockHeight)
+	lh, err := strconv.ParseUint(lastBlockHeight, 10, 32)
+	require.NoError(t, err)
+	setBlockHeaderForHeight(t, w.ct, contractId, uint32(lh), decodeHex(t, lastBlockHeader))
+	w.ct.StateSet(contractId, "sply", `{"active_supply":0,"user_supply":0,"fee_supply":0,"base_fee_rate":1}`)
+}
 
 type ctWrapper struct {
 	ct *test_utils.ContractTest
@@ -62,16 +75,6 @@ func callActionOnContract(
 	})
 }
 
-func seedBlocksViaState(w *ctWrapper) {
-	seedBlocksViaStateForContract(w, testContractId)
-}
-
-func seedBlocksViaStateForContract(w *ctWrapper, contractId string) {
-	w.ct.StateSet(contractId, constants.LastHeightKey, lastBlockHeight)
-	w.ct.StateSet(contractId, constants.BlockPrefix+lastBlockHeight, lastBlockHeader)
-	w.ct.StateSet(contractId, "sply", `{"active_supply":0,"user_supply":0,"fee_supply":0,"base_fee_rate":1}`)
-}
-
 // TestAllOperations runs all contract tests within a single ContractTest
 // to avoid Badger DB lock conflicts.
 func TestAllOperations(t *testing.T) {
@@ -96,7 +99,7 @@ func TestAllOperations(t *testing.T) {
 
 	// ========== AddBlocks ==========
 
-	seedBlocksViaState(w)
+	seedBlocksViaState(t, w)
 
 	t.Run("AddBlocks_NonOwnerFails", func(t *testing.T) {
 		r := callAction(t, w, "addBlocks", twoBlocksPayload, "hive:attacker")
@@ -121,14 +124,14 @@ func TestAllOperations(t *testing.T) {
 	})
 
 	t.Run("AddBlocks_WrongSequenceFails", func(t *testing.T) {
-		seedBlocksViaState(w)
+		seedBlocksViaState(t, w)
 		fakeBlock := strings.Repeat("00", 80)
 		r := callAction(t, w, "addBlocks", `{"blocks":"`+fakeBlock+`","latest_fee":1}`, "")
 		assert.False(t, r.Success, "addBlocks with wrong prev-block sequence should fail")
 	})
 
 	t.Run("AddBlocks_EmptyBlocksNoOp", func(t *testing.T) {
-		seedBlocksViaState(w)
+		seedBlocksViaState(t, w)
 		r := callAction(t, w, "addBlocks", `{"blocks":"","latest_fee":1}`, "")
 		if r.Success {
 			assert.Contains(t, r.Ret, "last height:")
@@ -282,17 +285,16 @@ func TestAllOperations(t *testing.T) {
 
 		// Seed with block 4888515 stored as raw bytes (matching what the
 		// contract itself does in HandleAddBlocks line 124-126).
-		seedRaw := decodeHex(t, block4888515Hex)
 		w.ct.StateSet(rtId, constants.LastHeightKey, "4888515")
-		w.ct.StateSet(rtId, constants.BlockPrefix+"4888515", seedRaw)
+		setBlockHeaderForHeight(t, w.ct, rtId, 4888515, decodeHex(t, block4888515Hex))
 		// Supply: 4x int64 BE = 32 zero bytes for all-zero supply with base_fee=1
 		supply := make([]byte, 32)
 		supply[31] = 1 // base_fee_rate = 1
 		w.ct.StateSet(rtId, constants.SupplyKey, string(supply))
 
 		// Debug: verify the stored seed is readable
-		stored := w.ct.StateGet(rtId, constants.BlockPrefix+"4888515")
-		t.Logf("Stored seed length: %d, expected: 80", len(stored))
+		stored := w.ct.StateGet(rtId, constants.BlockPrefix+"15") // 4888515 % 100
+		t.Logf("Stored seed length: %d (packed slot = 4 + 80)", len(stored))
 		t.Logf("Stored seed hex: %x", []byte(stored)[:min(20, len(stored))])
 		t.Logf("Stored height: %s", w.ct.StateGet(rtId, constants.LastHeightKey))
 		t.Logf("Stored supply length: %d", len(w.ct.StateGet(rtId, constants.SupplyKey)))

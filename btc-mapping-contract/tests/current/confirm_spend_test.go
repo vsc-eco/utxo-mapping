@@ -63,8 +63,8 @@ func setupConfirmSpendContract(t *testing.T) (*test_utils.ContractTest, string, 
 		BaseFeeRate:  1,
 	})))
 	ct.StateSet(contractId, constants.LastHeightKey, "101")
-	ct.StateSet(contractId, constants.BlockPrefix+"100", buildSeedHeaderRaw(t, time.Unix(0, 0)))
-	ct.StateSet(contractId, constants.BlockPrefix+"101", fixture.BlockHeaderRaw)
+	setBlockHeaderForHeight(t, &ct, contractId, 100, buildSeedHeaderRaw(t, time.Unix(0, 0)))
+	setBlockHeaderForHeight(t, &ct, contractId, 101, fixture.BlockHeaderRaw)
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
 
@@ -135,7 +135,7 @@ func TestConfirmSpendUnknownTxId(t *testing.T) {
 
 	// Build a different tx (not in the pending list) with its own block proof.
 	unknownFixture := buildConfirmSpendFixture(t, 102)
-	ct.StateSet(contractId, constants.BlockPrefix+"102", unknownFixture.BlockHeaderRaw)
+	setBlockHeaderForHeight(t, ct, contractId, 102, unknownFixture.BlockHeaderRaw)
 
 	params := mapping.ConfirmSpendParams{
 		TxData: &mapping.VerificationRequest{

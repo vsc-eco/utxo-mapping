@@ -37,7 +37,7 @@ func TestDoubleMapSameUtxo(t *testing.T) {
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
 	ct.StateSet(contractId, constants.LastHeightKey, "100")
-	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
+	setBlockHeaderForHeight(t, &ct, contractId, 100, decodeHex(t, fixture.BlockHeaderHex))
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
 
@@ -123,7 +123,7 @@ func TestUnmapInsufficientBalance(t *testing.T) {
 		BaseFeeRate:  1,
 	})))
 	ct.StateSet(contractId, constants.LastHeightKey, "100")
-	ct.StateSet(contractId, constants.BlockPrefix+"100", buildSeedHeaderRaw(t, time.Unix(0, 0)))
+	setBlockHeaderForHeight(t, &ct, contractId, 100, buildSeedHeaderRaw(t, time.Unix(0, 0)))
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
 
@@ -175,7 +175,7 @@ func TestUnmapAmountBelowDust(t *testing.T) {
 		BaseFeeRate:  1,
 	})))
 	ct.StateSet(contractId, constants.LastHeightKey, "100")
-	ct.StateSet(contractId, constants.BlockPrefix+"100", buildSeedHeaderRaw(t, time.Unix(0, 0)))
+	setBlockHeaderForHeight(t, &ct, contractId, 100, buildSeedHeaderRaw(t, time.Unix(0, 0)))
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
 
@@ -332,7 +332,7 @@ func TestMapMultipleOutputsSameTx(t *testing.T) {
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
 	ct.StateSet(contractId, constants.LastHeightKey, "100")
-	ct.StateSet(contractId, constants.BlockPrefix+"100", serializeHeaderRaw(t, header))
+	setBlockHeaderForHeight(t, &ct, contractId, 100, serializeHeaderRaw(t, header))
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
 
@@ -418,7 +418,7 @@ func TestUnmapExactBalance(t *testing.T) {
 		BaseFeeRate:  1,
 	})))
 	ct.StateSet(contractId, constants.LastHeightKey, "100")
-	ct.StateSet(contractId, constants.BlockPrefix+"100", buildSeedHeaderRaw(t, time.Unix(0, 0)))
+	setBlockHeaderForHeight(t, &ct, contractId, 100, buildSeedHeaderRaw(t, time.Unix(0, 0)))
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
 
@@ -491,7 +491,7 @@ func TestMapInvalidTxHex(t *testing.T) {
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
 	ct.StateSet(contractId, constants.LastHeightKey, "100")
-	ct.StateSet(contractId, constants.BlockPrefix+"100", buildSeedHeaderRaw(t, time.Unix(0, 0)))
+	setBlockHeaderForHeight(t, &ct, contractId, 100, buildSeedHeaderRaw(t, time.Unix(0, 0)))
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
 
@@ -532,7 +532,7 @@ func TestMapWrongBlockHeight(t *testing.T) {
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
 	ct.StateSet(contractId, constants.LastHeightKey, "100")
-	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
+	setBlockHeaderForHeight(t, &ct, contractId, 100, decodeHex(t, fixture.BlockHeaderHex))
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
 
@@ -643,7 +643,7 @@ func TestUnmapSupplyUpdates(t *testing.T) {
 		BaseFeeRate:  1,
 	})))
 	ct.StateSet(contractId, constants.LastHeightKey, "100")
-	ct.StateSet(contractId, constants.BlockPrefix+"100", buildSeedHeaderRaw(t, time.Unix(0, 0)))
+	setBlockHeaderForHeight(t, &ct, contractId, 100, buildSeedHeaderRaw(t, time.Unix(0, 0)))
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
 
@@ -699,7 +699,7 @@ func TestMapThenUnmapFullCycle(t *testing.T) {
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
 	ct.StateSet(contractId, constants.LastHeightKey, "100")
-	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
+	setBlockHeaderForHeight(t, &ct, contractId, 100, decodeHex(t, fixture.BlockHeaderHex))
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
 
@@ -888,7 +888,7 @@ func TestMapUpdatesSupply(t *testing.T) {
 		BaseFeeRate:  1,
 	})))
 	ct.StateSet(contractId, constants.LastHeightKey, "100")
-	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
+	setBlockHeaderForHeight(t, &ct, contractId, 100, decodeHex(t, fixture.BlockHeaderHex))
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
 
@@ -968,8 +968,8 @@ func TestConfirmSpendPromotesUtxos(t *testing.T) {
 		BaseFeeRate:  1,
 	})))
 	ct.StateSet(contractId, constants.LastHeightKey, "101")
-	ct.StateSet(contractId, constants.BlockPrefix+"100", buildSeedHeaderRaw(t, time.Unix(0, 0)))
-	ct.StateSet(contractId, constants.BlockPrefix+"101", fixture.BlockHeaderRaw)
+	setBlockHeaderForHeight(t, &ct, contractId, 100, buildSeedHeaderRaw(t, time.Unix(0, 0)))
+	setBlockHeaderForHeight(t, &ct, contractId, 101, fixture.BlockHeaderRaw)
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
 
