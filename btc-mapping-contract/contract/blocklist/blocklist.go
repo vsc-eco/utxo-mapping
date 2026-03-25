@@ -113,6 +113,9 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 
 	// block headers stored as raw 80 bytes
 	lastBlockRaw := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatInt(int64(lastHeight), 10))
+	if lastBlockRaw == nil || *lastBlockRaw == "" {
+		return 0, ce.NewContractError(ce.ErrStateAccess, "no block header found at height "+strconv.FormatInt(int64(lastHeight), 10))
+	}
 	lastBlockBytes := []byte(*lastBlockRaw)
 	var lastBlockHeader wire.BlockHeader
 	err = lastBlockHeader.BtcDecode(bytes.NewReader(lastBlockBytes), wire.ProtocolVersion, wire.LatestEncoding)
@@ -224,7 +227,7 @@ func HandleReplaceBlock(rawHeader BlockHeaderBytes, networkMode string) (uint32,
 	// validate that the replacement chains to height-1
 	prevHeight := lastHeight - 1
 	prevBlockRaw := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatUint(uint64(prevHeight), 10))
-	if *prevBlockRaw == "" {
+	if prevBlockRaw == nil || *prevBlockRaw == "" {
 		return 0, ce.NewContractError(ce.ErrStateAccess, "no block found at height "+strconv.FormatUint(uint64(prevHeight), 10))
 	}
 	var prevHeader wire.BlockHeader
