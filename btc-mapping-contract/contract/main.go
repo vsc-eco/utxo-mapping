@@ -54,7 +54,7 @@ func SeedBlocks(blockSeedInput *string) *string {
 	var seedParams blocklist.SeedBlocksParams
 	err := tinyjson.Unmarshal([]byte(*blockSeedInput), &seedParams)
 	if err != nil {
-		ce.CustomAbort(ce.WrapContractError(ce.ErrJson, err))
+		ce.CustomAbort(ce.WrapContractError(ce.ErrJson, err, "error unmarshalling seed blocks input"))
 	}
 
 	newLastHeight, err := blocklist.HandleSeedBlocks(seedParams, constants.IsTestnet(NetworkMode))
@@ -101,7 +101,7 @@ func Prune(_ *string) *string {
 
 	lastHeight, err := blocklist.LastHeightFromState()
 	if err != nil {
-		ce.CustomAbort(ce.WrapContractError(ce.ErrStateAccess, err))
+		ce.CustomAbort(ce.WrapContractError(ce.ErrStateAccess, err, "error reading last block height"))
 	}
 
 	pruned := blocklist.PruneOldHeaders(lastHeight)
@@ -159,7 +159,7 @@ func ReplaceBlock(input *string) *string {
 
 	blockBytes, err := hex.DecodeString(*input)
 	if err != nil {
-		ce.CustomAbort(ce.WrapContractError(ce.ErrInvalidHex, err))
+		ce.CustomAbort(ce.WrapContractError(ce.ErrInvalidHex, err, "error decoding replacement block hex"))
 	}
 	if len(blockBytes) != 80 {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "expected exactly 80 bytes (one block header)"))

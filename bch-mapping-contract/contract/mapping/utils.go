@@ -183,7 +183,10 @@ func UnmarshalUtxoRegistry(data []byte) (UtxoRegistry, error) {
 // ---------------------------------------------------------------------------
 
 func MarshalUtxo(u *Utxo) []byte {
-	txIdBytes, _ := hex.DecodeString(u.TxId)
+	txIdBytes, err := hex.DecodeString(u.TxId)
+	if err != nil || len(txIdBytes) != 32 {
+		return nil
+	}
 	total := 32 + 4 + 8 + 1 + len(u.PkScript) + 1 + len(u.Tag)
 	buf := make([]byte, total)
 	off := 0
@@ -300,7 +303,10 @@ func UnmarshalSigningData(data []byte) (*SigningData, error) {
 func MarshalTxSpendsRegistry(ts TxSpendsRegistry) []byte {
 	buf := make([]byte, len(ts)*32)
 	for i, txId := range ts {
-		decoded, _ := hex.DecodeString(txId)
+		decoded, err := hex.DecodeString(txId)
+		if err != nil || len(decoded) != 32 {
+			return nil
+		}
 		copy(buf[i*32:], decoded)
 	}
 	return buf
@@ -393,7 +399,7 @@ func incAccBalance(vscAcc string, amount int64) error {
 	bal := getAccBal(vscAcc)
 	newBal, err := safeAdd64(bal, amount)
 	if err != nil {
-		return ce.WrapContractError(ce.ErrArithmetic, err, "error incremting user balance")
+		return ce.WrapContractError(ce.ErrArithmetic, err, "error incrementing user balance")
 	}
 	setAccBal(vscAcc, newBal)
 	return nil

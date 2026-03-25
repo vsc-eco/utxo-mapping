@@ -66,7 +66,7 @@ func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) ([]Utxo, error) {
 // the signing data entry.
 func (cs *ContractState) updateUtxoSpends(txId string) error {
 	utxoSpendJson := sdk.StateGetObject(constants.TxSpendsPrefix + txId)
-	if len(*utxoSpendJson) < 1 {
+	if utxoSpendJson == nil || len(*utxoSpendJson) < 1 {
 		return nil
 	}
 
@@ -141,7 +141,7 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string) error {
 			observedUtxoKey := getObservedKey(utxo)
 			// proceed if this output has already been observed
 			alreadyObserved := sdk.StateGetObject(observedUtxoKey)
-			if *alreadyObserved != "" {
+			if alreadyObserved != nil && *alreadyObserved != "" {
 				continue
 			}
 
@@ -217,7 +217,7 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string) error {
 				var swapResult SwapResult
 				err = tinyjson.Unmarshal([]byte(*swapResultStr), &swapResult)
 				if err != nil {
-					return ce.WrapContractError(ce.ErrJson, err)
+					return ce.WrapContractError(ce.ErrJson, err, "error unmarshalling swap result")
 				}
 				if swapResult.AmountOut == "" || swapResult.AmountOut == "0" {
 					return ce.NewContractError(ce.ErrInput, "swap returned zero amount out")
