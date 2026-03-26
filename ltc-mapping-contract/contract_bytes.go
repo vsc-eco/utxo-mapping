@@ -20,7 +20,7 @@ var (
 func init() {
 	DevWasm, _ = loadWasmFile("dev.wasm")
 	Testnet4Wasm, _ = loadWasmFile("testnet4.wasm")
-	Testnet3Wasm, _ = loadWasmFile("testnet4.wasm")
+	Testnet3Wasm, _ = loadWasmFile("testnet3.wasm")
 }
 
 // loadWasmFile reads a WASM file from the embedded artifacts directory
