@@ -252,10 +252,10 @@ func HandleDecreaseAllowance(owner, spender string, amount int64) error {
 // unconfirmed change UTXOs to the confirmed pool. Called by the bot/oracle
 // when a withdrawal transaction is confirmed on the Bitcoin Cash network.
 //
-// This function has no access control by design: it is trustlessly permissionless
-// because the caller must supply a valid SPV Merkle proof linking the transaction
-// to a block header already accepted by the contract. Without a valid proof the
-// call reverts, so no authorization check is needed.
+// SECURITY: This function performs no cryptographic verification of the transaction.
+// Access control is enforced by the caller (main.go ConfirmSpend) via checkAdmin().
+// Unlike the BTC contract which requires an SPV Merkle proof, alt-chain confirmSpend
+// relies on oracle trust.
 func (cs *ContractState) HandleConfirmSpend(txId string) error {
 	return cs.updateUtxoSpends(txId)
 }

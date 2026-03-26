@@ -217,6 +217,9 @@ func Transfer(tx *string) *string {
 		)
 	}
 
+	// Enforce: transfer always uses caller as source
+	transferInstructions.From = ""
+
 	err = mapping.HandleTransfer(&transferInstructions)
 	if err != nil {
 		ce.CustomAbort(err)
