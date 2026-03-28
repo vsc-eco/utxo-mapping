@@ -225,7 +225,7 @@ func TestRegisterKey(t *testing.T) {
 		ContractId: contractId,
 		Action:     "registerPublicKey",
 		Payload:    input,
-		RcLimit:    1000,
+		RcLimit:    5000,
 		Intents:    []contracts.Intent{},
 	})
 	if r.Err != "" {
@@ -316,7 +316,7 @@ func TestSeedBlocks(t *testing.T) {
 		ContractId: contractId,
 		Action:     "seedBlocks",
 		Payload:    payload,
-		RcLimit:    1000,
+		RcLimit:    5000,
 		Intents:    []contracts.Intent{},
 	})
 	if r.Err != "" {
