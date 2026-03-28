@@ -53,46 +53,66 @@ func getInputUtxos(registryEntries []uint8) ([]*Utxo, error) {
 	return result, nil
 }
 
-// Helper function to estimate fee for a given number of inputs and outputs
+// estimateVSize returns the estimated vSize for given non-witness and witness data sizes.
+func estimateVSize(nonWitnessSize, witnessDataSize int64) int64 {
+	totalSize := nonWitnessSize + witnessDataSize
+	return (nonWitnessSize*3+totalSize+3)/4 + 2
+}
+
+// Helper function to estimate fee for a given number of inputs and outputs.
+// Accounts for the base fee before deciding how many change outputs to include,
+// and only adds change outputs that remain above dust after fee adjustment.
 func (cs *ContractState) estimateFee(numInputs int64, amount, inputAmount int64) int64 {
-	numOutputs := int64(1)
 	totalChange := inputAmount - amount
-	if totalChange > dustThreshold {
-		// total number of change outputs
-		numOutputs += min(max(totalChange/splitThreshold, 1), maxChangeOutputs)
-	}
 
 	// Base transaction overhead (version, locktime, etc.)
 	baseSize := int64(10)
-
 	// Input size: outpoint (36) + script sig length (1) + sequence (4)
 	inputSize := numInputs * 41
-
 	// Output size: value (8) + script length (1) + P2WSH script (34)
-	outputSize := numOutputs * 43
+	outputSize := int64(43) // 1 destination output
 
-	// Witness data per input (signature + witness script)
-	// 72 bytes sig + witness script + 3 bytes for size markers
-	// Witness script is ~77 bytes for change UTXOs (no tag) or ~110 bytes for
-	// deposit UTXOs (with 32-byte tag). Use 110 as conservative upper bound
+	// Witness stack per input: <sig> <branch_selector> <witness_script>
+	// Serialized: item_count(1) + sig_len(1) + sig(72) + branch_len(1) + branch(1) + script_len(1) + script(N)
+	// Witness script is ~79 bytes for change UTXOs (no tag) or ~112 bytes for
+	// deposit UTXOs (with 32-byte tag). Use 112 as conservative upper bound
 	// to ensure fee estimate >= actual fee from calculateSegwitFee.
-	witnessDataSize := numInputs * (72 + 110 + 3)
+	witnessDataSize := numInputs * (72 + 112 + 5)
 
+	// Compute base fee (no change outputs) first
 	nonWitnessSize := baseSize + inputSize + outputSize
-	totalSize := nonWitnessSize + witnessDataSize
-	// BIP141 vSize: (non_witness * 3 + total_size + 3) / 4 + witness flag overhead
-	// Must match calculateSegwitFee formula: (baseSize*3 + totalSize + 3) / 4 + 2
-	vSize := (nonWitnessSize*3+totalSize+3)/4 + 2
+	baseFee := estimateVSize(nonWitnessSize, witnessDataSize) * cs.Supply.BaseFeeRate
 
-	return vSize * cs.Supply.BaseFeeRate
+	availableChange := totalChange - baseFee
+	if availableChange < 0 {
+		availableChange = 0
+	}
+
+	if availableChange > dustThreshold {
+		numChangeOutputs := min(max(availableChange/splitThreshold, 1), maxChangeOutputs)
+
+		// Add change outputs one at a time, stopping when per-output amount is dust
+		addedOutputs := int64(0)
+		for i := int64(0); i < numChangeOutputs; i++ {
+			newNonWitness := nonWitnessSize + (addedOutputs+1)*43
+			newFee := estimateVSize(newNonWitness, witnessDataSize) * cs.Supply.BaseFeeRate
+			newAvailable := totalChange - newFee
+			if newAvailable < 0 {
+				newAvailable = 0
+			}
+			if newAvailable/(addedOutputs+1) <= dustThreshold {
+				break
+			}
+			addedOutputs++
+			nonWitnessSize = newNonWitness
+		}
+	}
+
+	return estimateVSize(nonWitnessSize, witnessDataSize) * cs.Supply.BaseFeeRate
 }
 
 // returns a list of internal ids of inputs for making a tx
 func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint8, int64, error) {
-	// approximate size of including a new PSWSH input (base tx size plus signature)
-	// slight overestimate (+1 at the end) to make sure there's enough balance
-	const P2WSHAPPROXINPUTSIZE = 40 + 1 + (72+68+3)/4 + 1
-
 	inputs := []uint8{}
 
 	// accumulates amount of all inputs
@@ -160,11 +180,11 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint8, int64, error) {
 }
 
 func (cs *ContractState) calculateSegwitFee(baseSize int64, witnessScripts map[int][]byte) int64 {
-	// estimates size of segwit signatures
+	// Witness stack per input: <sig> <branch_selector> <witness_script>
+	// Serialized: item_count(1) + sig_len(1) + sig(72) + branch_len(1) + branch(1) + script_len(1) + script(N)
 	witnessDataSize := int64(0)
 	for _, witnessScript := range witnessScripts {
-		// +3 is for size flags, but small enough to be represented by themselves so just 1 byte per
-		witnessDataSize += 72 + int64(len(witnessScript)) + 3
+		witnessDataSize += 72 + int64(len(witnessScript)) + 5
 	}
 	totalSize := baseSize + witnessDataSize
 	// +3 to round up, + 2 for has witness data flag
@@ -229,10 +249,14 @@ func (cs *ContractState) createSpendTransaction(
 
 	totalChange := totalInputsAmount - sendAmount
 
-	// if change is not dust
-	if totalChange > dustThreshold {
-		// split if above SPLITTHRESHOLD, taking into account the added fee
-		// for each split (about 34 bytes per output)
+	// Account for the base fee before computing available change
+	availableChange := totalChange - fee
+	if availableChange < 0 {
+		availableChange = 0
+	}
+
+	// Add change outputs if above dust, splitting across multiple outputs
+	if availableChange > dustThreshold {
 		changeAddressObj, err := btcutil.DecodeAddress(changeAddress, cs.NetworkParams)
 		if err != nil {
 			return nil, nil, 0, err
@@ -241,33 +265,40 @@ func (cs *ContractState) createSpendTransaction(
 		if err != nil {
 			return nil, nil, 0, err
 		}
-		// create a dummy change output to calculate additional fee for adding change outputs
 		changeOutputSize := int64(wire.NewTxOut(int64(0), changeScript).SerializeSize())
 
-		numChangeOuputs := min(max(totalChange/splitThreshold, 1), maxChangeOutputs)
+		numChangeOuputs := min(max(availableChange/splitThreshold, 1), maxChangeOutputs)
 
-		// recalculate the size/fee
-		baseSize += numChangeOuputs * changeOutputSize
-		fee = cs.calculateSegwitFee(baseSize, witnessScripts)
-
-		// Guard: if the recalculated fee exceeds totalChange, skip change outputs.
-		// The remainder becomes an implicit miner fee. Without this guard,
-		// eachChangeAmount would go negative, creating an invalid BTC transaction
-		// while the user's balance has already been deducted.
-		if fee >= totalChange || (totalChange-fee) <= dustThreshold {
-			// Recalculate fee without the change outputs we were about to add
-			fee = cs.calculateSegwitFee(int64(tx.SerializeSize()), witnessScripts)
-		} else {
-			eachChangeAmount := (totalChange - fee) / numChangeOuputs
-			firstChangeAmount := eachChangeAmount
-			if (eachChangeAmount * numChangeOuputs) != (totalChange - fee) {
-				firstChangeAmount += (totalChange - fee - eachChangeAmount*numChangeOuputs)
+		// Add change outputs one at a time, recalculating fee after each
+		addedOutputs := int64(0)
+		for range numChangeOuputs {
+			newBaseSize := baseSize + (addedOutputs+1)*changeOutputSize
+			newFee := cs.calculateSegwitFee(newBaseSize, witnessScripts)
+			newAvailable := totalChange - newFee
+			if newAvailable < 0 {
+				newAvailable = 0
 			}
 
-			txOutChange := wire.NewTxOut(firstChangeAmount, changeScript)
+			// Check if adding this output still leaves enough for all outputs to be above dust
+			perOutput := newAvailable / (addedOutputs + 1)
+			if perOutput <= dustThreshold {
+				break
+			}
+
+			addedOutputs++
+			baseSize = newBaseSize
+			fee = newFee
+			availableChange = newAvailable
+		}
+
+		if addedOutputs > 0 {
+			eachChangeAmount := availableChange / addedOutputs
+			remainder := availableChange - eachChangeAmount*addedOutputs
+
+			txOutChange := wire.NewTxOut(eachChangeAmount+remainder, changeScript)
 			tx.AddTxOut(txOutChange)
 
-			for range numChangeOuputs - 1 {
+			for range addedOutputs - 1 {
 				txOutChange := wire.NewTxOut(eachChangeAmount, changeScript)
 				tx.AddTxOut(txOutChange)
 			}
