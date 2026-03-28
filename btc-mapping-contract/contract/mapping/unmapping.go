@@ -72,12 +72,17 @@ func (cs *ContractState) estimateFee(numInputs int64, amount, inputAmount int64)
 	outputSize := numOutputs * 43
 
 	// Witness data per input (signature + witness script)
-	// 72 bytes sig + 68 bytes witness script + 3 bytes for size markers
-	witnessDataSize := numInputs * (72 + 68 + 3)
+	// 72 bytes sig + witness script + 3 bytes for size markers
+	// Witness script is ~77 bytes for change UTXOs (no tag) or ~110 bytes for
+	// deposit UTXOs (with 32-byte tag). Use 110 as conservative upper bound
+	// to ensure fee estimate >= actual fee from calculateSegwitFee.
+	witnessDataSize := numInputs * (72 + 110 + 3)
 
-	totalSize := baseSize + inputSize + outputSize
-	// Calculate vSize: (base_size * 3 + total_size + witness_data) / 4 + witness flag overhead
-	vSize := (totalSize*3+totalSize+witnessDataSize+3)/4 + 2
+	nonWitnessSize := baseSize + inputSize + outputSize
+	totalSize := nonWitnessSize + witnessDataSize
+	// BIP141 vSize: (non_witness * 3 + total_size + 3) / 4 + witness flag overhead
+	// Must match calculateSegwitFee formula: (baseSize*3 + totalSize + 3) / 4 + 2
+	vSize := (nonWitnessSize*3+totalSize+3)/4 + 2
 
 	return vSize * cs.Supply.BaseFeeRate
 }
@@ -245,18 +250,27 @@ func (cs *ContractState) createSpendTransaction(
 		baseSize += numChangeOuputs * changeOutputSize
 		fee = cs.calculateSegwitFee(baseSize, witnessScripts)
 
-		eachChangeAmount := (totalChange - fee) / numChangeOuputs
-		firstChangeAmount := eachChangeAmount
-		if (eachChangeAmount * numChangeOuputs) != (totalChange - fee) {
-			firstChangeAmount += (totalChange - fee - eachChangeAmount*numChangeOuputs)
-		}
+		// Guard: if the recalculated fee exceeds totalChange, skip change outputs.
+		// The remainder becomes an implicit miner fee. Without this guard,
+		// eachChangeAmount would go negative, creating an invalid BTC transaction
+		// while the user's balance has already been deducted.
+		if fee >= totalChange || (totalChange-fee) <= dustThreshold {
+			// Recalculate fee without the change outputs we were about to add
+			fee = cs.calculateSegwitFee(int64(tx.SerializeSize()), witnessScripts)
+		} else {
+			eachChangeAmount := (totalChange - fee) / numChangeOuputs
+			firstChangeAmount := eachChangeAmount
+			if (eachChangeAmount * numChangeOuputs) != (totalChange - fee) {
+				firstChangeAmount += (totalChange - fee - eachChangeAmount*numChangeOuputs)
+			}
 
-		txOutChange := wire.NewTxOut(firstChangeAmount, changeScript)
-		tx.AddTxOut(txOutChange)
-
-		for range numChangeOuputs - 1 {
-			txOutChange := wire.NewTxOut(eachChangeAmount, changeScript)
+			txOutChange := wire.NewTxOut(firstChangeAmount, changeScript)
 			tx.AddTxOut(txOutChange)
+
+			for range numChangeOuputs - 1 {
+				txOutChange := wire.NewTxOut(eachChangeAmount, changeScript)
+				tx.AddTxOut(txOutChange)
+			}
 		}
 	}
 
