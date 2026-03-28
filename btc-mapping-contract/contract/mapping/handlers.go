@@ -64,6 +64,9 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	if amount <= 0 {
 		return ce.NewContractError(ce.ErrInput, "amount must be positive")
 	}
+	if amount <= dustThreshold {
+		return ce.NewContractError(ce.ErrInput, "amount below dust threshold")
+	}
 
 	vscFee, err := calcVscFee(amount)
 	if err != nil {
