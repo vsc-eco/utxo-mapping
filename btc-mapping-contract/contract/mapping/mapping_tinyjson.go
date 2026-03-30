@@ -571,25 +571,15 @@ func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp7(in *jle
 			out.AssetOut = string(in.String())
 		case "recipient":
 			out.Recipient = string(in.String())
-		case "slippage_bps":
-			if in.IsNull() {
-				in.Skip()
-				out.SlippageBps = nil
-			} else {
-				if out.SlippageBps == nil {
-					out.SlippageBps = new(int)
-				}
-				*out.SlippageBps = int(in.Int())
-			}
 		case "min_amount_out":
 			if in.IsNull() {
 				in.Skip()
 				out.MinAmountOut = nil
 			} else {
 				if out.MinAmountOut == nil {
-					out.MinAmountOut = new(int64)
+					out.MinAmountOut = new(string)
 				}
-				*out.MinAmountOut = int64(in.Int64())
+				*out.MinAmountOut = string(in.String())
 			}
 		case "beneficiary":
 			if in.IsNull() {
@@ -607,9 +597,9 @@ func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp7(in *jle
 				out.RefBps = nil
 			} else {
 				if out.RefBps == nil {
-					out.RefBps = new(int)
+					out.RefBps = new(uint64)
 				}
-				*out.RefBps = int(in.Int())
+				*out.RefBps = uint64(in.Uint64())
 			}
 		case "return_address":
 			if in.IsNull() {
@@ -643,6 +633,8 @@ func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp7(in *jle
 			}
 		case "amount_in":
 			out.AmountIn = string(in.String())
+		case "destination_chain":
+			out.DestinationChain = string(in.String())
 		default:
 			in.SkipRecursive()
 		}
@@ -682,15 +674,10 @@ func tinyjsonA043f2bcEncodeBtcMappingContractContractMappingTinyjsonTmp7(out *jw
 		out.RawString(prefix)
 		out.String(string(in.Recipient))
 	}
-	if in.SlippageBps != nil {
-		const prefix string = ",\"slippage_bps\":"
-		out.RawString(prefix)
-		out.Int(int(*in.SlippageBps))
-	}
 	if in.MinAmountOut != nil {
 		const prefix string = ",\"min_amount_out\":"
 		out.RawString(prefix)
-		out.Int64(int64(*in.MinAmountOut))
+		out.String(string(*in.MinAmountOut))
 	}
 	if in.Beneficiary != nil {
 		const prefix string = ",\"beneficiary\":"
@@ -700,7 +687,7 @@ func tinyjsonA043f2bcEncodeBtcMappingContractContractMappingTinyjsonTmp7(out *jw
 	if in.RefBps != nil {
 		const prefix string = ",\"ref_bps\":"
 		out.RawString(prefix)
-		out.Int(int(*in.RefBps))
+		out.Uint64(uint64(*in.RefBps))
 	}
 	if in.ReturnAddress != nil {
 		const prefix string = ",\"return_address\":"
@@ -730,6 +717,11 @@ func tinyjsonA043f2bcEncodeBtcMappingContractContractMappingTinyjsonTmp7(out *jw
 		const prefix string = ",\"amount_in\":"
 		out.RawString(prefix)
 		out.String(string(in.AmountIn))
+	}
+	if in.DestinationChain != "" {
+		const prefix string = ",\"destination_chain\":"
+		out.RawString(prefix)
+		out.String(string(in.DestinationChain))
 	}
 	out.RawByte('}')
 }

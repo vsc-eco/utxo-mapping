@@ -187,12 +187,13 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string) error {
 				assetOut := metadata.Params.Get(constants.SwapAssetOut)
 
 				instruction := DexInstruction{
-					Type:      "swap",
-					Version:   "1.0.0",
-					AssetIn:   BtcAssetValue,
-					AmountIn:  strconv.FormatInt(utxo.Amount, 10),
-					AssetOut:  assetOut,
-					Recipient: metadata.Recipient,
+					Type:             "swap",
+					Version:          "1.0.0",
+					AssetIn:          BtcAssetValue,
+					AmountIn:         strconv.FormatInt(utxo.Amount, 10),
+					AssetOut:         assetOut,
+					Recipient:        metadata.Recipient,
+					DestinationChain: metadata.Params.Get(constants.DestinationChainKey),
 				}
 				instrJson, err := tinyjson.Marshal(instruction)
 				if err != nil {

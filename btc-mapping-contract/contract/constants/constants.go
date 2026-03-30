@@ -31,9 +31,10 @@ const (
 	DepositToKey     = "deposit_to"
 	SwapAssetOut     = "swap_asset_out"
 	SwapNetworkOut   = "swap_network_out"
-	SwapToKey        = "swap_to"
-	ReturnAddressKey = "return_address"
-	ReturnNetworkKey = "return_network"
+	SwapToKey           = "swap_to"
+	DestinationChainKey = "destination_chain"
+	ReturnAddressKey    = "return_address"
+	ReturnNetworkKey    = "return_network"
 )
 
 // Address Creation
