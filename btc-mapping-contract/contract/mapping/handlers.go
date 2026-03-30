@@ -144,7 +144,7 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		}
 	}
 
-	signingData, tx, btcFee, err := cs.createSpendTransaction(
+	tx, witnessScripts, btcFee, err := cs.buildSpendTransaction(
 		inputUtxos,
 		totalInputAmt,
 		instructions.To,
@@ -187,6 +187,12 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	err = checkAndDeductBalance(env, from, finalAmt)
 	if err != nil {
 		return err
+	}
+
+	// All checks passed — now request TSS signing
+	signingData, err := signSpendTransaction(tx, inputUtxos, witnessScripts)
+	if err != nil {
+		return ce.WrapContractError(ce.ErrTransaction, err, "error signing spend transaction")
 	}
 
 	unconfirmedUtxos, err := indexUnconfimedOutputs(tx, changeAddress, cs.NetworkParams)

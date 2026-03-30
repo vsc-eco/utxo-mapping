@@ -192,13 +192,16 @@ func (cs *ContractState) calculateSegwitFee(baseSize int64, witnessScripts map[i
 	return vSize * cs.Supply.BaseFeeRate
 }
 
-func (cs *ContractState) createSpendTransaction(
+// buildSpendTransaction constructs the Bitcoin withdrawal transaction and
+// computes the miner fee, but does NOT request TSS signing. Call
+// signSpendTransaction after all validation checks pass.
+func (cs *ContractState) buildSpendTransaction(
 	inputs []*Utxo,
 	totalInputsAmount int64,
 	destAddress string,
 	changeAddress string,
 	sendAmount int64,
-) (*SigningData, *wire.MsgTx, int64, error) {
+) (*wire.MsgTx, map[int][]byte, int64, error) {
 	tx := wire.NewMsgTx(wire.TxVersion)
 
 	// create all witness scripts now for better size estimation
@@ -305,7 +308,12 @@ func (cs *ContractState) createSpendTransaction(
 		}
 	}
 
-	// P2WSH: Calculate witness sighash
+	return tx, witnessScripts, fee, nil
+}
+
+// signSpendTransaction computes witness sighashes and requests TSS signing
+// for each input. Call this only after all validation checks have passed.
+func signSpendTransaction(tx *wire.MsgTx, inputs []*Utxo, witnessScripts map[int][]byte) (*SigningData, error) {
 	unsignedSigHashes := make([]UnsignedSigHash, len(inputs))
 	for i, utxo := range inputs {
 		witnessScript := witnessScripts[i]
@@ -322,7 +330,7 @@ func (cs *ContractState) createSpendTransaction(
 		)
 
 		if err != nil {
-			return nil, nil, 0, err
+			return nil, err
 		}
 
 		sdk.TssSignKey(constants.TssKeyName, sigHash)
@@ -335,15 +343,15 @@ func (cs *ContractState) createSpendTransaction(
 	}
 
 	var buf bytes.Buffer
-	err = tx.Serialize(&buf)
+	err := tx.Serialize(&buf)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, err
 	}
 
 	return &SigningData{
 		Tx:                buf.Bytes(),
 		UnsignedSigHashes: unsignedSigHashes,
-	}, tx, fee, nil
+	}, nil
 }
 
 func indexUnconfimedOutputs(tx *wire.MsgTx, changeAddress string, network *chaincfg.Params) ([]*Utxo, error) {
