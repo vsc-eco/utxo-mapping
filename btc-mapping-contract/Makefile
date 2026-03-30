@@ -74,9 +74,47 @@ all dev testnet3 testnet4 mainnet regtest test: | update-vsc-node
 pull-tinygo:
 	docker pull $(TINYGO_IMAGE)
 
+MODULE := $(shell head -1 go.mod | awk '{print $$2}')
+
 dev testnet3 testnet4 mainnet regtest:
-	@echo "Building $@ ..."
-	$(TINYGO_CMD) build $(BASEFLAGS) $(call netflags,$@) -o $(BIN_DIR)/$@.wasm $(TARGET)
+	@wasm_file="$(BIN_DIR)/$@.wasm"; \
+	dir="$(ROOT_DIR)/$(dir $(TARGET))"; \
+	dir="$${dir%/}"; \
+	if [ -f "$$wasm_file" ]; then \
+		dep_dirs="$$dir"; \
+		queue="$$dir"; \
+		while [ -n "$$queue" ]; do \
+			next_queue=""; \
+			for d in $$queue; do \
+				for imp in $$(grep -roh '"$(MODULE)/[^"]*"' "$$d"/*.go 2>/dev/null | tr -d '"' | sed 's|$(MODULE)/||' | sort -u); do \
+					resolved="$(ROOT_DIR)/$$imp"; \
+					case " $$dep_dirs " in \
+						*" $$resolved "*) ;; \
+						*) [ -d "$$resolved" ] && dep_dirs="$$dep_dirs $$resolved" && next_queue="$$next_queue $$resolved" ;; \
+					esac; \
+				done; \
+			done; \
+			queue="$$next_queue"; \
+		done; \
+		needs_rebuild=0; \
+		for dep_dir in $$dep_dirs; do \
+			if find "$$dep_dir" -maxdepth 1 -type f -name '*.go' -newer "$$wasm_file" 2>/dev/null | grep -q .; then \
+				needs_rebuild=1; \
+				break; \
+			fi; \
+		done; \
+		if [ "$$needs_rebuild" -eq 0 ] && \
+		   [ ! "$(ROOT_DIR)/go.mod" -nt "$$wasm_file" ] && \
+		   [ ! "$(ROOT_DIR)/go.sum" -nt "$$wasm_file" ]; then \
+			echo "⏩ $@ is up to date, skipping"; \
+		else \
+			echo "Building $@ ..."; \
+			$(TINYGO_CMD) build $(BASEFLAGS) $(call netflags,$@) -o $$wasm_file $(TARGET); \
+		fi; \
+	else \
+		echo "Building $@ ..."; \
+		$(TINYGO_CMD) build $(BASEFLAGS) $(call netflags,$@) -o $$wasm_file $(TARGET); \
+	fi
 
 strip:
 	@for file in $(BIN_DIR)/*.wasm; do \

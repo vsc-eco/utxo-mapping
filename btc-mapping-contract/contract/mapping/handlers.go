@@ -73,8 +73,13 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		return err
 	}
 
+	from := instructions.From
+	if from == "" {
+		from = env.Caller.String()
+	}
+
 	// Preliminary balance check before expensive UTXO selection and TSS signing
-	prelimBal := getAccBal(env.Caller.String())
+	prelimBal := getAccBal(from)
 	var prelimRequired int64
 	if instructions.DeductFee {
 		prelimRequired = amount
@@ -178,8 +183,8 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		}
 	}
 
-	// check whether caller has enough balance to cover transaction
-	err = checkAndDeductBalance(env, env.Caller.String(), finalAmt)
+	// check whether caller (or delegated from) has enough balance to cover transaction
+	err = checkAndDeductBalance(env, from, finalAmt)
 	if err != nil {
 		return err
 	}
@@ -212,7 +217,7 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 
 	sdk.StateSetObject(constants.TxSpendsPrefix+tx.TxID(), string(signingDataBytes))
 	cs.TxSpendsList = append(cs.TxSpendsList, tx.TxID())
-	sdk.Log(createUnmapLog(tx.TxID(), env.Caller.String(), finalAmt, sendAmount))
+	sdk.Log(createUnmapLog(tx.TxID(), from, instructions.To, finalAmt, sendAmount))
 
 	// update supply
 	newActive, err := safeSubtract64(cs.Supply.ActiveSupply, finalAmt)

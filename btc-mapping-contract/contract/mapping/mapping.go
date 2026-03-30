@@ -155,6 +155,7 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string) error {
 			// set observed
 			sdk.StateSetObject(observedUtxoKey, "1")
 
+			sdk.Log(createMapLog(from, metadata.Recipient, utxo.Amount))
 			switch metadata.Type {
 			case MapDeposit:
 				// increment balance for recipient account (vsc account not btc account)
@@ -162,12 +163,8 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string) error {
 				if err := incAccBalance(metadata.Recipient, utxo.Amount); err != nil {
 					return ce.Prepend(err, "error crediting deposit balance")
 				}
-				sdk.Log(createDepositLog(Deposit{
-					to:     metadata.Recipient,
-					from:   from,
-					amount: utxo.Amount,
-				}))
 			case MapSwap:
+
 				// get router id and check it only if there is a swap in the tx
 				if routerId == "" {
 					r := sdk.StateGetObject(constants.RouterContractIdKey)

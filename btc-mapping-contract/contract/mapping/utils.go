@@ -432,26 +432,6 @@ func StrPtr(s string) *string {
 	return &s
 }
 
-func createDepositLog(d Deposit) string {
-	var b strings.Builder
-	b.Grow(128)
-	b.WriteString("dep")
-	b.WriteString(constants.LogDelimiter)
-	b.WriteString("t")
-	b.WriteString(constants.LogKeyDelimiter)
-	b.WriteString(d.to)
-	b.WriteString(constants.LogDelimiter)
-	b.WriteString("f")
-	b.WriteString(constants.LogKeyDelimiter)
-	b.WriteString(d.from)
-	b.WriteString(constants.LogDelimiter)
-	b.WriteString("a")
-	b.WriteString(constants.LogKeyDelimiter)
-	var buf [20]byte
-	b.Write(strconv.AppendInt(buf[:0], d.amount, 10))
-	return b.String()
-}
-
 // senderLabel returns the single sender address if all inputs share one address, or "many" otherwise.
 func senderLabel(inputs []*wire.TxIn, network *chaincfg.Params) string {
 	label := ""
@@ -493,6 +473,26 @@ func createFeeLog(vscFee, btcFee int64) string {
 	return b.String()
 }
 
+func createMapLog(from, to string, amount int64) string {
+	var b strings.Builder
+	b.Grow(128)
+	b.WriteString("map")
+	b.WriteString(constants.LogDelimiter)
+	b.WriteString("t")
+	b.WriteString(constants.LogKeyDelimiter)
+	b.WriteString(to)
+	b.WriteString(constants.LogDelimiter)
+	b.WriteString("f")
+	b.WriteString(constants.LogKeyDelimiter)
+	b.WriteString(from)
+	b.WriteString(constants.LogDelimiter)
+	b.WriteString("a")
+	b.WriteString(constants.LogKeyDelimiter)
+	var buf [20]byte
+	b.Write(strconv.AppendInt(buf[:0], amount, 10))
+	return b.String()
+}
+
 func createTransferLog(from, to string, amount int64) string {
 	var b strings.Builder
 	b.Grow(128)
@@ -513,10 +513,10 @@ func createTransferLog(from, to string, amount int64) string {
 	return b.String()
 }
 
-func createUnmapLog(txId, from string, deducted, sent int64) string {
+func createUnmapLog(txId, from, to string, deducted, sent int64) string {
 	var b strings.Builder
 	b.Grow(128)
-	b.WriteString("unm")
+	b.WriteString("unmap")
 	b.WriteString(constants.LogDelimiter)
 	b.WriteString("id")
 	b.WriteString(constants.LogKeyDelimiter)
@@ -525,6 +525,10 @@ func createUnmapLog(txId, from string, deducted, sent int64) string {
 	b.WriteString("f")
 	b.WriteString(constants.LogKeyDelimiter)
 	b.WriteString(from)
+	b.WriteString(constants.LogDelimiter)
+	b.WriteString("t")
+	b.WriteString(constants.LogKeyDelimiter)
+	b.WriteString(to)
 	b.WriteString(constants.LogDelimiter)
 	b.WriteString("d")
 	b.WriteString(constants.LogKeyDelimiter)
