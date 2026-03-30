@@ -150,6 +150,18 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		return err
 	}
 
+	totalFee, err := safeAdd64(vscFee, btcFee)
+	if err != nil {
+		return ce.WrapContractError(ce.ErrArithmetic, err, "error computing total fee")
+	}
+	if instructions.MaxFee != nil && totalFee > *instructions.MaxFee {
+		return ce.NewContractError(
+			ce.ErrTransaction,
+			"total fee "+strconv.FormatInt(totalFee, 10)+
+				" exceeds max_fee "+strconv.FormatInt(*instructions.MaxFee, 10),
+		)
+	}
+
 	sdk.Log(createFeeLog(vscFee, btcFee))
 
 	var finalAmt int64

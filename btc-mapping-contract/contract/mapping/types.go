@@ -41,6 +41,7 @@ type TransferParams struct {
 	To        string `json:"to"`
 	From      string `json:"from,omitempty"`
 	DeductFee bool   `json:"deduct_fee,omitempty"`
+	MaxFee    *int64 `json:"max_fee,omitempty"`
 }
 
 // Utxo stores full UTXO data indexed by a single-byte pool ID.
