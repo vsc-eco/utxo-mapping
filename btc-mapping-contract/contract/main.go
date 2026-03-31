@@ -59,7 +59,7 @@ func checkNotPaused() {
 	s := sdk.StateGetObject(constants.PausedKey)
 	if s != nil && *s == "1" {
 		ce.CustomAbort(
-			ce.NewContractError(ce.ErrInput, "contract is paused"),
+			ce.NewContractError(ce.ErrTransaction, "contract is paused"),
 		)
 	}
 }
@@ -123,7 +123,9 @@ func Prune(_ *string) *string {
 
 	pruned := blocklist.PruneOldHeaders(lastHeight)
 
-	return mapping.StrPtr("pruned " + strconv.Itoa(pruned) + " headers, last height: " + strconv.FormatUint(uint64(lastHeight), 10))
+	return mapping.StrPtr(
+		"pruned " + strconv.Itoa(pruned) + " headers, last height: " + strconv.FormatUint(uint64(lastHeight), 10),
+	)
 }
 
 //go:wasmexport addBlocks
