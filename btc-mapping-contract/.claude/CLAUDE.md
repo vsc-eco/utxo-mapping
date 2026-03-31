@@ -57,10 +57,10 @@ Keys are defined in `contract/constants/constants.go`. The separator between pre
 | --------------------------- | ------------------------------ | --------------------------------------------------------------- |
 | `BalancePrefix`             | `a-<address>`                  | Account balance in satoshis (compact big-endian int64, 1–8 B)  |
 | `AllowancePrefix`           | `q-<owner>-<spender>`          | ERC-20-style spending allowance (compact big-endian int64)     |
-| `ObservedPrefix`            | `o-<txid>:<vout>`              | Observed tx marker (value `"1"`)                                |
+| `ObservedBlockPrefix`       | `o-<height>`                   | Per-block observed txs (packed 34 B/entry: 32-byte txid + 2-byte vout BE). Pruned with block headers. |
 | `UtxoPrefix`                | `u-<hex_id>`                   | Individual UTXO binary blob                                     |
-| `UtxoRegistryKey`           | `r`                            | UTXO registry (packed 9 bytes/entry: 1-byte ID + 8-byte amount) |
-| `UtxoLastIdKey`             | `i`                            | 2 bytes: `[confirmedNextId, unconfirmedNextId]`                 |
+| `UtxoRegistryKey`           | `r`                            | UTXO registry (packed 8 bytes/entry: 2-byte uint16 ID + 6-byte amount) |
+| `UtxoLastIdKey`             | `i`                            | 4 bytes: two uint16 BE `[confirmedNextId, unconfirmedNextId]`   |
 | `TxSpendsRegistryKey`       | `p`                            | Tx spends registry (32 bytes/entry)                             |
 | `TxSpendsPrefix`            | `d-<txid>`                     | Signing data for pending withdrawal (msgpack)                   |
 | `SupplyKey`                 | `s`                            | 32 bytes: 4× int64 BE (`active`, `user`, `fee`, `base_fee_rate`) |
@@ -69,6 +69,7 @@ Keys are defined in `contract/constants/constants.go`. The separator between pre
 | `PrimaryPublicKeyStateKey`  | `pubkey`                       | TSS primary compressed public key (33 bytes)                    |
 | `BackupPublicKeyStateKey`   | `backupkey`                    | TSS backup compressed public key (33 bytes)                     |
 | `RouterContractIdKey`       | `routerid`                     | Router contract ID (string)                                     |
+| `PausedKey`                 | `paused`                       | `"1"` when contract is paused; absent when active               |
 
 ### Exported Action Schemas
 
@@ -100,6 +101,8 @@ Keys are defined in `contract/constants/constants.go`. The separator between pre
 | `createKey` | — | Owner | Create a new TSS key |
 | `renewKey` | — | Owner | Renew the TSS key |
 | `registerRouter` | `RouterContract{router_contract}` | Owner | Register the DEX router contract ID |
+| `pause` | — | Owner | Pause all token operations (map, unmap, transfer, approve, confirmSpend) |
+| `unpause` | — | Owner | Resume token operations after pause |
 
 ### Key Design Patterns
 
@@ -117,6 +120,36 @@ TinyGo/WASM environment restrictions (enforced throughout contract code):
 - No panic recovery — panics halt execution
 - Must import SDK package or build fails
 - JSON serialization uses TinyJSON (not `encoding/json`) — run `make tinyjson` after adding `//tinyjson:json` struct tags
+
+### Security Model
+
+#### Confirmation depth (SPV trust model)
+
+The contract does NOT enforce a minimum confirmation depth in code. Instead, the **oracle controls confirmation depth** by only submitting block headers to `addBlocks` after they reach sufficient depth (currently 2 confirmations). This is by design:
+
+- The oracle waits for N confirmations before submitting a block, so by the time a `map` proof is possible, the block is N+1 deep.
+- Pruned block headers (beyond `MaxBlockRetention = 101`) can't be used for proofs — `verifyTransaction` fails when the header is missing from state.
+- This avoids adding on-chain confirmation tracking complexity and keeps the contract stateless with respect to chain tip awareness.
+
+If the oracle is misconfigured to submit 0-confirmation blocks, deposits could be reversed by a Bitcoin reorg. Operators must ensure the oracle's confirmation threshold is appropriate for the value being bridged.
+
+#### Block reorg handling
+
+- **1-block reorg**: Handled by `replaceBlock`, which replaces the tip with a corrected header (must pass PoW and chain to height-1).
+- **2+ block reorg**: Not recoverable by the contract alone. The oracle waits for 2 confirmations before submitting, so a reorg that invalidates submitted blocks would need to be 3+ blocks deep — which has essentially never happened on Bitcoin mainnet in 15+ years of operation.
+- Deposits confirmed against later-orphaned blocks cannot be "un-mapped" — this is an accepted SPV limitation mitigated by the oracle's confirmation threshold.
+
+#### Key rotation
+
+TSS public keys (primary and backup) are **immutable on mainnet** once registered. This prevents governance attacks from rotating keys to steal funds. Key rotation requires a future contract upgrade that would spend all existing UTXOs under the old key before switching — this is intentionally deferred due to complexity.
+
+#### Pause mechanism
+
+The contract owner can call `pause` to halt all token operations (map, unmap, transfer, approve, confirmSpend). Admin operations (addBlocks, seedBlocks, replaceBlock) and `getInfo` remain available while paused. Call `unpause` to resume.
+
+#### Fee rate safety
+
+`BaseFeeRate` (set by the oracle via `addBlocks`) is clamped to `[1, MaxBaseFeeRate]` (currently 1–1000 sat/vbyte) during fee calculation. This prevents overflow from extreme values and caps withdrawal fees at a reasonable maximum regardless of oracle misconfiguration.
 
 ### Tests
 
