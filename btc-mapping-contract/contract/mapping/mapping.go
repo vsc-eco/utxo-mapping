@@ -127,10 +127,14 @@ func (cs *ContractState) updateUtxoSpends(txId string) error {
 	return nil
 }
 
-func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string) error {
+func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHeight uint32) error {
 	totalMapped := int64(0)
 	env := sdk.GetEnv()
 	routerId := ""
+
+	// Load existing observed list for this block height (may already have entries
+	// from a prior map call against the same block).
+	observedList := loadObservedList(blockHeight)
 
 	// create new utxos entries for all of the relevant outputs in the incoming transaction
 	for _, utxo := range relevantUtxos {
@@ -142,11 +146,12 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string) error {
 			continue
 		}
 		if metadata, ok := ms.AddressRegistry[addrs[0].EncodeAddress()]; ok {
-			// Create UTXO entry
-			observedUtxoKey := getObservedKey(utxo)
-			// proceed if this output has already been observed
-			alreadyObserved := sdk.StateGetObject(observedUtxoKey)
-			if alreadyObserved != nil && *alreadyObserved != "" {
+			// Check if this output has already been observed
+			entry, err := makeObservedEntry(utxo.TxId, utxo.Vout)
+			if err != nil {
+				return ce.WrapContractError(ce.ErrInput, err, "error creating observed entry")
+			}
+			if isObserved(observedList, entry) {
 				continue
 			}
 
@@ -157,8 +162,8 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string) error {
 			ms.UtxoList = append(ms.UtxoList, UtxoRegistryEntry{Id: utxoInternalId, Amount: utxo.Amount})
 			saveUtxo(utxoInternalId, &utxo)
 
-			// set observed
-			sdk.StateSetObject(observedUtxoKey, "1")
+			// Mark observed
+			observedList = append(observedList, entry)
 
 			sdk.Log(createMapLog(from, metadata.Recipient, utxo.Amount))
 			switch metadata.Type {
@@ -235,6 +240,11 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string) error {
 				return ce.WrapContractError(ce.ErrArithmetic, err, "error accumulating mapped amount")
 			}
 		}
+	}
+
+	// Persist the observed list for this block height
+	if len(observedList) > 0 {
+		saveObservedList(blockHeight, observedList)
 	}
 
 	if totalMapped != 0 {

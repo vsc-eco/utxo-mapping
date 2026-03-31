@@ -370,8 +370,9 @@ func TestUnmapFromWithAllowance(t *testing.T) {
 	ct, contractId := setupAllowanceContract(t, ownerBalance)
 
 	// Seed UTXO state (same as TestUnmap)
-	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId0+":0", "1")
-	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId1+":0", "1")
+	ct.StateSet(contractId, constants.ObservedBlockPrefix+"100", buildObservedList(t,
+		observedParam{fakeTxId0, 0}, observedParam{fakeTxId1, 0},
+	))
 	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(mapping.UtxoRegistry{
 		{Id: 1024, Amount: 5000},
 		{Id: 1025, Amount: 5000},
@@ -452,8 +453,9 @@ func TestUnmapFromWithoutAllowanceFails(t *testing.T) {
 
 	ct, contractId := setupAllowanceContract(t, ownerBalance)
 
-	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId0+":0", "1")
-	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId1+":0", "1")
+	ct.StateSet(contractId, constants.ObservedBlockPrefix+"100", buildObservedList(t,
+		observedParam{fakeTxId0, 0}, observedParam{fakeTxId1, 0},
+	))
 	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(mapping.UtxoRegistry{
 		{Id: 1024, Amount: 5000},
 		{Id: 1025, Amount: 5000},

@@ -111,7 +111,7 @@ func TestUnmapInsufficientBalance(t *testing.T) {
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 	ct.StateSet(contractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, 5000))
-	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId0+":0", "1")
+	ct.StateSet(contractId, constants.ObservedBlockPrefix+"100", buildObservedList(t, observedParam{fakeTxId0, 0}))
 	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(mapping.UtxoRegistry{
 		{Id: 1024, Amount: 5000},
 	})))
@@ -163,7 +163,7 @@ func TestUnmapAmountBelowDust(t *testing.T) {
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 	ct.StateSet(contractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, 50000))
-	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId0+":0", "1")
+	ct.StateSet(contractId, constants.ObservedBlockPrefix+"100", buildObservedList(t, observedParam{fakeTxId0, 0}))
 	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(mapping.UtxoRegistry{
 		{Id: 1024, Amount: 50000},
 	})))
@@ -403,8 +403,9 @@ func TestUnmapExactBalance(t *testing.T) {
 	const unmapAmount = int64(50000)
 
 	ct.StateSet(contractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, balance))
-	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId0+":0", "1")
-	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId1+":0", "1")
+	ct.StateSet(contractId, constants.ObservedBlockPrefix+"100", buildObservedList(t,
+		observedParam{fakeTxId0, 0}, observedParam{fakeTxId1, 0},
+	))
 	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(mapping.UtxoRegistry{
 		{Id: 1024, Amount: 50000},
 		{Id: 1025, Amount: 50000},

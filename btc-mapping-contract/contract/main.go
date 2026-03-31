@@ -47,6 +47,23 @@ func checkAdmin() {
 	)
 }
 
+func checkOwner() {
+	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
+		ce.CustomAbort(
+			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
+		)
+	}
+}
+
+func checkNotPaused() {
+	s := sdk.StateGetObject(constants.PausedKey)
+	if s != nil && *s == "1" {
+		ce.CustomAbort(
+			ce.NewContractError(ce.ErrInput, "contract is paused"),
+		)
+	}
+}
+
 //go:wasmexport seedBlocks
 func SeedBlocks(blockSeedInput *string) *string {
 	checkAdmin()
@@ -179,6 +196,7 @@ func ReplaceBlock(input *string) *string {
 
 //go:wasmexport map
 func Map(incomingTx *string) *string {
+	checkNotPaused()
 	var mapInstructions mapping.MapParams
 	err := tinyjson.Unmarshal([]byte(*incomingTx), &mapInstructions)
 	if err != nil {
@@ -248,6 +266,7 @@ func UnmapFrom(tx *string) *string {
 }
 
 func doUnmap(instructions *mapping.TransferParams) {
+	checkNotPaused()
 	if len(instructions.To) < 26 {
 		ce.CustomAbort(
 			ce.NewContractError(ce.ErrInput, "invalid destination address ["+instructions.To+"]"),
@@ -279,6 +298,7 @@ func doUnmap(instructions *mapping.TransferParams) {
 //
 //go:wasmexport transfer
 func Transfer(tx *string) *string {
+	checkNotPaused()
 	var transferInstructions mapping.TransferParams
 	err := tinyjson.Unmarshal([]byte(*tx), &transferInstructions)
 	if err != nil {
@@ -303,6 +323,7 @@ func Transfer(tx *string) *string {
 //
 //go:wasmexport transferFrom
 func TransferFrom(tx *string) *string {
+	checkNotPaused()
 	var drawInstructions mapping.TransferParams
 	err := tinyjson.Unmarshal([]byte(*tx), &drawInstructions)
 	if err != nil {
@@ -323,6 +344,7 @@ func TransferFrom(tx *string) *string {
 //
 //go:wasmexport approve
 func Approve(input *string) *string {
+	checkNotPaused()
 	env := sdk.GetEnv()
 	var params mapping.AllowanceParams
 	err := tinyjson.Unmarshal([]byte(*input), &params)
@@ -350,6 +372,7 @@ func Approve(input *string) *string {
 //
 //go:wasmexport increaseAllowance
 func IncreaseAllowance(input *string) *string {
+	checkNotPaused()
 	env := sdk.GetEnv()
 	var params mapping.AllowanceParams
 	err := tinyjson.Unmarshal([]byte(*input), &params)
@@ -377,6 +400,7 @@ func IncreaseAllowance(input *string) *string {
 //
 //go:wasmexport decreaseAllowance
 func DecreaseAllowance(input *string) *string {
+	checkNotPaused()
 	env := sdk.GetEnv()
 	var params mapping.AllowanceParams
 	err := tinyjson.Unmarshal([]byte(*input), &params)
@@ -406,6 +430,7 @@ func DecreaseAllowance(input *string) *string {
 //
 //go:wasmexport confirmSpend
 func ConfirmSpend(input *string) *string {
+	checkNotPaused()
 	var params mapping.ConfirmSpendParams
 	err := tinyjson.Unmarshal([]byte(*input), &params)
 	if err != nil {
@@ -436,6 +461,25 @@ func ConfirmSpend(input *string) *string {
 	}
 
 	return mapping.StrPtr("0")
+}
+
+// Pauses all token operations (map, unmap, transfer, approve, confirmSpend).
+// Admin/owner operations remain available while paused.
+//
+//go:wasmexport pause
+func Pause(_ *string) *string {
+	checkOwner()
+	sdk.StateSetObject(constants.PausedKey, "1")
+	return mapping.StrPtr("contract paused")
+}
+
+// Resumes all token operations after a pause.
+//
+//go:wasmexport unpause
+func Unpause(_ *string) *string {
+	checkOwner()
+	sdk.StateDeleteObject(constants.PausedKey)
+	return mapping.StrPtr("contract unpaused")
 }
 
 //go:wasmexport getInfo

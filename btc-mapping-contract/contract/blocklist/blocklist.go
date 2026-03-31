@@ -188,6 +188,9 @@ func PruneOldHeaders(lastHeight uint32) int {
 			sdk.StateDeleteObject(key)
 			pruned++
 		}
+		// Also prune the observed tx list for this block height
+		observedKey := constants.ObservedBlockPrefix + strconv.FormatInt(h, 10)
+		sdk.StateDeleteObject(observedKey)
 	}
 	sdk.StateSetObject(constants.PruneFloorKey, strconv.FormatInt(h, 10))
 	return pruned
@@ -213,6 +216,9 @@ func HandleReplaceBlock(rawHeader BlockHeaderBytes, networkMode string) (uint32,
 	lastHeight, err := LastHeightFromState()
 	if err != nil {
 		return 0, ce.WrapContractError(ce.ErrStateAccess, err, "error reading last block height")
+	}
+	if lastHeight == 0 {
+		return 0, ce.NewContractError(ce.ErrInput, "cannot replace block at height 0 (no previous block to chain to)")
 	}
 
 	// decode the replacement header
