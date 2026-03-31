@@ -484,6 +484,89 @@ func Unpause(_ *string) *string {
 	return mapping.StrPtr("contract unpaused")
 }
 
+//go:wasmexport migrate
+func Migrate(_ *string) *string {
+	checkOwner()
+
+	versionPtr := sdk.StateGetObject(constants.MigrateVersionKey)
+	version := ""
+	if versionPtr != nil {
+		version = *versionPtr
+	}
+
+	// --- v1: migrate UTXO registry from 9-byte (uint8 ID + int64) to 8-byte
+	// (uint16 ID + uint48) entries, and counter from 2 bytes to 4 bytes.
+	// Old confirmed pool: 64–255 → new: 1024–65535 (offset +960).
+	// Old unconfirmed pool: 0–63 → unchanged (0–1023 range, same IDs).
+	// Individual UTXO blobs (u-<id>) are re-keyed to match the new hex IDs.
+	if version < "1" {
+		// Read old-format registry (9 bytes/entry: 1-byte ID + 8-byte amount BE)
+		regRaw := sdk.StateGetObject(constants.UtxoRegistryKey)
+		if regRaw != nil && len(*regRaw) > 0 {
+			oldData := []byte(*regRaw)
+			if len(oldData)%9 == 0 {
+				entryCount := len(oldData) / 9
+				newRegistry := make(mapping.UtxoRegistry, entryCount)
+				for i := 0; i < entryCount; i++ {
+					oldId := uint16(oldData[i*9])
+					amount := int64(uint64(oldData[i*9+1])<<56 | uint64(oldData[i*9+2])<<48 |
+						uint64(oldData[i*9+3])<<40 | uint64(oldData[i*9+4])<<32 |
+						uint64(oldData[i*9+5])<<24 | uint64(oldData[i*9+6])<<16 |
+						uint64(oldData[i*9+7])<<8 | uint64(oldData[i*9+8]))
+
+					// Map old ID to new ID
+					newId := oldId
+					if oldId >= constants.OldUtxoConfirmedPoolStart {
+						newId = oldId - constants.OldUtxoConfirmedPoolStart + constants.UtxoConfirmedPoolStart
+					}
+					newRegistry[i] = mapping.UtxoRegistryEntry{Id: newId, Amount: amount}
+
+					// Re-key the UTXO blob: copy from old key to new key, delete old
+					oldKey := constants.UtxoPrefix + strconv.FormatUint(uint64(oldId), 16)
+					newKey := constants.UtxoPrefix + strconv.FormatUint(uint64(newId), 16)
+					if oldKey != newKey {
+						blob := sdk.StateGetObject(oldKey)
+						if blob != nil && *blob != "" {
+							sdk.StateSetObject(newKey, *blob)
+							sdk.StateDeleteObject(oldKey)
+						}
+					}
+				}
+				// Write new-format registry (8 bytes/entry)
+				sdk.StateSetObject(constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(newRegistry)))
+			}
+		}
+
+		// Migrate counter from 2 bytes [uint8, uint8] to 4 bytes [uint16 BE, uint16 BE]
+		counterRaw := sdk.StateGetObject(constants.UtxoLastIdKey)
+		if counterRaw != nil && len(*counterRaw) == 2 {
+			oldBytes := []byte(*counterRaw)
+			oldConfirmed := uint16(oldBytes[0])
+			oldUnconfirmed := uint16(oldBytes[1])
+
+			newConfirmed := oldConfirmed
+			if oldConfirmed >= constants.OldUtxoConfirmedPoolStart {
+				newConfirmed = oldConfirmed - constants.OldUtxoConfirmedPoolStart + constants.UtxoConfirmedPoolStart
+			}
+
+			var buf [4]byte
+			buf[0] = byte(newConfirmed >> 8)
+			buf[1] = byte(newConfirmed)
+			buf[2] = byte(oldUnconfirmed >> 8)
+			buf[3] = byte(oldUnconfirmed)
+			sdk.StateSetObject(constants.UtxoLastIdKey, string(buf[:]))
+		}
+
+		sdk.StateSetObject(constants.MigrateVersionKey, "1")
+		sdk.Log("migrate|v=1")
+	}
+
+	// --- future migrations go here ---
+
+	result := "migrated to v" + *sdk.StateGetObject(constants.MigrateVersionKey)
+	return &result
+}
+
 //go:wasmexport getInfo
 func GetInfo(_ *string) *string {
 	return mapping.StrPtr(`{"name":"Bitcoin","symbol":"BTC","decimals":"8"}`)

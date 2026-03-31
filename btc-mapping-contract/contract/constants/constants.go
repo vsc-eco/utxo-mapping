@@ -37,9 +37,9 @@ const PruneFloorKey = "pf" // lowest unpruned block height, updated during pruni
 
 // Instruction URL search param keys
 const (
-	DepositToKey     = "deposit_to"
-	SwapAssetOut     = "swap_asset_out"
-	SwapNetworkOut   = "swap_network_out"
+	DepositToKey        = "deposit_to"
+	SwapAssetOut        = "swap_asset_out"
+	SwapNetworkOut      = "swap_network_out"
 	SwapToKey           = "swap_to"
 	DestinationChainKey = "destination_chain"
 	ReturnAddressKey    = "return_address"
@@ -59,7 +59,17 @@ const (
 
 const AllowancePrefix = "q" + DirPathDelimiter
 
-const PausedKey = "paused" // "1" when contract is paused, absent/empty when active
+const PausedKey = "paused"     // "1" when contract is paused, absent/empty when active
+const MigrateVersionKey = "mv" // current migration version (decimal string)
+
+// LatestMigrateVersion is the newest migration version. Set this in init/seed
+// so freshly deployed contracts skip all migrations.
+const LatestMigrateVersion = "1"
+
+// Old format constants (pre-migration)
+const (
+	OldUtxoConfirmedPoolStart = 64
+)
 
 const OracleAddress = "did:vsc:oracle:btc"
 const PrimaryPublicKeyStateKey = "pubkey"
@@ -74,8 +84,8 @@ const MaxBaseFeeRate int64 = 1000
 
 // MaxBlockRetention is the number of recent block headers to keep.
 // Older headers are pruned during addBlocks to prevent unbounded state growth.
-// 101 confirmations exceeds Thorchain's 100-confirmation security threshold.
-const MaxBlockRetention = 101
+// keep a week worth of headers to allow addresses to be registered after the fact
+const MaxBlockRetention = 1080
 
 // MaxPrunePerCall limits how many old headers are deleted in a single
 // addBlocks invocation to keep gas usage predictable.
