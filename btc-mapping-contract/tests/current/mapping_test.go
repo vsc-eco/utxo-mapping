@@ -94,15 +94,15 @@ func TestUnmap(t *testing.T) {
 	ct.StateSet(contractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, 10000))
 	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId0+":0", "1")
 	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId1+":0", "1")
-	// UTXOs in confirmed pool: IDs 64 (0x40) and 65 (0x41)
+	// UTXOs in confirmed pool: IDs 1024 (0x400) and 1025 (0x401)
 	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(mapping.UtxoRegistry{
-		{Id: 64, Amount: 5000},
-		{Id: 65, Amount: 5000},
+		{Id: 1024, Amount: 5000},
+		{Id: 1025, Amount: 5000},
 	})))
-	ct.StateSet(contractId, constants.UtxoPrefix+"40", depositUtxoBinary(t, fakeTxId0, 0, 5000, instruction))
-	ct.StateSet(contractId, constants.UtxoPrefix+"41", changeUtxoBinary(t, fakeTxId1, 0, 5000))
-	// 2-byte counter: [confirmedNextId=66, unconfirmedNextId=0]
-	ct.StateSet(contractId, constants.UtxoLastIdKey, string([]byte{66, 0}))
+	ct.StateSet(contractId, constants.UtxoPrefix+"400", depositUtxoBinary(t, fakeTxId0, 0, 5000, instruction))
+	ct.StateSet(contractId, constants.UtxoPrefix+"401", changeUtxoBinary(t, fakeTxId1, 0, 5000))
+	// 4-byte counter: [confirmedNextId=1026, unconfirmedNextId=0]
+	ct.StateSet(contractId, constants.UtxoLastIdKey, encodeUtxoCounters(1026, 0))
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
 		ActiveSupply: 10000,
 		UserSupply:   10000,

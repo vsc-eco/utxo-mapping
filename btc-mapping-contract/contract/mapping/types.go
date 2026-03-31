@@ -55,13 +55,13 @@ type Utxo struct {
 	Tag      []byte // raw tag bytes (32 bytes for deposits, empty for change)
 }
 
-// UtxoRegistryEntry holds the single-byte pool ID and the amount for one UTXO.
+// UtxoRegistryEntry holds a uint16 pool ID and a 6-byte amount for one UTXO.
 //
-// Binary layout of the registry ("utxor" state key): each entry is 9 bytes.
-//   - Byte 0:   ID (0–63 = unconfirmed pool, 64–255 = confirmed pool)
-//   - Bytes 1–8: Amount in satoshis (int64, little-endian)
+// Binary layout of the registry ("r" state key): each entry is 8 bytes.
+//   - Bytes 0–1: ID (uint16 BE; 0–1023 = unconfirmed, 1024–65535 = confirmed)
+//   - Bytes 2–7: Amount in satoshis (uint48 BE, max ~2.81M BTC)
 type UtxoRegistryEntry struct {
-	Id     uint8 // 0-63 = unconfirmed, 64-255 = confirmed
+	Id     uint16 // 0-1023 = unconfirmed, 1024-65535 = confirmed
 	Amount int64
 }
 
@@ -108,12 +108,12 @@ type SystemSupply struct {
 // ContractState is the top-level in-memory state loaded at the start of each
 // contract action and saved at the end.
 //
-// ConfirmedNextId and UnconfirmedNextId replace the old single uint32 counter.
-// They are stored together as 2 bytes at "utxoid": [confirmed, unconfirmed].
+// ConfirmedNextId and UnconfirmedNextId are stored together as 4 bytes at "i":
+// two uint16 BE values [confirmedNext, unconfirmedNext].
 type ContractState struct {
 	UtxoList          UtxoRegistry
-	ConfirmedNextId   uint8 // next candidate in the confirmed pool   (64–255, wraps)
-	UnconfirmedNextId uint8 // next candidate in the unconfirmed pool (0–63,  wraps)
+	ConfirmedNextId   uint16 // next candidate in the confirmed pool   (1024–65535, wraps)
+	UnconfirmedNextId uint16 // next candidate in the unconfirmed pool (0–1023,    wraps)
 	TxSpendsList      TxSpendsRegistry
 	Supply            SystemSupply
 	PublicKeys        PublicKeys

@@ -32,14 +32,14 @@ func setupConfirmSpendContract(t *testing.T) (*test_utils.ContractTest, string, 
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 	ct.StateSet(contractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, 5000))
 
-	// One confirmed UTXO (id=64) still in pool
+	// One confirmed UTXO (id=1024) still in pool
 	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(mapping.UtxoRegistry{
-		{Id: 64, Amount: 5000},
+		{Id: 1024, Amount: 5000},
 		{Id: 0, Amount: 2000}, // unconfirmed change from the spend
 	})))
-	ct.StateSet(contractId, constants.UtxoPrefix+"40", depositUtxoBinary(t, fakeTxId0, 0, 5000, instruction))
+	ct.StateSet(contractId, constants.UtxoPrefix+"400", depositUtxoBinary(t, fakeTxId0, 0, 5000, instruction))
 	ct.StateSet(contractId, constants.UtxoPrefix+"0", changeUtxoBinary(t, fixture.TxId, 0, 2000))
-	ct.StateSet(contractId, constants.UtxoLastIdKey, string([]byte{65, 1}))
+	ct.StateSet(contractId, constants.UtxoLastIdKey, encodeUtxoCounters(1025, 1))
 
 	// Create signing data for the pending spend so updateUtxoSpends can find it.
 	sigData := mapping.SigningData{

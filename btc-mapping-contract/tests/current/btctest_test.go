@@ -43,6 +43,15 @@ func encodeBalance(t *testing.T, amount int64) string {
 	return string(buf[8-n:])
 }
 
+// encodeUtxoCounters encodes the confirmed and unconfirmed next-ID cursors
+// into the 4-byte format expected by the contract (two uint16 BE values).
+func encodeUtxoCounters(confirmedNext, unconfirmedNext uint16) string {
+	var buf [4]byte
+	binary.BigEndian.PutUint16(buf[0:], confirmedNext)
+	binary.BigEndian.PutUint16(buf[2:], unconfirmedNext)
+	return string(buf[:])
+}
+
 // decodeHex decodes a hex string to raw bytes as a string, for state seeding.
 func decodeHex(t *testing.T, s string) string {
 	t.Helper()
