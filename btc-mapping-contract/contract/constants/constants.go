@@ -19,7 +19,11 @@ const (
 const MaxUtxoAmount int64 = (1 << 48) - 1
 
 const BalancePrefix = "a" + DirPathDelimiter
-const ObservedPrefix = "o" + DirPathDelimiter
+
+// ObservedBlockPrefix stores the list of observed txid:vout pairs for a given
+// block height. Key: "o-<height>", Value: packed 34-byte entries (32-byte txid
+// + 2-byte vout BE). Pruned alongside block headers during addBlocks.
+const ObservedBlockPrefix = "o" + DirPathDelimiter
 const UtxoPrefix = "u" + DirPathDelimiter
 const UtxoRegistryKey = "r"
 const UtxoLastIdKey = "i"
@@ -55,11 +59,18 @@ const (
 
 const AllowancePrefix = "q" + DirPathDelimiter
 
+const PausedKey = "paused" // "1" when contract is paused, absent/empty when active
+
 const OracleAddress = "did:vsc:oracle:btc"
 const PrimaryPublicKeyStateKey = "pubkey"
 const BackupPublicKeyStateKey = "backupkey"
 
 const BlockPrefix = "b" + DirPathDelimiter
+
+// MaxBaseFeeRate caps the base fee rate at 1000 sats/vbyte.
+// Any rate above this is clamped during fee calculation to prevent
+// overflow or unreasonable withdrawal fees from a misconfigured oracle.
+const MaxBaseFeeRate int64 = 1000
 
 // MaxBlockRetention is the number of recent block headers to keep.
 // Older headers are pruned during addBlocks to prevent unbounded state growth.

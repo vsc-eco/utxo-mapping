@@ -52,6 +52,28 @@ func encodeUtxoCounters(confirmedNext, unconfirmedNext uint16) string {
 	return string(buf[:])
 }
 
+// buildObservedList builds a packed per-block observed tx list from (txIdHex, vout) pairs.
+// Each entry is 34 bytes: 32-byte raw txid + 2-byte vout BE.
+func buildObservedList(t *testing.T, entries ...observedParam) string {
+	t.Helper()
+	buf := make([]byte, len(entries)*34)
+	for i, e := range entries {
+		txBytes, err := hex.DecodeString(e.txId)
+		if err != nil || len(txBytes) != 32 {
+			t.Fatalf("bad txid in buildObservedList: %s", e.txId)
+		}
+		off := i * 34
+		copy(buf[off:], txBytes)
+		binary.BigEndian.PutUint16(buf[off+32:], e.vout)
+	}
+	return string(buf)
+}
+
+type observedParam struct {
+	txId string
+	vout uint16
+}
+
 // decodeHex decodes a hex string to raw bytes as a string, for state seeding.
 func decodeHex(t *testing.T, s string) string {
 	t.Helper()

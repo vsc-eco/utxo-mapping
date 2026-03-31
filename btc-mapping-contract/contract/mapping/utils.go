@@ -559,6 +559,17 @@ func safeAdd64(a, b int64) (int64, error) {
 	return a + b, nil
 }
 
+func safeMultiply64(a, b int64) (int64, error) {
+	if a == 0 || b == 0 {
+		return 0, nil
+	}
+	result := a * b
+	if result/a != b {
+		return 0, errors.New("overflow detected")
+	}
+	return result, nil
+}
+
 func safeSubtract64(a, b int64) (int64, error) {
 	if b > 0 && a < math.MinInt64+b {
 		return 0, errors.New("underflow detected")
@@ -575,8 +586,70 @@ func getUtxoKey(id uint16) string {
 	return constants.UtxoPrefix + strconv.FormatUint(uint64(id), 16)
 }
 
-func getObservedKey(utxo Utxo) string {
-	return constants.ObservedPrefix + utxo.TxId + ":" + strconv.FormatUint(uint64(utxo.Vout), 10)
+// ---------------------------------------------------------------------------
+// Per-block observed tx list (34 bytes per entry: 32-byte txid + 2-byte vout BE)
+// State key: "o-<blockHeight>"
+// ---------------------------------------------------------------------------
+
+const observedEntrySize = 34
+
+func observedBlockKey(blockHeight uint32) string {
+	return constants.ObservedBlockPrefix + strconv.FormatUint(uint64(blockHeight), 10)
+}
+
+// observedEntry is a compact 34-byte identifier for a single txid:vout pair.
+type observedEntry [observedEntrySize]byte
+
+func makeObservedEntry(txId string, vout uint32) (observedEntry, error) {
+	var e observedEntry
+	txIdBytes, err := hex.DecodeString(txId)
+	if err != nil || len(txIdBytes) != 32 {
+		return e, errors.New("invalid txid for observed entry")
+	}
+	copy(e[:32], txIdBytes)
+	binary.BigEndian.PutUint16(e[32:], uint16(vout))
+	return e, nil
+}
+
+// loadObservedList loads the packed observed entries for a block height.
+func loadObservedList(blockHeight uint32) []observedEntry {
+	raw := sdk.StateGetObject(observedBlockKey(blockHeight))
+	if raw == nil || len(*raw) == 0 {
+		return nil
+	}
+	data := []byte(*raw)
+	if len(data)%observedEntrySize != 0 {
+		return nil
+	}
+	out := make([]observedEntry, len(data)/observedEntrySize)
+	for i := range out {
+		copy(out[i][:], data[i*observedEntrySize:(i+1)*observedEntrySize])
+	}
+	return out
+}
+
+// isObserved checks whether the entry exists in the list.
+func isObserved(list []observedEntry, entry observedEntry) bool {
+	for _, e := range list {
+		if e == entry {
+			return true
+		}
+	}
+	return false
+}
+
+// saveObservedList writes the packed observed entries for a block height.
+func saveObservedList(blockHeight uint32, list []observedEntry) {
+	buf := make([]byte, len(list)*observedEntrySize)
+	for i, e := range list {
+		copy(buf[i*observedEntrySize:], e[:])
+	}
+	sdk.StateSetObject(observedBlockKey(blockHeight), string(buf))
+}
+
+// DeleteObservedList removes the observed tx list for a block height.
+func DeleteObservedList(blockHeight uint32) {
+	sdk.StateDeleteObject(observedBlockKey(blockHeight))
 }
 
 // DecodeCompressedPubKey decodes a hex string into a CompressedPubKey,

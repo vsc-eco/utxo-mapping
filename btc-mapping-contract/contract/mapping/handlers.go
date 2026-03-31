@@ -42,7 +42,7 @@ func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 	}
 
 	// TODO: return mapping results for each relevenat address as part of contract output, or at least log them
-	err = ms.processUtxos(relevantOutputs, senderLabel(msgTx.TxIn, ms.NetworkParams))
+	err = ms.processUtxos(relevantOutputs, senderLabel(msgTx.TxIn, ms.NetworkParams), txData.BlockHeight)
 	if err != nil {
 		return err
 	}

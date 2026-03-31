@@ -53,24 +53,34 @@ func EphemStateDeleteObject(key string) {
 func GetEnv() Env {
 	envStr := *getEnv(nil)
 	env := Env{}
-	// envMap := map[string]interface{}{}
 	tinyjson.Unmarshal([]byte(envStr), &env)
 	envMap := EnvMap{}
 	tinyjson.Unmarshal([]byte(envStr), &envMap)
 
 	requiredAuths := make([]Address, 0)
-	for _, auth := range envMap["msg.required_auths"].([]interface{}) {
-		addr := auth.(string)
-		requiredAuths = append(requiredAuths, Address(addr))
+	if auths, ok := envMap["msg.required_auths"].([]interface{}); ok {
+		for _, auth := range auths {
+			if addr, ok := auth.(string); ok {
+				requiredAuths = append(requiredAuths, Address(addr))
+			}
+		}
 	}
 	requiredPostingAuths := make([]Address, 0)
-	for _, auth := range envMap["msg.required_posting_auths"].([]interface{}) {
-		addr := auth.(string)
-		requiredPostingAuths = append(requiredPostingAuths, Address(addr))
+	if auths, ok := envMap["msg.required_posting_auths"].([]interface{}); ok {
+		for _, auth := range auths {
+			if addr, ok := auth.(string); ok {
+				requiredPostingAuths = append(requiredPostingAuths, Address(addr))
+			}
+		}
+	}
+
+	senderAddr := ""
+	if s, ok := envMap["msg.sender"].(string); ok {
+		senderAddr = s
 	}
 
 	env.Sender = Sender{
-		Address:              Address(envMap["msg.sender"].(string)),
+		Address:              Address(senderAddr),
 		RequiredAuths:        requiredAuths,
 		RequiredPostingAuths: requiredPostingAuths,
 	}

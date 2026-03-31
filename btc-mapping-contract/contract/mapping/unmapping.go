@@ -59,10 +59,22 @@ func estimateVSize(nonWitnessSize, witnessDataSize int64) int64 {
 	return (nonWitnessSize*3+totalSize+3)/4 + 2
 }
 
+// clampedFeeRate returns the base fee rate clamped to MaxBaseFeeRate.
+func clampedFeeRate(rate int64) int64 {
+	if rate > constants.MaxBaseFeeRate {
+		return constants.MaxBaseFeeRate
+	}
+	if rate < 1 {
+		return 1
+	}
+	return rate
+}
+
 // Helper function to estimate fee for a given number of inputs and outputs.
 // Accounts for the base fee before deciding how many change outputs to include,
 // and only adds change outputs that remain above dust after fee adjustment.
 func (cs *ContractState) estimateFee(numInputs int64, amount, inputAmount int64) int64 {
+	feeRate := clampedFeeRate(cs.Supply.BaseFeeRate)
 	totalChange := inputAmount - amount
 
 	// Base transaction overhead (version, locktime, etc.)
@@ -81,7 +93,7 @@ func (cs *ContractState) estimateFee(numInputs int64, amount, inputAmount int64)
 
 	// Compute base fee (no change outputs) first
 	nonWitnessSize := baseSize + inputSize + outputSize
-	baseFee := estimateVSize(nonWitnessSize, witnessDataSize) * cs.Supply.BaseFeeRate
+	baseFee := estimateVSize(nonWitnessSize, witnessDataSize) * feeRate
 
 	availableChange := totalChange - baseFee
 	if availableChange < 0 {
@@ -95,7 +107,7 @@ func (cs *ContractState) estimateFee(numInputs int64, amount, inputAmount int64)
 		addedOutputs := int64(0)
 		for i := int64(0); i < numChangeOutputs; i++ {
 			newNonWitness := nonWitnessSize + (addedOutputs+1)*43
-			newFee := estimateVSize(newNonWitness, witnessDataSize) * cs.Supply.BaseFeeRate
+			newFee := estimateVSize(newNonWitness, witnessDataSize) * feeRate
 			newAvailable := totalChange - newFee
 			if newAvailable < 0 {
 				newAvailable = 0
@@ -108,7 +120,7 @@ func (cs *ContractState) estimateFee(numInputs int64, amount, inputAmount int64)
 		}
 	}
 
-	return estimateVSize(nonWitnessSize, witnessDataSize) * cs.Supply.BaseFeeRate
+	return estimateVSize(nonWitnessSize, witnessDataSize) * feeRate
 }
 
 // returns a list of internal ids of inputs for making a tx
@@ -179,7 +191,8 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint16, int64, error) 
 	return nil, 0, ce.NewContractError(ce.ErrBalance, "total available balance insufficient to complete transaction")
 }
 
-func (cs *ContractState) calculateSegwitFee(baseSize int64, witnessScripts map[int][]byte) int64 {
+func (cs *ContractState) calculateSegwitFee(baseSize int64, witnessScripts map[int][]byte) (int64, error) {
+	feeRate := clampedFeeRate(cs.Supply.BaseFeeRate)
 	// Witness stack per input: <sig> <branch_selector> <witness_script>
 	// Serialized: item_count(1) + sig_len(1) + sig(72) + branch_len(1) + branch(1) + script_len(1) + script(N)
 	witnessDataSize := int64(0)
@@ -189,7 +202,11 @@ func (cs *ContractState) calculateSegwitFee(baseSize int64, witnessScripts map[i
 	totalSize := baseSize + witnessDataSize
 	// +3 to round up, + 2 for has witness data flag
 	vSize := (baseSize*3+totalSize+3)/4 + 2
-	return vSize * cs.Supply.BaseFeeRate
+	fee, err := safeMultiply64(vSize, feeRate)
+	if err != nil {
+		return 0, ce.WrapContractError(ce.ErrArithmetic, err, "fee calculation overflow")
+	}
+	return fee, nil
 }
 
 // buildSpendTransaction constructs the Bitcoin withdrawal transaction and
@@ -248,7 +265,10 @@ func (cs *ContractState) buildSpendTransaction(
 	tx.AddTxOut(destTxOut)
 
 	baseSize := int64(tx.SerializeSize())
-	fee := cs.calculateSegwitFee(baseSize, witnessScripts)
+	fee, err := cs.calculateSegwitFee(baseSize, witnessScripts)
+	if err != nil {
+		return nil, nil, 0, err
+	}
 
 	totalChange := totalInputsAmount - sendAmount
 
@@ -276,7 +296,10 @@ func (cs *ContractState) buildSpendTransaction(
 		addedOutputs := int64(0)
 		for range numChangeOuputs {
 			newBaseSize := baseSize + (addedOutputs+1)*changeOutputSize
-			newFee := cs.calculateSegwitFee(newBaseSize, witnessScripts)
+			newFee, err := cs.calculateSegwitFee(newBaseSize, witnessScripts)
+			if err != nil {
+				return nil, nil, 0, err
+			}
 			newAvailable := totalChange - newFee
 			if newAvailable < 0 {
 				newAvailable = 0

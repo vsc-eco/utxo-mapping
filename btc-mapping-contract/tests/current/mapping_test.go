@@ -92,8 +92,9 @@ func TestUnmap(t *testing.T) {
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 	ct.StateSet(contractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, 10000))
-	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId0+":0", "1")
-	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId1+":0", "1")
+	ct.StateSet(contractId, constants.ObservedBlockPrefix+"100", buildObservedList(t,
+		observedParam{fakeTxId0, 0}, observedParam{fakeTxId1, 0},
+	))
 	// UTXOs in confirmed pool: IDs 1024 (0x400) and 1025 (0x401)
 	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(mapping.UtxoRegistry{
 		{Id: 1024, Amount: 5000},
