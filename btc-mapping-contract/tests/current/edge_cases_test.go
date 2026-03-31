@@ -113,10 +113,10 @@ func TestUnmapInsufficientBalance(t *testing.T) {
 	ct.StateSet(contractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, 5000))
 	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId0+":0", "1")
 	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(mapping.UtxoRegistry{
-		{Id: 64, Amount: 5000},
+		{Id: 1024, Amount: 5000},
 	})))
-	ct.StateSet(contractId, constants.UtxoPrefix+"40", depositUtxoBinary(t, fakeTxId0, 0, 5000, instruction))
-	ct.StateSet(contractId, constants.UtxoLastIdKey, string([]byte{65, 0}))
+	ct.StateSet(contractId, constants.UtxoPrefix+"400", depositUtxoBinary(t, fakeTxId0, 0, 5000, instruction))
+	ct.StateSet(contractId, constants.UtxoLastIdKey, encodeUtxoCounters(1025, 0))
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
 		ActiveSupply: 5000,
 		UserSupply:   5000,
@@ -165,10 +165,10 @@ func TestUnmapAmountBelowDust(t *testing.T) {
 	ct.StateSet(contractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, 50000))
 	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId0+":0", "1")
 	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(mapping.UtxoRegistry{
-		{Id: 64, Amount: 50000},
+		{Id: 1024, Amount: 50000},
 	})))
-	ct.StateSet(contractId, constants.UtxoPrefix+"40", depositUtxoBinary(t, fakeTxId0, 0, 50000, instruction))
-	ct.StateSet(contractId, constants.UtxoLastIdKey, string([]byte{65, 0}))
+	ct.StateSet(contractId, constants.UtxoPrefix+"400", depositUtxoBinary(t, fakeTxId0, 0, 50000, instruction))
+	ct.StateSet(contractId, constants.UtxoLastIdKey, encodeUtxoCounters(1025, 0))
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
 		ActiveSupply: 50000,
 		UserSupply:   50000,
@@ -406,12 +406,12 @@ func TestUnmapExactBalance(t *testing.T) {
 	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId0+":0", "1")
 	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId1+":0", "1")
 	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(mapping.UtxoRegistry{
-		{Id: 64, Amount: 50000},
-		{Id: 65, Amount: 50000},
+		{Id: 1024, Amount: 50000},
+		{Id: 1025, Amount: 50000},
 	})))
-	ct.StateSet(contractId, constants.UtxoPrefix+"40", depositUtxoBinary(t, fakeTxId0, 0, 50000, instruction))
-	ct.StateSet(contractId, constants.UtxoPrefix+"41", changeUtxoBinary(t, fakeTxId1, 0, 50000))
-	ct.StateSet(contractId, constants.UtxoLastIdKey, string([]byte{66, 0}))
+	ct.StateSet(contractId, constants.UtxoPrefix+"400", depositUtxoBinary(t, fakeTxId0, 0, 50000, instruction))
+	ct.StateSet(contractId, constants.UtxoPrefix+"401", changeUtxoBinary(t, fakeTxId1, 0, 50000))
+	ct.StateSet(contractId, constants.UtxoLastIdKey, encodeUtxoCounters(1026, 0))
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
 		ActiveSupply: balance,
 		UserSupply:   balance,
@@ -632,10 +632,10 @@ func TestUnmapSupplyUpdates(t *testing.T) {
 
 	ct.StateSet(contractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, balance))
 	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(mapping.UtxoRegistry{
-		{Id: 64, Amount: 100000},
+		{Id: 1024, Amount: 100000},
 	})))
-	ct.StateSet(contractId, constants.UtxoPrefix+"40", depositUtxoBinary(t, fakeTxId0, 0, 100000, instruction))
-	ct.StateSet(contractId, constants.UtxoLastIdKey, string([]byte{65, 0}))
+	ct.StateSet(contractId, constants.UtxoPrefix+"400", depositUtxoBinary(t, fakeTxId0, 0, 100000, instruction))
+	ct.StateSet(contractId, constants.UtxoLastIdKey, encodeUtxoCounters(1025, 0))
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
 		ActiveSupply: balance,
 		UserSupply:   balance,
@@ -939,15 +939,15 @@ func TestConfirmSpendPromotesUtxos(t *testing.T) {
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 
-	// Set up: one confirmed UTXO (id=64) and one unconfirmed (id=0) linked to a pending spend
+	// Set up: one confirmed UTXO (id=1024) and one unconfirmed (id=0) linked to a pending spend
 	ct.StateSet(contractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, 5000))
 	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(mapping.UtxoRegistry{
-		{Id: 64, Amount: 5000},
+		{Id: 1024, Amount: 5000},
 		{Id: 0, Amount: 2000},
 	})))
-	ct.StateSet(contractId, constants.UtxoPrefix+"40", depositUtxoBinary(t, fakeTxId0, 0, 5000, instruction))
+	ct.StateSet(contractId, constants.UtxoPrefix+"400", depositUtxoBinary(t, fakeTxId0, 0, 5000, instruction))
 	ct.StateSet(contractId, constants.UtxoPrefix+"0", changeUtxoBinary(t, fixture.TxId, 0, 2000))
-	ct.StateSet(contractId, constants.UtxoLastIdKey, string([]byte{65, 1}))
+	ct.StateSet(contractId, constants.UtxoLastIdKey, encodeUtxoCounters(1025, 1))
 	ct.StateSet(contractId, constants.TxSpendsRegistryKey, string(mapping.MarshalTxSpendsRegistry(mapping.TxSpendsRegistry{fixture.TxId})))
 
 	sigData := mapping.SigningData{

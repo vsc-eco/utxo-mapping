@@ -46,6 +46,11 @@ func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) ([]Utxo, error) {
 			)
 		}
 		if ok {
+			if txOut.Value > constants.MaxUtxoAmount {
+				return nil, ce.NewContractError(ce.ErrInput, "utxo amount exceeds maximum ("+
+					strconv.FormatInt(txOut.Value, 10)+" > "+
+					strconv.FormatInt(constants.MaxUtxoAmount, 10)+")")
+			}
 			utxo := Utxo{
 				TxId:     msgTx.TxID(),
 				Vout:     uint32(index),

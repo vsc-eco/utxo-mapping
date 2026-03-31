@@ -41,7 +41,7 @@ func calcVscFee(amount int64) (int64, error) {
 	return finalFee, nil
 }
 
-func getInputUtxos(registryEntries []uint8) ([]*Utxo, error) {
+func getInputUtxos(registryEntries []uint16) ([]*Utxo, error) {
 	result := make([]*Utxo, len(registryEntries))
 	for i, internalId := range registryEntries {
 		utxo, err := loadUtxo(internalId)
@@ -112,8 +112,8 @@ func (cs *ContractState) estimateFee(numInputs int64, amount, inputAmount int64)
 }
 
 // returns a list of internal ids of inputs for making a tx
-func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint8, int64, error) {
-	inputs := []uint8{}
+func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint16, int64, error) {
+	inputs := []uint16{}
 
 	// accumulates amount of all inputs
 	accAmount := int64(0)
@@ -126,13 +126,13 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint8, int64, error) {
 		fee := cs.estimateFee(1, amount, entry.Amount)
 		requiredAmount := amount + fee
 		if entry.Amount >= requiredAmount {
-			return []uint8{entry.Id}, entry.Amount, nil
+			return []uint16{entry.Id}, entry.Amount, nil
 		}
 	}
 
 	// second loop: accumulate confirmed UTXOs, fall back to unconfirmed if needed
 	type unconfirmedEntry struct {
-		id     uint8
+		id     uint16
 		amount int64
 	}
 	unconfirmedTxs := []unconfirmedEntry{}

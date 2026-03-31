@@ -373,12 +373,12 @@ func TestUnmapFromWithAllowance(t *testing.T) {
 	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId0+":0", "1")
 	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId1+":0", "1")
 	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(mapping.UtxoRegistry{
-		{Id: 64, Amount: 5000},
-		{Id: 65, Amount: 5000},
+		{Id: 1024, Amount: 5000},
+		{Id: 1025, Amount: 5000},
 	})))
-	ct.StateSet(contractId, constants.UtxoPrefix+"40", depositUtxoBinary(t, fakeTxId0, 0, 5000, instruction))
-	ct.StateSet(contractId, constants.UtxoPrefix+"41", changeUtxoBinary(t, fakeTxId1, 0, 5000))
-	ct.StateSet(contractId, constants.UtxoLastIdKey, string([]byte{66, 0}))
+	ct.StateSet(contractId, constants.UtxoPrefix+"400", depositUtxoBinary(t, fakeTxId0, 0, 5000, instruction))
+	ct.StateSet(contractId, constants.UtxoPrefix+"401", changeUtxoBinary(t, fakeTxId1, 0, 5000))
+	ct.StateSet(contractId, constants.UtxoLastIdKey, encodeUtxoCounters(1026, 0))
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
 		ActiveSupply: ownerBalance,
 		UserSupply:   ownerBalance,
@@ -455,12 +455,12 @@ func TestUnmapFromWithoutAllowanceFails(t *testing.T) {
 	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId0+":0", "1")
 	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId1+":0", "1")
 	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(mapping.UtxoRegistry{
-		{Id: 64, Amount: 5000},
-		{Id: 65, Amount: 5000},
+		{Id: 1024, Amount: 5000},
+		{Id: 1025, Amount: 5000},
 	})))
-	ct.StateSet(contractId, constants.UtxoPrefix+"40", depositUtxoBinary(t, fakeTxId0, 0, 5000, instruction))
-	ct.StateSet(contractId, constants.UtxoPrefix+"41", changeUtxoBinary(t, fakeTxId1, 0, 5000))
-	ct.StateSet(contractId, constants.UtxoLastIdKey, string([]byte{66, 0}))
+	ct.StateSet(contractId, constants.UtxoPrefix+"400", depositUtxoBinary(t, fakeTxId0, 0, 5000, instruction))
+	ct.StateSet(contractId, constants.UtxoPrefix+"401", changeUtxoBinary(t, fakeTxId1, 0, 5000))
+	ct.StateSet(contractId, constants.UtxoLastIdKey, encodeUtxoCounters(1026, 0))
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
 		ActiveSupply: ownerBalance,
 		UserSupply:   ownerBalance,

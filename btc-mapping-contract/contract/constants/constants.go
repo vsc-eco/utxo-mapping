@@ -5,13 +5,18 @@ const DirPathDelimiter = "-"
 const TssKeyName = "main"
 const RouterContractIdKey = "routerid"
 
-// UTXO ID pool layout (single-byte ID, 256 slots total).
-// IDs 0–63  are the unconfirmed pool (change outputs pending confirmation).
-// IDs 64–255 are the confirmed pool   (active mapped UTXOs ready to spend).
+// UTXO ID pool layout (uint16 ID, 65536 slots total).
+// IDs 0–1023   are the unconfirmed pool (change outputs pending confirmation).
+// IDs 1024–65535 are the confirmed pool (active mapped UTXOs ready to spend).
 const (
-	UtxoUnconfirmedPoolSize = 64 // number of slots in the unconfirmed pool
-	UtxoConfirmedPoolStart  = 64 // first ID in the confirmed pool
+	UtxoUnconfirmedPoolSize = 1024  // number of slots in the unconfirmed pool
+	UtxoConfirmedPoolStart  = 1024  // first ID in the confirmed pool
+	UtxoMaxId               = 65535 // max uint16
 )
+
+// MaxUtxoAmount is the maximum satoshi value for a single UTXO in the registry.
+// 6 bytes (48 bits) supports up to ~2.81M BTC — far beyond any realistic deposit.
+const MaxUtxoAmount int64 = (1 << 48) - 1
 
 const BalancePrefix = "a" + DirPathDelimiter
 const ObservedPrefix = "o" + DirPathDelimiter

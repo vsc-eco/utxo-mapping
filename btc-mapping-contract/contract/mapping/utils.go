@@ -149,22 +149,30 @@ func checkAndDeductBalance(env sdk.Env, account string, amount int64) error {
 // ---------------------------------------------------------------------------
 
 func MarshalUtxoRegistry(r UtxoRegistry) []byte {
-	buf := make([]byte, len(r)*9)
+	buf := make([]byte, len(r)*8)
+	var tmp [8]byte
 	for i, e := range r {
-		buf[i*9] = e.Id
-		binary.BigEndian.PutUint64(buf[i*9+1:], uint64(e.Amount))
+		off := i * 8
+		binary.BigEndian.PutUint16(buf[off:], e.Id)
+		binary.BigEndian.PutUint64(tmp[:], uint64(e.Amount))
+		copy(buf[off+2:off+8], tmp[2:]) // lower 6 bytes
 	}
 	return buf
 }
 
 func UnmarshalUtxoRegistry(data []byte) (UtxoRegistry, error) {
-	if len(data)%9 != 0 {
-		return nil, errors.New("invalid utxo registry: length not a multiple of 9")
+	if len(data)%8 != 0 {
+		return nil, errors.New("invalid utxo registry: length not a multiple of 8")
 	}
-	out := make(UtxoRegistry, len(data)/9)
+	out := make(UtxoRegistry, len(data)/8)
+	var tmp [8]byte
 	for i := range out {
-		out[i].Id = data[i*9]
-		out[i].Amount = int64(binary.BigEndian.Uint64(data[i*9+1:]))
+		off := i * 8
+		out[i].Id = binary.BigEndian.Uint16(data[off:])
+		copy(tmp[2:], data[off+2:off+8])
+		tmp[0] = 0
+		tmp[1] = 0
+		out[i].Amount = int64(binary.BigEndian.Uint64(tmp[:]))
 	}
 	return out, nil
 }
@@ -240,7 +248,7 @@ func UnmarshalUtxo(data []byte) (*Utxo, error) {
 	return u, nil
 }
 
-func loadUtxo(id uint8) (*Utxo, error) {
+func loadUtxo(id uint16) (*Utxo, error) {
 	raw := sdk.StateGetObject(getUtxoKey(id))
 	if raw == nil || *raw == "" {
 		return nil, ce.NewContractError(ce.ErrStateAccess, "utxo not found for id "+strconv.Itoa(int(id)))
@@ -252,7 +260,7 @@ func loadUtxo(id uint8) (*Utxo, error) {
 	return u, nil
 }
 
-func saveUtxo(id uint8, u *Utxo) {
+func saveUtxo(id uint16, u *Utxo) {
 	sdk.StateSetObject(getUtxoKey(id), string(MarshalUtxo(u)))
 }
 
@@ -327,13 +335,13 @@ func UnmarshalTxSpendsRegistry(data []byte) (TxSpendsRegistry, error) {
 // UTXO ID allocation with rollover and existence check
 // ---------------------------------------------------------------------------
 
-// allocateConfirmedId returns the next free slot in the confirmed pool (64–255).
-// Wraps 255 → 64 and skips slots that already have state data.
-func (cs *ContractState) allocateConfirmedId() (uint8, error) {
+// allocateConfirmedId returns the next free slot in the confirmed pool (1024–65535).
+// Wraps 65535 → 1024 and skips slots that already have state data.
+func (cs *ContractState) allocateConfirmedId() (uint16, error) {
 	startId := cs.ConfirmedNextId
 	for {
 		id := cs.ConfirmedNextId
-		if cs.ConfirmedNextId == 255 {
+		if cs.ConfirmedNextId == constants.UtxoMaxId {
 			cs.ConfirmedNextId = constants.UtxoConfirmedPoolStart
 		} else {
 			cs.ConfirmedNextId++
@@ -348,9 +356,9 @@ func (cs *ContractState) allocateConfirmedId() (uint8, error) {
 	}
 }
 
-// allocateUnconfirmedId returns the next free slot in the unconfirmed pool (0–63).
-// Wraps 63 → 0 and skips slots that already have state data.
-func (cs *ContractState) allocateUnconfirmedId() (uint8, error) {
+// allocateUnconfirmedId returns the next free slot in the unconfirmed pool (0–1023).
+// Wraps 1023 → 0 and skips slots that already have state data.
+func (cs *ContractState) allocateUnconfirmedId() (uint16, error) {
 	startId := cs.UnconfirmedNextId
 	for {
 		id := cs.UnconfirmedNextId
@@ -563,7 +571,7 @@ func safeSubtract64(a, b int64) (int64, error) {
 
 // getUtxoKey returns the state key for a UTXO by its single-byte pool ID.
 // Keys range from "utxo/0" to "utxo/ff".
-func getUtxoKey(id uint8) string {
+func getUtxoKey(id uint16) string {
 	return constants.UtxoPrefix + strconv.FormatUint(uint64(id), 16)
 }
 

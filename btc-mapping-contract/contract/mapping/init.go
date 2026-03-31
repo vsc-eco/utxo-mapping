@@ -5,6 +5,7 @@ import (
 	ce "btc-mapping-contract/contract/contracterrors"
 	"btc-mapping-contract/sdk"
 	"crypto/sha256"
+	"encoding/binary"
 	"net/url"
 	"strings"
 
@@ -35,13 +36,14 @@ func IntializeContractState(publicKeys PublicKeys, networkMode string) (*Contrac
 		}
 	}
 
-	// Load UTXO pool counters (2 bytes: [confirmedNext, unconfirmedNext])
-	confirmedNextId := uint8(constants.UtxoConfirmedPoolStart)
-	unconfirmedNextId := uint8(0)
+	// Load UTXO pool counters (4 bytes: two uint16 BE [confirmedNext, unconfirmedNext])
+	confirmedNextId := uint16(constants.UtxoConfirmedPoolStart)
+	unconfirmedNextId := uint16(0)
 	counterState := sdk.StateGetObject(constants.UtxoLastIdKey)
-	if len(*counterState) == 2 {
-		confirmedNextId = (*counterState)[0]
-		unconfirmedNextId = (*counterState)[1]
+	if len(*counterState) == 4 {
+		counterBytes := []byte(*counterState)
+		confirmedNextId = binary.BigEndian.Uint16(counterBytes[0:])
+		unconfirmedNextId = binary.BigEndian.Uint16(counterBytes[2:])
 	}
 
 	// Load TX spends registry (binary: 32 bytes/entry)
@@ -175,8 +177,11 @@ func (cs *ContractState) SaveToState() error {
 	// UTXO registry (binary)
 	sdk.StateSetObject(constants.UtxoRegistryKey, string(MarshalUtxoRegistry(cs.UtxoList)))
 
-	// UTXO pool counters (2 bytes: [confirmedNext, unconfirmedNext])
-	sdk.StateSetObject(constants.UtxoLastIdKey, string([]byte{cs.ConfirmedNextId, cs.UnconfirmedNextId}))
+	// UTXO pool counters (4 bytes: two uint16 BE [confirmedNext, unconfirmedNext])
+	var counterBuf [4]byte
+	binary.BigEndian.PutUint16(counterBuf[0:], cs.ConfirmedNextId)
+	binary.BigEndian.PutUint16(counterBuf[2:], cs.UnconfirmedNextId)
+	sdk.StateSetObject(constants.UtxoLastIdKey, string(counterBuf[:]))
 
 	// TX spends registry (binary)
 	sdk.StateSetObject(constants.TxSpendsRegistryKey, string(MarshalTxSpendsRegistry(cs.TxSpendsList)))
