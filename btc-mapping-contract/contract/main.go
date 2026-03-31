@@ -210,33 +210,61 @@ func Map(incomingTx *string) *string {
 	return mapping.StrPtr("0")
 }
 
+// Withdraws BTC from the caller's own balance to a Bitcoin address.
+// The `from` field is ignored — unmaps always draw from the caller's balance.
+//
 //go:wasmexport unmap
 func Unmap(tx *string) *string {
-	publicKeys, err := loadPublicKeys()
-	if err != nil {
-		ce.CustomAbort(err)
-	}
-
 	var unmapInstructions mapping.TransferParams
-	err = tinyjson.Unmarshal([]byte(*tx), &unmapInstructions)
+	err := tinyjson.Unmarshal([]byte(*tx), &unmapInstructions)
 	if err != nil {
 		ce.CustomAbort(
 			ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput),
 		)
 	}
-	if len(unmapInstructions.To) < 26 {
+
+	// Enforce: unmap always uses caller as source
+	unmapInstructions.From = ""
+
+	doUnmap(&unmapInstructions)
+	return mapping.StrPtr("0")
+}
+
+// Withdraws BTC from a third-party account that has approved the caller.
+// Requires the `from` account to have set an allowance for the caller via `approve`.
+//
+//go:wasmexport unmapFrom
+func UnmapFrom(tx *string) *string {
+	var unmapInstructions mapping.TransferParams
+	err := tinyjson.Unmarshal([]byte(*tx), &unmapInstructions)
+	if err != nil {
 		ce.CustomAbort(
-			ce.NewContractError(ce.ErrInput, "invalid destination address ["+unmapInstructions.To+"]"),
+			ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput),
 		)
+	}
+
+	doUnmap(&unmapInstructions)
+	return mapping.StrPtr("0")
+}
+
+func doUnmap(instructions *mapping.TransferParams) {
+	if len(instructions.To) < 26 {
+		ce.CustomAbort(
+			ce.NewContractError(ce.ErrInput, "invalid destination address ["+instructions.To+"]"),
+		)
+	}
+
+	publicKeys, err := loadPublicKeys()
+	if err != nil {
+		ce.CustomAbort(err)
 	}
 
 	contractState, err := mapping.IntializeContractState(publicKeys, NetworkMode)
 	if err != nil {
-		err = ce.Prepend(err, "error initializing contract state")
-		ce.CustomAbort(err)
+		ce.CustomAbort(ce.Prepend(err, "error initializing contract state"))
 	}
 
-	err = contractState.HandleUnmap(&unmapInstructions)
+	err = contractState.HandleUnmap(instructions)
 	if err != nil {
 		ce.CustomAbort(err)
 	}
@@ -244,8 +272,6 @@ func Unmap(tx *string) *string {
 	if err != nil {
 		ce.CustomAbort(err)
 	}
-
-	return mapping.StrPtr("0")
 }
 
 // Transfers funds from the Caller (immediate caller of the contract).

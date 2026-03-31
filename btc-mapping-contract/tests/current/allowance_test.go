@@ -420,7 +420,7 @@ func TestUnmapFromWithAllowance(t *testing.T) {
 			RequiredPostingAuths: []string{},
 		},
 		ContractId: contractId,
-		Action:     "unmap",
+		Action:     "unmapFrom",
 		Payload:    payload,
 		RcLimit:    10000,
 		Intents:    []contracts.Intent{},
@@ -429,7 +429,7 @@ func TestUnmapFromWithAllowance(t *testing.T) {
 	dumpLogs(t, r.Logs)
 
 	if r.Err != "" {
-		t.Fatalf("unmap from with allowance failed: %s: %s", r.Err, r.ErrMsg)
+		t.Fatalf("unmapFrom with allowance failed: %s: %s", r.Err, r.ErrMsg)
 	}
 	assert.True(t, r.Success)
 
@@ -496,13 +496,13 @@ func TestUnmapFromWithoutAllowanceFails(t *testing.T) {
 			RequiredPostingAuths: []string{},
 		},
 		ContractId: contractId,
-		Action:     "unmap",
+		Action:     "unmapFrom",
 		Payload:    payload,
 		RcLimit:    10000,
 		Intents:    []contracts.Intent{},
 	})
 
-	assert.False(t, r.Success, "unmap without allowance should fail")
+	assert.False(t, r.Success, "unmapFrom without allowance should fail")
 	assert.NotEmpty(t, r.Err)
 
 	// Owner balance should be unchanged

@@ -37,7 +37,7 @@ This is a **TinyGo WASM smart contract** that maps Bitcoin UTXOs to Magi/VSC Net
 
 ### Contract Modules
 
-**`contract/main.go`** — WASM entry point. Exports functions via `//go:wasmexport` and routes calls to handlers. Key exported actions: `map`, `unmap`, `transfer`, `transferFrom`, `approve`, `increaseAllowance`, `decreaseAllowance`, `addBlocks`, `seedBlocks`, `registerPublicKey`, `createKeyPair`.
+**`contract/main.go`** — WASM entry point. Exports functions via `//go:wasmexport` and routes calls to handlers. Key exported actions: `map`, `unmap`, `unmapFrom`, `transfer`, `transferFrom`, `approve`, `increaseAllowance`, `decreaseAllowance`, `addBlocks`, `seedBlocks`, `registerPublicKey`, `createKey`, `renewKey`, `registerRouter`, `confirmSpend`, `getInfo`, `initPruning`, `prune`, `replaceBlock`.
 
 **`contract/mapping/`** — Core logic. `handlers.go` handles `map`/`unmap` actions. `mapping.go` processes UTXOs and indexes addresses. `utils.go` builds P2WSH addresses with backup spending paths (CSV timelock). `proof.go` verifies Bitcoin Merkle inclusion proofs. `init.go` loads contract state from storage.
 
@@ -70,10 +70,41 @@ Keys are defined in `contract/constants/constants.go`. The separator between pre
 | `BackupPublicKeyStateKey`   | `backupkey`                    | TSS backup compressed public key (33 bytes)                     |
 | `RouterContractIdKey`       | `routerid`                     | Router contract ID (string)                                     |
 
+### Exported Action Schemas
+
+#### Token operations
+
+| Action | Params | Auth | Description |
+|--------|--------|------|-------------|
+| `map` | `MapParams{tx_data, instructions}` | None (permissionless, requires valid Merkle proof) | Deposit BTC into the contract via SPV proof |
+| `unmap` | `TransferParams{amount, to, deduct_fee?, max_fee?}` | Active auth required | Withdraw BTC from caller's balance. `from` is ignored. `deduct_fee` deducts fees from amount instead of adding on top. `max_fee` (sats) reverts if total fee exceeds limit |
+| `unmapFrom` | `TransferParams{amount, to, from, deduct_fee?, max_fee?}` | Active auth required | Withdraw BTC from a third-party account with sufficient allowance |
+| `transfer` | `TransferParams{amount, to}` | Active auth required | Transfer mapped balance to another VSC account. `from` is ignored (always uses caller) |
+| `transferFrom` | `TransferParams{amount, to, from}` | Active auth required | Transfer from a third-party account that has approved the caller |
+| `approve` | `AllowanceParams{spender, amount}` | Caller is owner | Set spending allowance for a spender |
+| `increaseAllowance` | `AllowanceParams{spender, amount}` | Caller is owner | Increase existing allowance |
+| `decreaseAllowance` | `AllowanceParams{spender, amount}` | Caller is owner | Decrease existing allowance |
+| `confirmSpend` | `ConfirmSpendParams{tx_data, indices}` | None (permissionless, requires valid Merkle proof) | Promote unconfirmed change UTXOs to confirmed pool |
+| `getInfo` | — | None | Returns `{"name":"Bitcoin","symbol":"BTC","decimals":"8"}` |
+
+#### Admin/owner operations
+
+| Action | Params | Auth | Description |
+|--------|--------|------|-------------|
+| `seedBlocks` | `SeedBlocksParams{block_header, block_height}` | Admin | Seed initial block header |
+| `addBlocks` | `AddBlocksParams{blocks, latest_fee}` | Admin | Append block headers, update base fee rate |
+| `replaceBlock` | Raw 80-byte block header hex | Admin | Replace a single block header |
+| `initPruning` | Block height string | Owner | Set prune floor for old block headers |
+| `prune` | — | Admin | Remove old block headers beyond retention window |
+| `registerPublicKey` | `RegisterKeyParams{primary_public_key?, backup_public_key?}` | Owner | Register TSS public keys |
+| `createKey` | — | Owner | Create a new TSS key |
+| `renewKey` | — | Owner | Renew the TSS key |
+| `registerRouter` | `RouterContract{router_contract}` | Owner | Register the DEX router contract ID |
+
 ### Key Design Patterns
 
-- **Map flow**: Incoming BTC tx → Merkle proof verification against stored block headers → UTXO indexed → instruction-based routing to VSC destination (URL-encoded params like `deposit_to`, `swap_to`)
-- **Unmap flow**: Build withdrawal tx → calculate fee from `base_fee_rate * tx_size` → TSS sign → broadcast
+- **Map flow**: Incoming BTC tx → Merkle proof verification against stored block headers → UTXO indexed → instruction-based routing to VSC destination (URL-encoded params like `deposit_to`, `swap_to`, `destination_chain`)
+- **Unmap flow**: Build withdrawal tx → calculate fee from `base_fee_rate * tx_size` → all checks (max_fee, balance, allowance) → TSS sign → broadcast
 - **Address generation**: P2WSH with backup path using OP_CHECKSEQUENCEVERIFY (CSV timelock)
 - **Admin vs Owner**: Admin is contract owner on testnet, fixed oracle address on mainnet; owner always equals deployer
 - **Network mode** injected at compile time via ldflags: `main.NetworkMode`
