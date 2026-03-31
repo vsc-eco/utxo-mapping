@@ -412,6 +412,11 @@ func ConfirmSpend(input *string) *string {
 	return mapping.StrPtr("0")
 }
 
+//go:wasmexport getInfo
+func GetInfo(_ *string) *string {
+	return mapping.StrPtr(`{"name":"Bitcoin","symbol":"BTC","decimals":"8"}`)
+}
+
 func loadPublicKeys() (mapping.PublicKeys, error) {
 	primaryRaw := *sdk.StateGetObject(constants.PrimaryPublicKeyStateKey)
 	if primaryRaw == "" {

@@ -80,6 +80,14 @@ func TestAllOperations(t *testing.T) {
 	ct.RegisterContract(testContractId, testOwner, ContractWasm)
 	w := &ctWrapper{ct: &ct}
 
+	// ========== GetInfo ==========
+
+	t.Run("GetInfo_ReturnsTokenMetadata", func(t *testing.T) {
+		r := callAction(t, w, "getInfo", "{}", "")
+		require.True(t, r.Success, "getInfo should succeed: %s %s", r.Err, r.ErrMsg)
+		assert.JSONEq(t, `{"name":"Bitcoin","symbol":"BTC","decimals":"8"}`, r.Ret)
+	})
+
 	// ========== SeedBlocks ==========
 
 	t.Run("SeedBlocks_NonOwnerFails", func(t *testing.T) {
