@@ -73,7 +73,7 @@ func clampedFeeRate(rate int64) int64 {
 // Helper function to estimate fee for a given number of inputs and outputs.
 // Accounts for the base fee before deciding how many change outputs to include,
 // and only adds change outputs that remain above dust after fee adjustment.
-func (cs *ContractState) estimateFee(numInputs int64, amount, inputAmount int64) int64 {
+func (cs *ContractState) estimateFee(numInputs int64, amount, inputAmount int64) (int64, error) {
 	feeRate := clampedFeeRate(cs.Supply.BaseFeeRate)
 	totalChange := inputAmount - amount
 
@@ -93,7 +93,10 @@ func (cs *ContractState) estimateFee(numInputs int64, amount, inputAmount int64)
 
 	// Compute base fee (no change outputs) first
 	nonWitnessSize := baseSize + inputSize + outputSize
-	baseFee := estimateVSize(nonWitnessSize, witnessDataSize) * feeRate
+	baseFee, err := safeMultiply64(estimateVSize(nonWitnessSize, witnessDataSize), feeRate)
+	if err != nil {
+		return 0, ce.WrapContractError(ce.ErrArithmetic, err, "fee estimation overflow")
+	}
 
 	availableChange := totalChange - baseFee
 	if availableChange < 0 {
@@ -107,7 +110,10 @@ func (cs *ContractState) estimateFee(numInputs int64, amount, inputAmount int64)
 		addedOutputs := int64(0)
 		for i := int64(0); i < numChangeOutputs; i++ {
 			newNonWitness := nonWitnessSize + (addedOutputs+1)*43
-			newFee := estimateVSize(newNonWitness, witnessDataSize) * feeRate
+			newFee, err := safeMultiply64(estimateVSize(newNonWitness, witnessDataSize), feeRate)
+			if err != nil {
+				return 0, ce.WrapContractError(ce.ErrArithmetic, err, "fee estimation overflow")
+			}
 			newAvailable := totalChange - newFee
 			if newAvailable < 0 {
 				newAvailable = 0
@@ -120,7 +126,11 @@ func (cs *ContractState) estimateFee(numInputs int64, amount, inputAmount int64)
 		}
 	}
 
-	return estimateVSize(nonWitnessSize, witnessDataSize) * feeRate
+	fee, err := safeMultiply64(estimateVSize(nonWitnessSize, witnessDataSize), feeRate)
+	if err != nil {
+		return 0, ce.WrapContractError(ce.ErrArithmetic, err, "fee estimation overflow")
+	}
+	return fee, nil
 }
 
 // returns a list of internal ids of inputs for making a tx
@@ -135,7 +145,10 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint16, int64, error) 
 		if entry.Id < constants.UtxoConfirmedPoolStart {
 			continue
 		}
-		fee := cs.estimateFee(1, amount, entry.Amount)
+		fee, err := cs.estimateFee(1, amount, entry.Amount)
+		if err != nil {
+			return nil, 0, err
+		}
 		requiredAmount := amount + fee
 		if entry.Amount >= requiredAmount {
 			return []uint16{entry.Id}, entry.Amount, nil
@@ -158,7 +171,10 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint16, int64, error) 
 				return nil, 0, ce.WrapContractError(ce.ErrArithmetic, err, "error gathering utxos")
 			}
 
-			fee := cs.estimateFee(int64(len(inputs)), amount, accAmount)
+			fee, err := cs.estimateFee(int64(len(inputs)), amount, accAmount)
+			if err != nil {
+				return nil, 0, err
+			}
 			requiredAmount := amount + fee
 
 			if accAmount >= requiredAmount {
@@ -180,7 +196,10 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint16, int64, error) 
 			return nil, 0, ce.WrapContractError(ce.ErrArithmetic, err, "error gathering utxos")
 		}
 
-		fee := cs.estimateFee(int64(len(inputs)), amount, accAmount)
+		fee, err := cs.estimateFee(int64(len(inputs)), amount, accAmount)
+		if err != nil {
+			return nil, 0, err
+		}
 		requiredAmount := amount + fee
 
 		if accAmount >= requiredAmount {
