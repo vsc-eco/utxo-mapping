@@ -29,7 +29,7 @@ The instruction schema uses snake_case field names and follows JSON Schema Draft
 
 **Required Fields**
 
-- **`block_header`** (string): Raw block header data for the seed block.
+- **`block_header`** (string): Raw block header data for the seed block, represented in hex.
 - **`block_height`** (integer): The block height corresponding to the provided header. Must fit within `uint32` range (0–4,294,967,295).
 
 ---
@@ -262,9 +262,18 @@ The instruction schema uses snake_case field names and follows JSON Schema Draft
     },
     "VerificationRequest": {
       "type": "object",
-      "required": ["block_height", "raw_tx_hex", "merkle_proof_hex", "tx_index"],
+      "required": [
+        "block_height",
+        "raw_tx_hex",
+        "merkle_proof_hex",
+        "tx_index"
+      ],
       "properties": {
-        "block_height": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "block_height": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
         "raw_tx_hex": { "type": "string" },
         "merkle_proof_hex": { "type": "string" },
         "tx_index": { "type": "integer", "minimum": 0, "maximum": 4294967295 }

@@ -34,12 +34,22 @@ import (
 // passed via ldflags, will compile for testnet when set to "testnet"
 var NetworkMode string
 
-func checkAdmin() {
+func checkOracle() {
 	caller := sdk.GetEnv().Caller.String()
 	if caller == constants.OracleAddress {
 		return
 	}
 	if constants.IsTestnet(NetworkMode) && caller == *sdk.GetEnvKey("contract.owner") {
+		return
+	}
+	ce.CustomAbort(
+		ce.NewContractError(ce.ErrNoPermission, "this action must be performed by a contract administrator"),
+	)
+}
+
+func checkAdmin() {
+	caller := sdk.GetEnv().Caller.String()
+	if caller == constants.OracleAddress || caller == *sdk.GetEnvKey("contract.owner") {
 		return
 	}
 	ce.CustomAbort(
@@ -133,7 +143,7 @@ func Prune(_ *string) *string {
 
 //go:wasmexport addBlocks
 func AddBlocks(addBlocksInput *string) *string {
-	checkAdmin()
+	checkOracle()
 
 	var addBlocksObj blocklist.AddBlocksParams
 	err := tinyjson.Unmarshal([]byte(*addBlocksInput), &addBlocksObj)
