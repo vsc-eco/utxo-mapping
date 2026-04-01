@@ -137,7 +137,10 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	// by the change output.
 	sendAmount := amount
 	if instructions.DeductFee {
-		btcFeeEst := cs.estimateFee(int64(len(inputUtxoIds)), utxoSelectionAmount, totalInputAmt)
+		btcFeeEst, err := cs.estimateFee(int64(len(inputUtxoIds)), utxoSelectionAmount, totalInputAmt)
+		if err != nil {
+			return err
+		}
 		sendAmount, err = safeSubtract64(utxoSelectionAmount, btcFeeEst)
 		if err != nil || sendAmount <= dustThreshold {
 			return ce.NewContractError(ce.ErrBalance, "amount too small to cover fees")

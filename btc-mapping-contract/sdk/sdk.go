@@ -78,6 +78,9 @@ func GetEnv() Env {
 	if s, ok := envMap["msg.sender"].(string); ok {
 		senderAddr = s
 	}
+	if senderAddr == "" {
+		Abort("msg.sender is missing from environment")
+	}
 
 	env.Sender = Sender{
 		Address:              Address(senderAddr),

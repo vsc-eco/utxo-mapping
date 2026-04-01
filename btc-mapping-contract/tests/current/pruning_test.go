@@ -78,17 +78,18 @@ func TestPruning(t *testing.T) {
 		ct.RegisterContract(id, testOwner, ContractWasm)
 		seedViaAction(t, w, id)
 
-		// Pre-populate fake block keys below the seed to simulate accumulated state.
-		// 108 blocks from 115980..116086, plus the real seed at 116087.
-		startHeight := 115980
+		// tip after addBlocks = seedHeight + 2 = 116089
+		// retainFrom = tip - MaxBlockRetention + 1
+		tip := seedHeight + 2
+		retainFrom := tip - constants.MaxBlockRetention + 1
+
+		// Pre-populate fake block keys below retainFrom to simulate accumulated state.
+		startHeight := retainFrom - 10
 		for h := startHeight; h < seedHeight; h++ {
 			w.ct.StateSet(id, constants.BlockPrefix+strconv.Itoa(h), "fake_header")
 		}
 		w.ct.StateSet(id, constants.PruneFloorKey, strconv.Itoa(startHeight))
 
-		// addBlocks with 2 valid blocks -> tip = 116089
-		// retainFrom = 116089 - 101 + 1 = 115989
-		// Blocks 115980..115988 (9 blocks) should be pruned.
 		r := callActionOnContract(t, w, id, "addBlocks", twoBlocksPayload, oracleCaller)
 		require.True(t, r.Success, "addBlocks should succeed: %s %s", r.Err, r.ErrMsg)
 
@@ -98,7 +99,8 @@ func TestPruning(t *testing.T) {
 		assert.Greater(t, pfInt, startHeight, "prune floor should advance")
 
 		// Oldest blocks pruned
-		assert.Empty(t, w.ct.StateGet(id, constants.BlockPrefix+"115980"), "block 115980 should be pruned")
+		assert.Empty(t, w.ct.StateGet(id, constants.BlockPrefix+strconv.Itoa(startHeight)),
+			"block at startHeight should be pruned")
 		// Recent blocks preserved
 		assert.NotEmpty(t, w.ct.StateGet(id, constants.BlockPrefix+lastBlockHeight), "seed block should be preserved")
 	})
@@ -140,16 +142,19 @@ func TestPruning(t *testing.T) {
 		ct.RegisterContract(id, testOwner, ContractWasm)
 		seedViaAction(t, w, id)
 
-		// Blocks from 115900..116086 = 187 blocks
-		startHeight := 115900
+		// tip after addBlocks = seedHeight + 2 = 116089
+		// retainFrom = tip - MaxBlockRetention + 1
+		tip := seedHeight + 2
+		retainFrom := tip - constants.MaxBlockRetention + 1
+
+		// Place blocks far enough below retainFrom that more than MaxPrunePerCall
+		// are eligible, so the batch limit is exercised.
+		startHeight := retainFrom - 2*constants.MaxPrunePerCall
 		for h := startHeight; h < seedHeight; h++ {
 			w.ct.StateSet(id, constants.BlockPrefix+strconv.Itoa(h), "fake_header")
 		}
 		w.ct.StateSet(id, constants.PruneFloorKey, strconv.Itoa(startHeight))
 
-		// addBlocks: tip = 116089, retainFrom = 115989
-		// Blocks to prune: 115900..115988 = 89 blocks
-		// MaxPrunePerCall = 50, so only 50 pruned.
 		r := callActionOnContract(t, w, id, "addBlocks", twoBlocksPayload, oracleCaller)
 		require.True(t, r.Success, "addBlocks should succeed: %s %s", r.Err, r.ErrMsg)
 
@@ -164,8 +169,8 @@ func TestPruning(t *testing.T) {
 		assert.Empty(t, w.ct.StateGet(id, constants.BlockPrefix+strconv.Itoa(startHeight)),
 			"block at start should be pruned")
 
-		// Block at startHeight+50 should still exist
-		assert.NotEmpty(t, w.ct.StateGet(id, constants.BlockPrefix+strconv.Itoa(startHeight+50)),
-			"block at start+50 should not yet be pruned")
+		// Block beyond the batch limit should still exist
+		assert.NotEmpty(t, w.ct.StateGet(id, constants.BlockPrefix+strconv.Itoa(startHeight+constants.MaxPrunePerCall)),
+			"block at start+MaxPrunePerCall should not yet be pruned")
 	})
 }

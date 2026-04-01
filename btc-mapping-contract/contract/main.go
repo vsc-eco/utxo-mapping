@@ -79,6 +79,9 @@ func SeedBlocks(blockSeedInput *string) *string {
 		ce.CustomAbort(err)
 	}
 
+	// Fresh deployments start at the latest migration version so they skip all migrations.
+	sdk.StateSetObject(constants.MigrateVersionKey, constants.LatestMigrateVersion)
+
 	outMsg := "last height: " + strconv.FormatUint(uint64(newLastHeight), 10)
 	return &outMsg
 }
