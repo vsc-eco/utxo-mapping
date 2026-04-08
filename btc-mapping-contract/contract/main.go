@@ -209,6 +209,28 @@ func ReplaceBlock(input *string) *string {
 	return &outMsg
 }
 
+// replaceBlocks handles multi-block reorgs by replacing the top N blocks at once.
+// Input is a concatenated hex string of 80-byte block headers, ordered lowest-to-highest.
+// The first header replaces lastHeight-(N-1), the last replaces lastHeight.
+//
+//go:wasmexport replaceBlocks
+func ReplaceBlocks(input *string) *string {
+	checkAdmin()
+
+	blockHeaders, err := blocklist.DivideHeaderList(input)
+	if err != nil {
+		ce.CustomAbort(ce.WrapContractError(ce.ErrInput, err, "error parsing replacement block headers"))
+	}
+
+	height, err := blocklist.HandleReplaceBlocks(blockHeaders, NetworkMode)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+
+	outMsg := "replaced " + strconv.Itoa(len(blockHeaders)) + " blocks, tip at height: " + strconv.FormatUint(uint64(height), 10)
+	return &outMsg
+}
+
 //go:wasmexport map
 func Map(incomingTx *string) *string {
 	checkNotPaused()
