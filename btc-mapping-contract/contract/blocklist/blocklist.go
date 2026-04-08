@@ -259,6 +259,90 @@ func HandleReplaceBlock(rawHeader BlockHeaderBytes, networkMode string) (uint32,
 	return lastHeight, nil
 }
 
+// HandleReplaceBlocks replaces the top N blocks (from the tip downward) with
+// corrected headers. This handles multi-block reorgs where replaceBlock (single)
+// would fail because the block below the tip is also orphaned.
+//
+// The headers slice must be ordered lowest-to-highest (oldest first), matching
+// addBlocks ordering. The first header replaces lastHeight-(N-1), the last
+// header replaces lastHeight. All must pass PoW and chain correctly.
+func HandleReplaceBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32, error) {
+	if len(rawHeaders) == 0 {
+		return 0, ce.NewContractError(ce.ErrInput, "no replacement headers provided")
+	}
+
+	// Single header: delegate to the original single-block handler.
+	if len(rawHeaders) == 1 {
+		return HandleReplaceBlock(rawHeaders[0], networkMode)
+	}
+
+	var networkParams *chaincfg.Params
+	switch networkMode {
+	case constants.Testnet3:
+		networkParams = &chaincfg.TestNet3Params
+	case constants.Testnet4:
+		networkParams = &chaincfg.TestNet4Params
+	case constants.Regtest:
+		networkParams = &chaincfg.RegressionNetParams
+	default:
+		networkParams = &chaincfg.MainNetParams
+	}
+
+	lastHeight, err := LastHeightFromState()
+	if err != nil {
+		return 0, ce.WrapContractError(ce.ErrStateAccess, err, "error reading last block height")
+	}
+
+	n := uint32(len(rawHeaders))
+	if n > lastHeight {
+		return 0, ce.NewContractError(ce.ErrInput, "more replacement headers than stored blocks")
+	}
+
+	// The anchor is the block just below the reorg range that must remain valid.
+	anchorHeight := lastHeight - n
+	anchorBlockRaw := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatUint(uint64(anchorHeight), 10))
+	if anchorBlockRaw == nil || *anchorBlockRaw == "" {
+		return 0, ce.NewContractError(ce.ErrStateAccess, "no block found at anchor height "+strconv.FormatUint(uint64(anchorHeight), 10))
+	}
+	var anchorHeader wire.BlockHeader
+	err = anchorHeader.BtcDecode(bytes.NewReader([]byte(*anchorBlockRaw)), wire.ProtocolVersion, wire.LatestEncoding)
+	if err != nil {
+		return 0, ce.NewContractError(ce.ErrStateAccess, "error decoding block at anchor height "+strconv.FormatUint(uint64(anchorHeight), 10))
+	}
+	prevHash := anchorHeader.BlockHash()
+
+	// Validate and overwrite each header in order.
+	powLimit := networkParams.PowLimit
+	for i, headerBytes := range rawHeaders {
+		height := anchorHeight + 1 + uint32(i)
+
+		var hdr wire.BlockHeader
+		err = hdr.BtcDecode(bytes.NewReader(headerBytes[:]), wire.ProtocolVersion, wire.LatestEncoding)
+		if err != nil {
+			return 0, ce.NewContractError(ce.ErrInput, "error decoding replacement header at index "+strconv.Itoa(i))
+		}
+
+		msgBlock := wire.MsgBlock{Header: hdr}
+		if err := blockchain.CheckProofOfWork(btcutil.NewBlock(&msgBlock), powLimit); err != nil {
+			return 0, ce.NewContractError(ce.ErrInput,
+				"replacement block at height "+strconv.FormatUint(uint64(height), 10)+" failed PoW check: "+err.Error())
+		}
+
+		if !hdr.PrevBlock.IsEqual(&prevHash) {
+			return 0, ce.NewContractError(ce.ErrInput,
+				"replacement block at height "+strconv.FormatUint(uint64(height), 10)+" does not chain to block at height "+strconv.FormatUint(uint64(height-1), 10))
+		}
+
+		sdk.StateSetObject(
+			constants.BlockPrefix+strconv.FormatUint(uint64(height), 10),
+			string(headerBytes[:]),
+		)
+		prevHash = hdr.BlockHash()
+	}
+
+	return lastHeight, nil
+}
+
 func HandleSeedBlocks(seedParams SeedBlocksParams, allowReseed bool) (uint32, error) {
 	lastHeight, err := LastHeightFromState()
 	if err != nil {

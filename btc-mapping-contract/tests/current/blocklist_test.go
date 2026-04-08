@@ -324,6 +324,81 @@ func TestAllOperations(t *testing.T) {
 		assert.Contains(t, r2.Ret, "4888517")
 	})
 
+	// ========== ReplaceBlocks (multi-block reorg) ==========
+
+	t.Run("ReplaceBlocks_NonOwnerFails", func(t *testing.T) {
+		r := callAction(t, w, "replaceBlocks", strings.Repeat("00", 80), "hive:attacker")
+		assert.False(t, r.Success, "replaceBlocks by non-owner should fail")
+	})
+
+	t.Run("ReplaceBlocks_InvalidHexFails", func(t *testing.T) {
+		r := callAction(t, w, "replaceBlocks", "ZZZZ", "")
+		assert.False(t, r.Success, "replaceBlocks with invalid hex should fail")
+	})
+
+	t.Run("ReplaceBlocks_WrongLengthFails", func(t *testing.T) {
+		r := callAction(t, w, "replaceBlocks", strings.Repeat("00", 79), "")
+		assert.False(t, r.Success, "replaceBlocks with 79 bytes should fail")
+	})
+
+	t.Run("ReplaceBlocks_MultiBlock_Success", func(t *testing.T) {
+		// Set up a 3-block chain: 4888515 → 4888516 → 4888517
+		rbId := "replaceblocks_test"
+		w.ct.RegisterContract(rbId, testOwner, btcMapping.Testnet3Wasm)
+
+		block4888515Hex := "000000209bfa65ae0af2ba13fd4403312a44554123c4b972374fd1995adce62c0000000081af5bae21b11430df381ee109e51181f5ff4164f744f0747ce980cf43c6c73797b4bc69ffff001d28ffa61f"
+		block4888516Hex := "000000201545504338162312b9911c44c17ab259f312b850a915e192665870f500000000d2684baebc7ac8401ac29754247d1091bd3c6604bb4b26aeff107b6cfde0787648b9bc69ffff001d176c1809"
+		block4888517Hex := "000000201cdc5538b560cd512fac6147b235c1be8fb6429296698b4065f22309000000000061c5ef9468eb91177b04aabf349991b9000774ac4f87f747f07935d4ad9e3ffbbdbc69ffff001d89201fc7"
+
+		// Seed with block 4888515
+		seedRaw := decodeHex(t, block4888515Hex)
+		w.ct.StateSet(rbId, constants.LastHeightKey, "4888515")
+		w.ct.StateSet(rbId, constants.BlockPrefix+"4888515", seedRaw)
+		supply := make([]byte, 32)
+		supply[31] = 1
+		w.ct.StateSet(rbId, constants.SupplyKey, string(supply))
+
+		// Add blocks 4888516 and 4888517
+		oracleCaller := "did:vsc:oracle:btc"
+		payload := `{"blocks":"` + block4888516Hex + block4888517Hex + `","latest_fee":1}`
+		r := callActionOnContract(t, w, rbId, "addBlocks", payload, oracleCaller)
+		require.True(t, r.Success, "addBlocks should succeed: %s %s", r.Err, r.ErrMsg)
+		assert.Contains(t, r.Ret, "4888517")
+
+		// Now replace both blocks 4888516 and 4888517 with themselves (same canonical headers).
+		// This simulates a 2-block reorg where the canonical chain happens to match.
+		// The key test is that the chaining validation passes for multi-block replacement.
+		replacePayload := block4888516Hex + block4888517Hex
+		r2 := callActionOnContract(t, w, rbId, "replaceBlocks", replacePayload, "")
+		require.True(t, r2.Success, "replaceBlocks (2 blocks) should succeed: %s %s", r2.Err, r2.ErrMsg)
+		assert.Contains(t, r2.Ret, "replaced 2 blocks")
+		assert.Contains(t, r2.Ret, "4888517")
+	})
+
+	t.Run("ReplaceBlocks_SingleBlock_DelegatesToReplaceBlock", func(t *testing.T) {
+		// Single-header replaceBlocks should delegate to HandleReplaceBlock
+		rbId2 := "replaceblocks_single"
+		w.ct.RegisterContract(rbId2, testOwner, btcMapping.Testnet3Wasm)
+
+		block4888515Hex := "000000209bfa65ae0af2ba13fd4403312a44554123c4b972374fd1995adce62c0000000081af5bae21b11430df381ee109e51181f5ff4164f744f0747ce980cf43c6c73797b4bc69ffff001d28ffa61f"
+		block4888516Hex := "000000201545504338162312b9911c44c17ab259f312b850a915e192665870f500000000d2684baebc7ac8401ac29754247d1091bd3c6604bb4b26aeff107b6cfde0787648b9bc69ffff001d176c1809"
+
+		seedRaw := decodeHex(t, block4888515Hex)
+		raw516 := decodeHex(t, block4888516Hex)
+		w.ct.StateSet(rbId2, constants.LastHeightKey, "4888516")
+		w.ct.StateSet(rbId2, constants.BlockPrefix+"4888515", seedRaw)
+		w.ct.StateSet(rbId2, constants.BlockPrefix+"4888516", raw516)
+		supply := make([]byte, 32)
+		supply[31] = 1
+		w.ct.StateSet(rbId2, constants.SupplyKey, string(supply))
+
+		// Replace just the tip (single block)
+		replacePayload := block4888516Hex
+		r := callActionOnContract(t, w, rbId2, "replaceBlocks", replacePayload, "")
+		require.True(t, r.Success, "single-block replaceBlocks should succeed: %s %s", r.Err, r.ErrMsg)
+		assert.Contains(t, r.Ret, "4888516")
+	})
+
 	// ========== Unmap ==========
 
 	t.Run("Unmap_InvalidPayloadFails", func(t *testing.T) {
