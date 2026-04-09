@@ -276,6 +276,11 @@ func HandleReplaceBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uin
 		return HandleReplaceBlock(rawHeaders[0], networkMode)
 	}
 
+	// On mainnet, cap replacement depth to 2 blocks.
+	if !constants.IsTestnet(networkMode) && len(rawHeaders) > 2 {
+		return 0, ce.NewContractError(ce.ErrInput, "mainnet replacement limited to 2 blocks")
+	}
+
 	var networkParams *chaincfg.Params
 	switch networkMode {
 	case constants.Testnet3:
