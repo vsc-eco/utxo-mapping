@@ -84,8 +84,10 @@ const MaxBaseFeeRate int64 = 1000
 
 // MaxBlockRetention is the number of recent block headers to keep.
 // Older headers are pruned during addBlocks to prevent unbounded state growth.
-// keep a week worth of headers to allow addresses to be registered after the fact
-const MaxBlockRetention = 1080
+// Keep ~30 days worth of headers (144 blocks/day * 30 days = 4320) so that
+// addresses can be registered against any block within the same window the
+// CSV backup-key recovery script (BackupCSVBlocks) operates over.
+const MaxBlockRetention = 4320
 
 // MaxPrunePerCall limits how many old headers are deleted in a single
 // addBlocks invocation to keep gas usage predictable.
