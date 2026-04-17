@@ -465,6 +465,65 @@ func DecreaseAllowance(input *string) *string {
 // then promoting the unconfirmed change UTXOs at the specified output indices
 // to the confirmed pool.
 //
+// mapPage accepts one page of a paginated `map` submission. When the
+// submission completes (last page arrives), the assembled MapParams bytes are
+// unmarshalled and handed to the regular HandleMap path. Duplicate pages are
+// idempotent no-ops. See contract/mapping/pagination.go for full semantics.
+//
+//go:wasmexport mapPage
+func MapPage(input *string) *string {
+	var page mapping.MapPageParams
+	err := tinyjson.Unmarshal([]byte(*input), &page)
+	if err != nil {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
+	}
+
+	result, err := mapping.SubmitPage(
+		mapping.SdkPageStore{},
+		mapping.PagePayloadMap,
+		page.ParentId,
+		page.PageIdx,
+		page.TotalPages,
+		[]byte(page.Payload),
+	)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+
+	if !result.Complete || result.Assembled == nil {
+		// page accepted (or duplicate) but assembly still pending.
+		return mapping.StrPtr("pending:" + strconv.FormatUint(uint64(page.PageIdx), 10))
+	}
+
+	var mapInstructions mapping.MapParams
+	err = tinyjson.Unmarshal(result.Assembled, &mapInstructions)
+	if err != nil {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
+	}
+
+	publicKeys, err := loadPublicKeys()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+
+	contractState, err := mapping.InitializeMappingState(publicKeys, NetworkMode, mapInstructions.Instructions...)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+
+	err = contractState.HandleMap(mapInstructions.TxData)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+
+	err = contractState.SaveToState()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+
+	return mapping.StrPtr("0")
+}
+
 //go:wasmexport confirmSpend
 func ConfirmSpend(input *string) *string {
 	checkNotPaused()
@@ -605,6 +664,67 @@ func Migrate(_ *string) *string {
 //go:wasmexport getInfo
 func GetInfo(_ *string) *string {
 	return mapping.StrPtr(`{"name":"Bitcoin","symbol":"BTC","decimals":"8"}`)
+}
+
+// confirmSpendPage accepts one page of a paginated `confirmSpend` submission.
+// When the last outstanding page arrives, the assembled ConfirmSpendParams
+// bytes are unmarshalled and handed to the regular HandleConfirmSpend path.
+// Duplicate pages are idempotent no-ops.
+//
+//go:wasmexport confirmSpendPage
+func ConfirmSpendPage(input *string) *string {
+	var page mapping.ConfirmSpendPageParams
+	err := tinyjson.Unmarshal([]byte(*input), &page)
+	if err != nil {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
+	}
+
+	result, err := mapping.SubmitPage(
+		mapping.SdkPageStore{},
+		mapping.PagePayloadConfirmSpend,
+		page.ParentId,
+		page.PageIdx,
+		page.TotalPages,
+		[]byte(page.Payload),
+	)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+
+	if !result.Complete || result.Assembled == nil {
+		return mapping.StrPtr("pending:" + strconv.FormatUint(uint64(page.PageIdx), 10))
+	}
+
+	var params mapping.ConfirmSpendParams
+	err = tinyjson.Unmarshal(result.Assembled, &params)
+	if err != nil {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
+	}
+	if params.TxData == nil || params.TxData.RawTxHex == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "tx_data.raw_tx_hex required"))
+	}
+
+	publicKeys, err := loadPublicKeys()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+
+	contractState, err := mapping.IntializeContractState(publicKeys, NetworkMode)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+
+	err = contractState.HandleConfirmSpend(params.TxData, params.Indices)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+
+	err = contractState.SaveToState()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+
+	return mapping.StrPtr("0")
 }
 
 func loadPublicKeys() (mapping.PublicKeys, error) {
