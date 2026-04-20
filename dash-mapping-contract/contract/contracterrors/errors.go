@@ -20,7 +20,7 @@ const (
 	ErrIntent         = ErrorSymbol("intent_error")
 	ErrBalance        = ErrorSymbol("insufficient_balance")
 	ErrArithmetic     = ErrorSymbol("overflow_underflow")
-	ErrTransaction    = ErrorSymbol("error_construction_transaction")
+	ErrTransaction    = ErrorSymbol("transaction_error")
 )
 
 const (
@@ -75,7 +75,10 @@ func NewContractError(symbol ErrorSymbol, msg string, prepends ...string) *Contr
 }
 
 func WrapContractError(symbol ErrorSymbol, err error, prepends ...string) *ContractError {
-	newMsg := buildString(prepends, err.Error())
+	var newMsg string
+	if err != nil {
+		newMsg = buildString(prepends, err.Error())
+	}
 	return &ContractError{
 		Symbol: symbol,
 		Msg:    newMsg,

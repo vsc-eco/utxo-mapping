@@ -43,6 +43,37 @@ func encodeBalance(t *testing.T, amount int64) string {
 	return string(buf[8-n:])
 }
 
+// encodeUtxoCounters encodes the confirmed and unconfirmed next-ID cursors
+// into the 4-byte format expected by the contract (two uint16 BE values).
+func encodeUtxoCounters(confirmedNext, unconfirmedNext uint16) string {
+	var buf [4]byte
+	binary.BigEndian.PutUint16(buf[0:], confirmedNext)
+	binary.BigEndian.PutUint16(buf[2:], unconfirmedNext)
+	return string(buf[:])
+}
+
+// buildObservedList builds a packed per-block observed tx list from (txIdHex, vout) pairs.
+// Each entry is 34 bytes: 32-byte raw txid + 2-byte vout BE.
+func buildObservedList(t *testing.T, entries ...observedParam) string {
+	t.Helper()
+	buf := make([]byte, len(entries)*34)
+	for i, e := range entries {
+		txBytes, err := hex.DecodeString(e.txId)
+		if err != nil || len(txBytes) != 32 {
+			t.Fatalf("bad txid in buildObservedList: %s", e.txId)
+		}
+		off := i * 34
+		copy(buf[off:], txBytes)
+		binary.BigEndian.PutUint16(buf[off+32:], e.vout)
+	}
+	return string(buf)
+}
+
+type observedParam struct {
+	txId string
+	vout uint16
+}
+
 // decodeHex decodes a hex string to raw bytes as a string, for state seeding.
 func decodeHex(t *testing.T, s string) string {
 	t.Helper()
@@ -229,6 +260,39 @@ func buildMapFixture(t *testing.T, instruction string, amount int64, blockHeight
 		MerkleProofHex: "",
 		TxIndex:        0,
 		BlockHeight:    blockHeight,
+	}
+}
+
+// ConfirmSpendFixture holds all data needed to call the confirmSpend contract action.
+type ConfirmSpendFixture struct {
+	TxId           string
+	RawTxHex       string
+	MerkleProofHex string
+	TxIndex        uint32
+	BlockHeight    uint32
+	BlockHeaderRaw string // raw bytes as string, for state seeding
+}
+
+// buildConfirmSpendFixture creates a minimal "spend tx" paying to the contract's
+// change address, then wraps it in a single-tx block (MerkleRoot = TxHash,
+// empty proof, TxIndex = 0) so the on-chain Merkle verification trivially passes.
+func buildConfirmSpendFixture(t *testing.T, blockHeight uint32) ConfirmSpendFixture {
+	t.Helper()
+	changeAddr, _, err := mapping.AddressWithBackup(TestPrimaryPubKeyHex, TestBackupPubKeyHex, nil, regtestParams())
+	if err != nil {
+		t.Fatal("failed to derive change address:", err)
+	}
+	tx := buildTestTx(t, changeAddr, 2000)
+	txHash := tx.TxHash()
+	ts := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	header := buildRegtestHeader(chainhash.Hash{}, txHash, ts)
+	return ConfirmSpendFixture{
+		TxId:           tx.TxID(),
+		RawTxHex:       serializeTx(t, tx),
+		MerkleProofHex: "",
+		TxIndex:        0,
+		BlockHeight:    blockHeight,
+		BlockHeaderRaw: serializeHeaderRaw(t, header),
 	}
 }
 

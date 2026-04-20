@@ -111,12 +111,12 @@ func TestUnmapInsufficientBalance(t *testing.T) {
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 	ct.StateSet(contractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, 5000))
-	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId0+":0", "1")
+	ct.StateSet(contractId, constants.ObservedBlockPrefix+"100", buildObservedList(t, observedParam{fakeTxId0, 0}))
 	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(mapping.UtxoRegistry{
-		{Id: 64, Amount: 5000},
+		{Id: 1024, Amount: 5000},
 	})))
-	ct.StateSet(contractId, constants.UtxoPrefix+"40", depositUtxoBinary(t, fakeTxId0, 0, 5000, instruction))
-	ct.StateSet(contractId, constants.UtxoLastIdKey, string([]byte{65, 0}))
+	ct.StateSet(contractId, constants.UtxoPrefix+"400", depositUtxoBinary(t, fakeTxId0, 0, 5000, instruction))
+	ct.StateSet(contractId, constants.UtxoLastIdKey, encodeUtxoCounters(1025, 0))
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
 		ActiveSupply: 5000,
 		UserSupply:   5000,
@@ -151,10 +151,10 @@ func TestUnmapInsufficientBalance(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TestUnmapAmountLessThanFee — Unmap a very small amount (e.g., 100 sats)
-// that would be less than the minimum fee. Should fail.
+// TestUnmapAmountBelowDust — Unmap an amount below the dust threshold (546 sats).
+// Should fail because the BTC output would be unspendable.
 // ---------------------------------------------------------------------------
-func TestUnmapAmountLessThanFee(t *testing.T) {
+func TestUnmapAmountBelowDust(t *testing.T) {
 	const instruction = "deposit_to=hive:milo-hpr"
 	const fakeTxId0 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
@@ -163,12 +163,12 @@ func TestUnmapAmountLessThanFee(t *testing.T) {
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 	ct.StateSet(contractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, 50000))
-	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId0+":0", "1")
+	ct.StateSet(contractId, constants.ObservedBlockPrefix+"100", buildObservedList(t, observedParam{fakeTxId0, 0}))
 	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(mapping.UtxoRegistry{
-		{Id: 64, Amount: 50000},
+		{Id: 1024, Amount: 50000},
 	})))
-	ct.StateSet(contractId, constants.UtxoPrefix+"40", depositUtxoBinary(t, fakeTxId0, 0, 50000, instruction))
-	ct.StateSet(contractId, constants.UtxoLastIdKey, string([]byte{65, 0}))
+	ct.StateSet(contractId, constants.UtxoPrefix+"400", depositUtxoBinary(t, fakeTxId0, 0, 50000, instruction))
+	ct.StateSet(contractId, constants.UtxoLastIdKey, encodeUtxoCounters(1025, 0))
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
 		ActiveSupply: 50000,
 		UserSupply:   50000,
@@ -179,8 +179,7 @@ func TestUnmapAmountLessThanFee(t *testing.T) {
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
 
-	// 100 sats is below the minimum VSC fee of 1000 sats
-	// calcVscFee returns error "transaction too small to cover fee" when fee >= amount
+	// 100 sats is below the dust threshold (546 sats) so the BTC output would be unspendable.
 	payload, err := tinyjson.Marshal(mapping.TransferParams{
 		Amount: "100",
 		To:     regtestDestAddress(t),
@@ -198,7 +197,7 @@ func TestUnmapAmountLessThanFee(t *testing.T) {
 		Intents:    []contracts.Intent{},
 	})
 
-	assert.False(t, r.Success, "unmap with amount less than minimum fee should fail")
+	assert.False(t, r.Success, "unmap with amount below dust threshold should fail")
 	assert.NotEmpty(t, r.Err, "should have an error message")
 	t.Logf("Expected error: %s: %s", r.Err, r.ErrMsg)
 }
@@ -404,15 +403,16 @@ func TestUnmapExactBalance(t *testing.T) {
 	const unmapAmount = int64(50000)
 
 	ct.StateSet(contractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, balance))
-	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId0+":0", "1")
-	ct.StateSet(contractId, constants.ObservedPrefix+fakeTxId1+":0", "1")
+	ct.StateSet(contractId, constants.ObservedBlockPrefix+"100", buildObservedList(t,
+		observedParam{fakeTxId0, 0}, observedParam{fakeTxId1, 0},
+	))
 	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(mapping.UtxoRegistry{
-		{Id: 64, Amount: 50000},
-		{Id: 65, Amount: 50000},
+		{Id: 1024, Amount: 50000},
+		{Id: 1025, Amount: 50000},
 	})))
-	ct.StateSet(contractId, constants.UtxoPrefix+"40", depositUtxoBinary(t, fakeTxId0, 0, 50000, instruction))
-	ct.StateSet(contractId, constants.UtxoPrefix+"41", changeUtxoBinary(t, fakeTxId1, 0, 50000))
-	ct.StateSet(contractId, constants.UtxoLastIdKey, string([]byte{66, 0}))
+	ct.StateSet(contractId, constants.UtxoPrefix+"400", depositUtxoBinary(t, fakeTxId0, 0, 50000, instruction))
+	ct.StateSet(contractId, constants.UtxoPrefix+"401", changeUtxoBinary(t, fakeTxId1, 0, 50000))
+	ct.StateSet(contractId, constants.UtxoLastIdKey, encodeUtxoCounters(1026, 0))
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
 		ActiveSupply: balance,
 		UserSupply:   balance,
@@ -450,8 +450,8 @@ func TestUnmapExactBalance(t *testing.T) {
 
 	// After unmap, balance should be less than original
 	remainingBal := ct.StateGet(contractId, constants.BalancePrefix+"hive:milo-hpr")
-	// vscFee for 50000 = max(1000, 50000*100/10000) = max(1000, 500) = 1000
-	// So remaining should be 100000 - 50000 - 1000 - btcFee = 49000 - btcFee
+	// vscFee = 0 (VscFeeMinSats=0, VscFeeRateBps=0)
+	// So remaining should be 100000 - 50000 - btcFee = 50000 - btcFee
 	t.Logf("remaining balance after unmap: %q", remainingBal)
 	// Verify it decreased significantly
 	if remainingBal != "" {
@@ -633,10 +633,10 @@ func TestUnmapSupplyUpdates(t *testing.T) {
 
 	ct.StateSet(contractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, balance))
 	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(mapping.UtxoRegistry{
-		{Id: 64, Amount: 100000},
+		{Id: 1024, Amount: 100000},
 	})))
-	ct.StateSet(contractId, constants.UtxoPrefix+"40", depositUtxoBinary(t, fakeTxId0, 0, 100000, instruction))
-	ct.StateSet(contractId, constants.UtxoLastIdKey, string([]byte{65, 0}))
+	ct.StateSet(contractId, constants.UtxoPrefix+"400", depositUtxoBinary(t, fakeTxId0, 0, 100000, instruction))
+	ct.StateSet(contractId, constants.UtxoLastIdKey, encodeUtxoCounters(1025, 0))
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
 		ActiveSupply: balance,
 		UserSupply:   balance,
@@ -676,12 +676,11 @@ func TestUnmapSupplyUpdates(t *testing.T) {
 
 	t.Logf("supply after unmap: active=%d, user=%d, fee=%d", supply.ActiveSupply, supply.UserSupply, supply.FeeSupply)
 
-	// vscFee = max(1000, 20000*100/10000) = max(1000, 200) = 1000
-	// ActiveSupply should decrease by (amount + vscFee + btcFee)
+	// vscFee = 0 (VscFeeMinSats=0, VscFeeRateBps=0)
+	// ActiveSupply should decrease by (amount + btcFee)
 	assert.True(t, supply.ActiveSupply < balance, "active supply should decrease")
 	assert.True(t, supply.UserSupply < balance, "user supply should decrease")
-	assert.True(t, supply.FeeSupply > 0, "fee supply should increase (vsc fee collected)")
-	assert.Equal(t, int64(1000), supply.FeeSupply, "vsc fee for 20000 sats should be 1000 (minimum)")
+	assert.Equal(t, int64(0), supply.FeeSupply, "vsc fee should be 0")
 }
 
 // ---------------------------------------------------------------------------
@@ -933,42 +932,57 @@ func TestMapUpdatesSupply(t *testing.T) {
 func TestConfirmSpendPromotesUtxos(t *testing.T) {
 	const instruction = "deposit_to=hive:milo-hpr"
 	const fakeTxId0 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	const pendingTxId = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	// Build a real spend tx so its TxID can be verified via Merkle proof.
+	fixture := buildConfirmSpendFixture(t, 101)
 
 	ct := test_utils.NewContractTest()
 	t.Cleanup(func() { ct.DataLayer.Stop() })
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 
-	// Set up: one confirmed UTXO (id=64) and one unconfirmed (id=0) linked to a pending spend
+	// Set up: one confirmed UTXO (id=1024) and one unconfirmed (id=0) linked to a pending spend
 	ct.StateSet(contractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, 5000))
 	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(mapping.UtxoRegistry{
-		{Id: 64, Amount: 5000},
+		{Id: 1024, Amount: 5000},
 		{Id: 0, Amount: 2000},
 	})))
-	ct.StateSet(contractId, constants.UtxoPrefix+"40", depositUtxoBinary(t, fakeTxId0, 0, 5000, instruction))
-	ct.StateSet(contractId, constants.UtxoPrefix+"00", changeUtxoBinary(t, pendingTxId, 1, 2000))
-	ct.StateSet(contractId, constants.UtxoLastIdKey, string([]byte{65, 1}))
-	ct.StateSet(contractId, constants.TxSpendsRegistryKey, string(mapping.MarshalTxSpendsRegistry(mapping.TxSpendsRegistry{pendingTxId})))
+	ct.StateSet(contractId, constants.UtxoPrefix+"400", depositUtxoBinary(t, fakeTxId0, 0, 5000, instruction))
+	ct.StateSet(contractId, constants.UtxoPrefix+"0", changeUtxoBinary(t, fixture.TxId, 0, 2000))
+	ct.StateSet(contractId, constants.UtxoLastIdKey, encodeUtxoCounters(1025, 1))
+	ct.StateSet(contractId, constants.TxSpendsRegistryKey, string(mapping.MarshalTxSpendsRegistry(mapping.TxSpendsRegistry{fixture.TxId})))
 
-	// The signing data is stored at d-<txid>; for confirmSpend to find the pending tx
-	// We need valid signing data with the change output's txid
-	ct.StateSet(contractId, constants.TxSpendsPrefix+pendingTxId, "dummy_signing_data")
+	sigData := mapping.SigningData{
+		Tx: []byte{0x01},
+		UnsignedSigHashes: []mapping.UnsignedSigHash{
+			{Index: 0, SigHash: []byte{0x00}, WitnessScript: []byte{0x00}},
+		},
+	}
+	sigDataBytes, err := mapping.MarshalSigningData(&sigData)
+	if err != nil {
+		t.Fatal("error marshalling signing data:", err)
+	}
+	ct.StateSet(contractId, constants.TxSpendsPrefix+fixture.TxId, string(sigDataBytes))
 
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
 		ActiveSupply: 7000,
 		UserSupply:   5000,
 		BaseFeeRate:  1,
 	})))
-	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.LastHeightKey, "101")
 	ct.StateSet(contractId, constants.BlockPrefix+"100", buildSeedHeaderRaw(t, time.Unix(0, 0)))
+	ct.StateSet(contractId, constants.BlockPrefix+"101", fixture.BlockHeaderRaw)
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
 
-	// Build a confirmation tx — this is what the mapping contract receives as proof
-	// that the pending spend was confirmed. We need to build a tx whose TxID matches pendingTxId.
-	// In practice confirmSpend just looks up the pending tx by ID and promotes the change UTXOs.
-	confirmPayload, _ := tinyjson.Marshal(mapping.ConfirmSpendParams{TxId: pendingTxId})
+	confirmPayload, _ := tinyjson.Marshal(mapping.ConfirmSpendParams{
+		TxData: &mapping.VerificationRequest{
+			BlockHeight:    fixture.BlockHeight,
+			RawTxHex:       fixture.RawTxHex,
+			MerkleProofHex: fixture.MerkleProofHex,
+			TxIndex:        fixture.TxIndex,
+		},
+		Indices: []uint32{0},
+	})
 
 	r := ct.Call(stateEngine.TxVscCallContract{
 		Self:       *basicSelf(t, "hive:milo-hpr"),
@@ -981,14 +995,7 @@ func TestConfirmSpendPromotesUtxos(t *testing.T) {
 
 	dumpStateDiff(t, r.StateDiff)
 
-	if r.Success {
-		t.Log("confirmSpend succeeded — UTXOs should be promoted")
-		// Signing data should be deleted
-		assert.Empty(t, ct.StateGet(contractId, constants.TxSpendsPrefix+pendingTxId),
-			"signing data should be removed after confirmation")
-	} else {
-		// confirmSpend may fail if the signing data format is invalid (we used "dummy")
-		// That's fine — the test verifies the action is callable and the path exists
-		t.Logf("confirmSpend result: success=%v err=%s", r.Success, r.ErrMsg)
-	}
+	assert.True(t, r.Success, "confirmSpend should succeed")
+	assert.Empty(t, ct.StateGet(contractId, constants.TxSpendsPrefix+fixture.TxId),
+		"signing data should be removed after confirmation")
 }

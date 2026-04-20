@@ -1,6 +1,7 @@
 package blocklist
 
 import (
+	"dash-mapping-contract/sdk"
 	"bytes"
 	"encoding/hex"
 	"errors"
@@ -9,7 +10,6 @@ import (
 
 	"dash-mapping-contract/contract/constants"
 	ce "dash-mapping-contract/contract/contracterrors"
-	"dash-mapping-contract/sdk"
 
 	"github.com/btcsuite/btcd/wire"
 )
@@ -24,18 +24,14 @@ type AddBlocksParams struct {
 
 //tinyjson:json
 type SeedBlocksParams struct {
-	BlockHeader string
-	BlockHeight uint32
+	BlockHeader string `json:"block_header"`
+	BlockHeight uint32 `json:"block_height"`
 }
-
-const LastHeightKey = constants.LastHeightKey
 
 var ErrorLastHeightDNE = errors.New("last height does not exist")
 
-var ErrorSequenceIncorrect = errors.New("block sequence incorrect")
-
 func LastHeightFromState() (uint32, error) {
-	lastHeightString := sdk.StateGetObject(LastHeightKey)
+	lastHeightString := sdk.StateGetObject(constants.LastHeightKey)
 	if *lastHeightString == "" {
 		return 0, ErrorLastHeightDNE
 	}
@@ -48,7 +44,34 @@ func LastHeightFromState() (uint32, error) {
 }
 
 func LastHeightToState(lastHeight uint32) {
-	sdk.StateSetObject(LastHeightKey, strconv.FormatUint(uint64(lastHeight), 10))
+	sdk.StateSetObject(constants.LastHeightKey, strconv.FormatUint(uint64(lastHeight), 10))
+}
+
+// seedHeightFromState returns the original seed height, or 0 if not set.
+func seedHeightFromState() uint32 {
+	s := sdk.StateGetObject(constants.SeedHeightKey)
+	if s == nil || *s == "" {
+		return 0
+	}
+	h, err := strconv.ParseUint(*s, 10, 32)
+	if err != nil {
+		return 0
+	}
+	return uint32(h)
+}
+
+// pruneFloorFromState returns the lowest height that hasn't been pruned yet.
+// This cursor avoids re-scanning already-pruned regions on each call.
+func pruneFloorFromState() uint32 {
+	s := sdk.StateGetObject(constants.PruneFloorKey)
+	if s == nil || *s == "" {
+		return 0
+	}
+	h, err := strconv.ParseUint(*s, 10, 32)
+	if err != nil {
+		return 0
+	}
+	return uint32(h)
 }
 
 func DivideHeaderList(blocksHex *string) ([]BlockHeaderBytes, error) {
@@ -67,44 +90,49 @@ func DivideHeaderList(blocksHex *string) ([]BlockHeaderBytes, error) {
 	return blockHeaders, nil
 }
 
-// HandleAddBlocks validates and stores DASH block headers.
-// DASH uses X11 for PoW which is not available in btcsuite, so we skip PoW
-// validation and only verify header format and prev-block chain linkage.
-// The oracle consensus (2/3+ BLS signatures) provides the trust guarantee.
-func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32, uint32, error) {
-	_ = networkMode // DASH testnet/mainnet use same 80-byte header format
+func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32, error) {
+	_ = networkMode // Dash skips PoW (X11 unavailable in btcsuite); kept for signature compat
 
 	lastHeight, err := LastHeightFromState()
 	if err != nil {
-		return 0, 0, ce.WrapContractError(ce.ErrStateAccess, err, "error reading last block height")
+		return 0, ce.WrapContractError(ce.ErrStateAccess, err, "error reading last block height")
 	}
-	initialLastHeight := lastHeight
 
+	// block headers stored as raw 80 bytes
 	lastBlockRaw := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatInt(int64(lastHeight), 10))
+	if lastBlockRaw == nil || *lastBlockRaw == "" {
+		return 0, ce.NewContractError(ce.ErrStateAccess, "no block header found at height "+strconv.FormatInt(int64(lastHeight), 10))
+	}
 	lastBlockBytes := []byte(*lastBlockRaw)
 	var lastBlockHeader wire.BlockHeader
 	err = lastBlockHeader.BtcDecode(bytes.NewReader(lastBlockBytes), wire.ProtocolVersion, wire.LatestEncoding)
 	if err != nil {
-		return 0, 0, ce.NewContractError(ce.ErrInput, "error decoding block header: "+err.Error())
+		return 0, ce.NewContractError(ce.ErrInput, "error decoding block header: "+err.Error())
 	}
 
+	// Dash uses X11 for PoW which is not available in btcsuite, so we skip
+	// the PoW check here. Header integrity is enforced by the oracle before
+	// addBlocks is called; here we only validate decodability and chain
+	// linkage by PrevBlock hash.
 	for _, headerBytes := range rawHeaders {
+		// won't happen for 130 years but just in case
 		if lastHeight == math.MaxUint32 {
-			return 0, 0, ce.NewContractError(ce.ErrArithmetic, "block height exceeds max possible")
+			return 0, ce.NewContractError(ce.ErrArithmetic, "dash block height exceeds max possible")
 		}
 		blockHeight := lastHeight + 1
 
 		var blockHeader wire.BlockHeader
 		err = blockHeader.BtcDecode(bytes.NewReader(headerBytes[:]), wire.ProtocolVersion, wire.LatestEncoding)
 		if err != nil {
-			return 0, 0, ce.NewContractError(ce.ErrInput, "error decoding block header: "+err.Error())
+			return 0, ce.NewContractError(ce.ErrInput, "error decoding block header: "+err.Error())
 		}
 
 		lastBlockHash := lastBlockHeader.BlockHash()
 		if !blockHeader.PrevBlock.IsEqual(&lastBlockHash) {
-			return 0, 0, ErrorSequenceIncorrect
+			return 0, ce.NewContractError(ce.ErrInput, "block sequence incorrect")
 		}
 
+		// store raw 80 bytes (not hex)
 		sdk.StateSetObject(
 			constants.BlockPrefix+strconv.FormatUint(uint64(blockHeight), 10),
 			string(headerBytes[:]),
@@ -112,19 +140,57 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 		lastHeight = blockHeight
 		lastBlockHeader = blockHeader
 	}
-	return lastHeight, lastHeight - initialLastHeight, nil
+
+	PruneOldHeaders(lastHeight)
+
+	return lastHeight, nil
+}
+
+// PruneOldHeaders removes block headers beyond the retention window.
+// Uses a floor cursor to avoid re-scanning already-pruned regions.
+// Returns the number of headers pruned in this call.
+func PruneOldHeaders(lastHeight uint32) int {
+	retainFrom := int64(lastHeight) - int64(constants.MaxBlockRetention) + 1
+	if retainFrom <= 0 {
+		return 0
+	}
+	pruneFloor := pruneFloorFromState()
+	if pruneFloor == 0 {
+		pruneFloor = seedHeightFromState()
+	}
+	if pruneFloor == 0 || int64(pruneFloor) >= retainFrom {
+		return 0
+	}
+	pruned := 0
+	h := int64(pruneFloor)
+	for ; h < retainFrom && pruned < constants.MaxPrunePerCall; h++ {
+		key := constants.BlockPrefix + strconv.FormatInt(h, 10)
+		existing := sdk.StateGetObject(key)
+		if existing != nil && *existing != "" {
+			sdk.StateDeleteObject(key)
+			pruned++
+		}
+		// Also prune the observed tx list for this block height
+		observedKey := constants.ObservedBlockPrefix + strconv.FormatInt(h, 10)
+		sdk.StateDeleteObject(observedKey)
+	}
+	sdk.StateSetObject(constants.PruneFloorKey, strconv.FormatInt(h, 10))
+	return pruned
 }
 
 // HandleReplaceBlock replaces the block at the current tip height with a
 // corrected header. This is used to fix a stale/orphaned tip that prevents
 // new blocks from being appended. The replacement must chain correctly to
-// the block at height-1. PoW is not checked (DASH uses X11).
+// the block at height-1. PoW is not checked (Dash uses X11).
 func HandleReplaceBlock(rawHeader BlockHeaderBytes, networkMode string) (uint32, error) {
-	_ = networkMode
+	_ = networkMode // Dash skips PoW (X11 unavailable in btcsuite); kept for signature compat
 
 	lastHeight, err := LastHeightFromState()
 	if err != nil {
 		return 0, ce.WrapContractError(ce.ErrStateAccess, err, "error reading last block height")
+	}
+	if lastHeight == 0 {
+		return 0, ce.NewContractError(ce.ErrInput, "cannot replace block at height 0 (no previous block to chain to)")
 	}
 
 	// decode the replacement header
@@ -137,7 +203,7 @@ func HandleReplaceBlock(rawHeader BlockHeaderBytes, networkMode string) (uint32,
 	// validate that the replacement chains to height-1
 	prevHeight := lastHeight - 1
 	prevBlockRaw := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatUint(uint64(prevHeight), 10))
-	if *prevBlockRaw == "" {
+	if prevBlockRaw == nil || *prevBlockRaw == "" {
 		return 0, ce.NewContractError(ce.ErrStateAccess, "no block found at height "+strconv.FormatUint(uint64(prevHeight), 10))
 	}
 	var prevHeader wire.BlockHeader
@@ -159,6 +225,76 @@ func HandleReplaceBlock(rawHeader BlockHeaderBytes, networkMode string) (uint32,
 	return lastHeight, nil
 }
 
+// HandleReplaceBlocks replaces the top N blocks (from the tip downward) with
+// corrected headers. This handles multi-block reorgs where replaceBlock (single)
+// would fail because the block below the tip is also orphaned.
+//
+// The headers slice must be ordered lowest-to-highest (oldest first), matching
+// addBlocks ordering. The first header replaces lastHeight-(N-1), the last
+// header replaces lastHeight. PoW is not checked (Dash uses X11).
+func HandleReplaceBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32, error) {
+	if len(rawHeaders) == 0 {
+		return 0, ce.NewContractError(ce.ErrInput, "no replacement headers provided")
+	}
+
+	// Single header: delegate to the original single-block handler.
+	if len(rawHeaders) == 1 {
+		return HandleReplaceBlock(rawHeaders[0], networkMode)
+	}
+
+	// On mainnet, cap replacement depth to 2 blocks.
+	if !constants.IsTestnet(networkMode) && len(rawHeaders) > 2 {
+		return 0, ce.NewContractError(ce.ErrInput, "mainnet replacement limited to 2 blocks")
+	}
+
+	lastHeight, err := LastHeightFromState()
+	if err != nil {
+		return 0, ce.WrapContractError(ce.ErrStateAccess, err, "error reading last block height")
+	}
+
+	n := uint32(len(rawHeaders))
+	if n > lastHeight {
+		return 0, ce.NewContractError(ce.ErrInput, "more replacement headers than stored blocks")
+	}
+
+	// The anchor is the block just below the reorg range that must remain valid.
+	anchorHeight := lastHeight - n
+	anchorBlockRaw := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatUint(uint64(anchorHeight), 10))
+	if anchorBlockRaw == nil || *anchorBlockRaw == "" {
+		return 0, ce.NewContractError(ce.ErrStateAccess, "no block found at anchor height "+strconv.FormatUint(uint64(anchorHeight), 10))
+	}
+	var anchorHeader wire.BlockHeader
+	err = anchorHeader.BtcDecode(bytes.NewReader([]byte(*anchorBlockRaw)), wire.ProtocolVersion, wire.LatestEncoding)
+	if err != nil {
+		return 0, ce.NewContractError(ce.ErrStateAccess, "error decoding block at anchor height "+strconv.FormatUint(uint64(anchorHeight), 10))
+	}
+	prevHash := anchorHeader.BlockHash()
+
+	// Validate and overwrite each header in order.
+	for i, headerBytes := range rawHeaders {
+		height := anchorHeight + 1 + uint32(i)
+
+		var hdr wire.BlockHeader
+		err = hdr.BtcDecode(bytes.NewReader(headerBytes[:]), wire.ProtocolVersion, wire.LatestEncoding)
+		if err != nil {
+			return 0, ce.NewContractError(ce.ErrInput, "error decoding replacement header at index "+strconv.Itoa(i))
+		}
+
+		if !hdr.PrevBlock.IsEqual(&prevHash) {
+			return 0, ce.NewContractError(ce.ErrInput,
+				"replacement block at height "+strconv.FormatUint(uint64(height), 10)+" does not chain to block at height "+strconv.FormatUint(uint64(height-1), 10))
+		}
+
+		sdk.StateSetObject(
+			constants.BlockPrefix+strconv.FormatUint(uint64(height), 10),
+			string(headerBytes[:]),
+		)
+		prevHash = hdr.BlockHash()
+	}
+
+	return lastHeight, nil
+}
+
 func HandleSeedBlocks(seedParams SeedBlocksParams, allowReseed bool) (uint32, error) {
 	lastHeight, err := LastHeightFromState()
 	if err != nil {
@@ -170,15 +306,17 @@ func HandleSeedBlocks(seedParams SeedBlocksParams, allowReseed bool) (uint32, er
 	}
 
 	if lastHeight == 0 || lastHeight < seedParams.BlockHeight {
+		// decode hex input → store raw bytes
 		headerBytes, err := hex.DecodeString(seedParams.BlockHeader)
 		if err != nil {
-			return 0, ce.WrapContractError(ce.ErrInvalidHex, err, "error decoding seed block header hex")
+			return 0, ce.WrapContractError(ce.ErrInvalidHex, err, "invalid block header hex")
 		}
 		sdk.StateSetObject(
 			constants.BlockPrefix+strconv.FormatInt(int64(seedParams.BlockHeight), 10),
 			string(headerBytes),
 		)
-		sdk.StateSetObject(LastHeightKey, strconv.FormatInt(int64(seedParams.BlockHeight), 10))
+		sdk.StateSetObject(constants.LastHeightKey, strconv.FormatInt(int64(seedParams.BlockHeight), 10))
+		sdk.StateSetObject(constants.SeedHeightKey, strconv.FormatInt(int64(seedParams.BlockHeight), 10))
 		return seedParams.BlockHeight, nil
 	}
 

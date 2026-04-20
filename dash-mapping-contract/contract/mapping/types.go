@@ -33,7 +33,7 @@ type AccountInfo struct {
 	Address    string // Caip10address (bitcoin address they can recieve funds at)
 }
 
-// address should be Magi for internal transfers and DASH for unmaps
+// address should be Magi for internal transfers and BTC for unmaps
 //
 //tinyjson:json
 type TransferParams struct {
@@ -41,6 +41,7 @@ type TransferParams struct {
 	To        string `json:"to"`
 	From      string `json:"from,omitempty"`
 	DeductFee bool   `json:"deduct_fee,omitempty"`
+	MaxFee    *int64 `json:"max_fee,omitempty"`
 }
 
 // Utxo stores full UTXO data indexed by a single-byte pool ID.
@@ -54,13 +55,13 @@ type Utxo struct {
 	Tag      []byte // raw tag bytes (32 bytes for deposits, empty for change)
 }
 
-// UtxoRegistryEntry holds the single-byte pool ID and the amount for one UTXO.
+// UtxoRegistryEntry holds a uint16 pool ID and a 6-byte amount for one UTXO.
 //
-// Binary layout of the registry ("utxor" state key): each entry is 9 bytes.
-//   - Byte 0:   ID (0-63 = unconfirmed pool, 64-255 = confirmed pool)
-//   - Bytes 1-8: Amount in satoshis (int64, big-endian)
+// Binary layout of the registry ("r" state key): each entry is 8 bytes.
+//   - Bytes 0–1: ID (uint16 BE; 0–1023 = unconfirmed, 1024–65535 = confirmed)
+//   - Bytes 2–7: Amount in satoshis (uint48 BE, max ~2.81M BTC)
 type UtxoRegistryEntry struct {
-	Id     uint8 // 0-63 = unconfirmed, 64-255 = confirmed
+	Id     uint16 // 0-1023 = unconfirmed, 1024-65535 = confirmed
 	Amount int64
 }
 
@@ -89,14 +90,14 @@ type AddressMetadata struct {
 	Type        MappingType
 }
 
-// SystemSupply tracks protocol-wide DASH accounting.
-// Serialised as 32 raw bytes: four int64 values in big-endian order.
+// SystemSupply tracks protocol-wide BTC accounting.
+// Serialised as 32 raw bytes: four int64 values in little-endian order.
 //
 // Binary layout ("sply" state key):
-//   - Bytes  0- 7: ActiveSupply
-//   - Bytes  8-15: UserSupply
-//   - Bytes 16-23: FeeSupply
-//   - Bytes 24-31: BaseFeeRate (sats per byte)
+//   - Bytes  0– 7: ActiveSupply
+//   - Bytes  8–15: UserSupply
+//   - Bytes 16–23: FeeSupply
+//   - Bytes 24–31: BaseFeeRate (sats per byte)
 type SystemSupply struct {
 	ActiveSupply int64
 	UserSupply   int64
@@ -107,17 +108,16 @@ type SystemSupply struct {
 // ContractState is the top-level in-memory state loaded at the start of each
 // contract action and saved at the end.
 //
-// ConfirmedNextId and UnconfirmedNextId replace the old single uint32 counter.
-// They are stored together as 2 bytes at "utxoid": [confirmed, unconfirmed].
+// ConfirmedNextId and UnconfirmedNextId are stored together as 4 bytes at "i":
+// two uint16 BE values [confirmedNext, unconfirmedNext].
 type ContractState struct {
 	UtxoList          UtxoRegistry
-	ConfirmedNextId   uint8 // next candidate in the confirmed pool   (64-255, wraps)
-	UnconfirmedNextId uint8 // next candidate in the unconfirmed pool (0-63,  wraps)
+	ConfirmedNextId   uint16 // next candidate in the confirmed pool   (1024–65535, wraps)
+	UnconfirmedNextId uint16 // next candidate in the unconfirmed pool (0–1023,    wraps)
 	TxSpendsList      TxSpendsRegistry
 	Supply            SystemSupply
 	PublicKeys        PublicKeys
 	NetworkParams     *chaincfg.Params
-	NetworkOptions    map[NetworkName]Network
 }
 
 type MappingState struct {
@@ -129,18 +129,18 @@ type MappingState struct {
 //
 //tinyjson:json
 type DexInstruction struct {
-	Type          string            `json:"type"`
-	Version       string            `json:"version"`
-	AssetIn       string            `json:"asset_in"`
-	AssetOut      string            `json:"asset_out"`
-	Recipient     string            `json:"recipient"`
-	SlippageBps   *int              `json:"slippage_bps,omitempty"`
-	MinAmountOut  *int64            `json:"min_amount_out,omitempty"`
-	Beneficiary   *string           `json:"beneficiary,omitempty"`
-	RefBps        *int              `json:"ref_bps,omitempty"`
-	ReturnAddress *ReturnAddress    `json:"return_address,omitempty"`
-	Metadata      map[string]string `json:"metadata,omitempty"`
-	AmountIn      string            `json:"amount_in"`
+	Type             string            `json:"type"`
+	Version          string            `json:"version"`
+	AssetIn          string            `json:"asset_in"`
+	AssetOut         string            `json:"asset_out"`
+	Recipient        string            `json:"recipient"`
+	MinAmountOut     *string           `json:"min_amount_out,omitempty"`
+	Beneficiary      *string           `json:"beneficiary,omitempty"`
+	RefBps           *uint64           `json:"ref_bps,omitempty"`
+	ReturnAddress    *ReturnAddress    `json:"return_address,omitempty"`
+	Metadata         map[string]string `json:"metadata,omitempty"`
+	AmountIn         string            `json:"amount_in"`
+	DestinationChain string            `json:"destination_chain,omitempty"`
 }
 
 //tinyjson:json
@@ -193,5 +193,6 @@ type AllowanceParams struct {
 
 //tinyjson:json
 type ConfirmSpendParams struct {
-	TxId string `json:"tx_id"`
+	TxData  *VerificationRequest `json:"tx_data"`
+	Indices []uint32             `json:"indices"`
 }

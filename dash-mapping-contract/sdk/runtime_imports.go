@@ -61,8 +61,11 @@ func contractRead(contractId *string, key *string) *string
 //go:wasmimport sdk contracts.call
 func contractCall(contractId *string, method *string, payload *string, options *string) *string
 
-//go:wasmimport sdk tss.create_key
-func tssCreateKey(keyId *string, algo *string) *string
+//go:wasmimport sdk tss_v2.create_key
+func tssCreateKey(keyId *string, algo *string, epochs *string) *string
+
+//go:wasmimport sdk tss_v2.renew_key
+func tssRenewKey(keyId *string, epochs *string) *string
 
 //go:wasmimport sdk tss.sign_key
 func tssSignKey(keyId *string, msgId *string) *string
