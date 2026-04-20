@@ -46,6 +46,11 @@ func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) ([]Utxo, error) {
 			)
 		}
 		if ok {
+			if txOut.Value > constants.MaxUtxoAmount {
+				return nil, ce.NewContractError(ce.ErrInput, "utxo amount exceeds maximum ("+
+					strconv.FormatInt(txOut.Value, 10)+" > "+
+					strconv.FormatInt(constants.MaxUtxoAmount, 10)+")")
+			}
 			utxo := Utxo{
 				TxId:     msgTx.TxID(),
 				Vout:     uint32(index),
@@ -62,7 +67,7 @@ func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) ([]Utxo, error) {
 
 // updateUtxoSpends checks whether txId is a known pending spend transaction.
 // If so, it confirms matching unconfirmed UTXOs by transitioning them from the
-// unconfirmed pool (IDs 0-63) to the confirmed pool (IDs 64-255), and removes
+// unconfirmed pool (IDs 0–63) to the confirmed pool (IDs 64–255), and removes
 // the signing data entry.
 func (cs *ContractState) updateUtxoSpends(txId string) error {
 	utxoSpendJson := sdk.StateGetObject(constants.TxSpendsPrefix + txId)
@@ -122,10 +127,14 @@ func (cs *ContractState) updateUtxoSpends(txId string) error {
 	return nil
 }
 
-func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string) error {
+func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHeight uint32) error {
 	totalMapped := int64(0)
 	env := sdk.GetEnv()
 	routerId := ""
+
+	// Load existing observed list for this block height (may already have entries
+	// from a prior map call against the same block).
+	observedList := loadObservedList(blockHeight)
 
 	// create new utxos entries for all of the relevant outputs in the incoming transaction
 	for _, utxo := range relevantUtxos {
@@ -137,11 +146,12 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string) error {
 			continue
 		}
 		if metadata, ok := ms.AddressRegistry[addrs[0].EncodeAddress()]; ok {
-			// Create UTXO entry
-			observedUtxoKey := getObservedKey(utxo)
-			// proceed if this output has already been observed
-			alreadyObserved := sdk.StateGetObject(observedUtxoKey)
-			if alreadyObserved != nil && *alreadyObserved != "" {
+			// Check if this output has already been observed
+			entry, err := makeObservedEntry(utxo.TxId, utxo.Vout)
+			if err != nil {
+				return ce.WrapContractError(ce.ErrInput, err, "error creating observed entry")
+			}
+			if isObserved(observedList, entry) {
 				continue
 			}
 
@@ -152,9 +162,10 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string) error {
 			ms.UtxoList = append(ms.UtxoList, UtxoRegistryEntry{Id: utxoInternalId, Amount: utxo.Amount})
 			saveUtxo(utxoInternalId, &utxo)
 
-			// set observed
-			sdk.StateSetObject(observedUtxoKey, "1")
+			// Mark observed
+			observedList = append(observedList, entry)
 
+			sdk.Log(createMapLog(from, metadata.Recipient, utxo.Amount))
 			switch metadata.Type {
 			case MapDeposit:
 				// increment balance for recipient account (vsc account not btc account)
@@ -162,12 +173,8 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string) error {
 				if err := incAccBalance(metadata.Recipient, utxo.Amount); err != nil {
 					return ce.Prepend(err, "error crediting deposit balance")
 				}
-				sdk.Log(createDepositLog(Deposit{
-					to:     metadata.Recipient,
-					from:   from,
-					amount: utxo.Amount,
-				}))
 			case MapSwap:
+
 				// get router id and check it only if there is a swap in the tx
 				if routerId == "" {
 					r := sdk.StateGetObject(constants.RouterContractIdKey)
@@ -187,32 +194,34 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string) error {
 				assetOut := metadata.Params.Get(constants.SwapAssetOut)
 
 				instruction := DexInstruction{
-					Type:      "swap",
-					Version:   "1.0.0",
-					AssetIn:   DashAssetValue,
-					AmountIn:  strconv.FormatInt(utxo.Amount, 10),
-					AssetOut:  assetOut,
-					Recipient: metadata.Recipient,
+					Type:             "swap",
+					Version:          "1.0.0",
+					AssetIn:          DashAssetValue,
+					AmountIn:         strconv.FormatInt(utxo.Amount, 10),
+					AssetOut:         assetOut,
+					Recipient:        metadata.Recipient,
+					DestinationChain: metadata.Params.Get(constants.DestinationChainKey),
 				}
 				instrJson, err := tinyjson.Marshal(instruction)
 				if err != nil {
 					return ce.NewContractError(ce.ErrJson, "error marshalling swap instruction: "+err.Error())
 				}
 
-				sender := env.Sender.Address.String()
-				err = incAccBalance(sender, utxo.Amount)
+				selfAddr := "contract:" + env.ContractId
+				err = incAccBalance(selfAddr, utxo.Amount)
 				if err != nil {
 					return ce.NewContractError(ce.ErrStateAccess, "error getting sender account balance: "+err.Error())
 				}
 
-				// Approve the Router to spend the user's freshly-credited tokens.
-				// Allowance is always 0 here (cleaned up after each Router call),
-				// so we set directly without reading state.
-				setAllowance(sender, routerId, utxo.Amount)
+				// Approve the Router to spend the contract's freshly-credited tokens.
+				// The Router's preFundAsset uses env.Caller (this contract) as the From,
+				// and env.Caller when the Router calls back is "contract:<routerId>".
+				routerAddr := "contract:" + routerId
+				setAllowance(selfAddr, routerAddr, utxo.Amount)
 
 				swapResultStr := sdk.ContractCall(routerId, "execute", string(instrJson), &sdk.ContractCallOptions{})
 				// Clean up any remaining allowance after swap to prevent lingering authorization
-				setAllowance(sender, routerId, 0)
+				setAllowance(selfAddr, routerAddr, 0)
 				var swapResult SwapResult
 				err = tinyjson.Unmarshal([]byte(*swapResultStr), &swapResult)
 				if err != nil {
@@ -225,12 +234,17 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string) error {
 				// should never happen
 				continue
 			}
-			// This increments in all cases, since DASH is always mapped onto VSC
+			// This increments in all cases, since BTC is always mapped onto VSC
 			totalMapped, err = safeAdd64(totalMapped, utxo.Amount)
 			if err != nil {
 				return ce.WrapContractError(ce.ErrArithmetic, err, "error accumulating mapped amount")
 			}
 		}
+	}
+
+	// Persist the observed list for this block height
+	if len(observedList) > 0 {
+		saveObservedList(blockHeight, observedList)
 	}
 
 	if totalMapped != 0 {

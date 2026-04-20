@@ -16,18 +16,23 @@ import (
 // constants in sats
 const dustThreshold = 546
 
-const splitThreshold = 1000000 // 0.01 DASH
+const splitThreshold = 1000000 // 0.01 BTC
 const maxChangeOutputs = 4
 
+// VscFeeMinSats is the minimum VSC protocol fee in satoshis.
+const VscFeeMinSats int64 = 0
+
+// VscFeeRateBps is the VSC protocol fee as basis points (1 bps = 0.01%).
+const VscFeeRateBps int64 = 0
+
 func calcVscFee(amount int64) (int64, error) {
-	const minFee int64 = 1000
-	const feeRateBps int64 = 100 // 100 basis points, 1%
+	if VscFeeMinSats == 0 && VscFeeRateBps == 0 {
+		return 0, nil
+	}
 	// divide first to avoid overflow on large amounts, then compensate for remainder
-	percentageFee := (amount / 10000) * feeRateBps
-	remainder := (amount % 10000) * feeRateBps / 10000
-	percentageFee += remainder
-	finalFee := minFee
-	if percentageFee > minFee {
+	percentageFee := (amount/10000)*VscFeeRateBps + (amount%10000)*VscFeeRateBps/10000
+	finalFee := VscFeeMinSats
+	if percentageFee > VscFeeMinSats {
 		finalFee = percentageFee
 	}
 	if finalFee >= amount {
@@ -36,7 +41,7 @@ func calcVscFee(amount int64) (int64, error) {
 	return finalFee, nil
 }
 
-func getInputUtxos(registryEntries []uint8) ([]*Utxo, error) {
+func getInputUtxos(registryEntries []uint16) ([]*Utxo, error) {
 	result := make([]*Utxo, len(registryEntries))
 	for i, internalId := range registryEntries {
 		utxo, err := loadUtxo(internalId)
@@ -48,42 +53,89 @@ func getInputUtxos(registryEntries []uint8) ([]*Utxo, error) {
 	return result, nil
 }
 
-// Helper function to estimate fee for a given number of inputs and outputs
-func (cs *ContractState) estimateFee(numInputs int64, amount, inputAmount int64) int64 {
-	numOutputs := int64(1)
-	totalChange := inputAmount - amount
-	if totalChange > dustThreshold {
-		// total number of change outputs
-		numOutputs += min(max(totalChange/splitThreshold, 1), maxChangeOutputs)
+// estimateVSize returns the estimated vSize for given non-witness and witness data sizes.
+func estimateVSize(nonWitnessSize, witnessDataSize int64) int64 {
+	totalSize := nonWitnessSize + witnessDataSize
+	return (nonWitnessSize*3+totalSize+3)/4 + 2
+}
+
+// clampedFeeRate returns the base fee rate clamped to MaxBaseFeeRate.
+func clampedFeeRate(rate int64) int64 {
+	if rate > constants.MaxBaseFeeRate {
+		return constants.MaxBaseFeeRate
 	}
+	if rate < 1 {
+		return 1
+	}
+	return rate
+}
+
+// Helper function to estimate fee for a given number of inputs and outputs.
+// Accounts for the base fee before deciding how many change outputs to include,
+// and only adds change outputs that remain above dust after fee adjustment.
+func (cs *ContractState) estimateFee(numInputs int64, amount, inputAmount int64) (int64, error) {
+	feeRate := clampedFeeRate(cs.Supply.BaseFeeRate)
+	totalChange := inputAmount - amount
 
 	// Base transaction overhead (version, locktime, etc.)
 	baseSize := int64(10)
-
 	// Input size: outpoint (36) + script sig length (1) + sequence (4)
 	inputSize := numInputs * 41
-
 	// Output size: value (8) + script length (1) + P2WSH script (34)
-	outputSize := numOutputs * 43
+	outputSize := int64(43) // 1 destination output
 
-	// Witness data per input (signature + witness script)
-	// 72 bytes sig + 68 bytes witness script + 3 bytes for size markers
-	witnessDataSize := numInputs * (72 + 68 + 3)
+	// Witness stack per input: <sig> <branch_selector> <witness_script>
+	// Serialized: item_count(1) + sig_len(1) + sig(72) + branch_len(1) + branch(1) + script_len(1) + script(N)
+	// Witness script is ~79 bytes for change UTXOs (no tag) or ~112 bytes for
+	// deposit UTXOs (with 32-byte tag). Use 112 as conservative upper bound
+	// to ensure fee estimate >= actual fee from calculateSegwitFee.
+	witnessDataSize := numInputs * (72 + 112 + 5)
 
-	totalSize := baseSize + inputSize + outputSize
-	// Calculate vSize: (base_size * 3 + total_size + witness_data) / 4 + witness flag overhead
-	vSize := (totalSize*3+totalSize+witnessDataSize+3)/4 + 2
+	// Compute base fee (no change outputs) first
+	nonWitnessSize := baseSize + inputSize + outputSize
+	baseFee, err := safeMultiply64(estimateVSize(nonWitnessSize, witnessDataSize), feeRate)
+	if err != nil {
+		return 0, ce.WrapContractError(ce.ErrArithmetic, err, "fee estimation overflow")
+	}
 
-	return vSize * cs.Supply.BaseFeeRate
+	availableChange := totalChange - baseFee
+	if availableChange < 0 {
+		availableChange = 0
+	}
+
+	if availableChange > dustThreshold {
+		numChangeOutputs := min(max(availableChange/splitThreshold, 1), maxChangeOutputs)
+
+		// Add change outputs one at a time, stopping when per-output amount is dust
+		addedOutputs := int64(0)
+		for i := int64(0); i < numChangeOutputs; i++ {
+			newNonWitness := nonWitnessSize + (addedOutputs+1)*43
+			newFee, err := safeMultiply64(estimateVSize(newNonWitness, witnessDataSize), feeRate)
+			if err != nil {
+				return 0, ce.WrapContractError(ce.ErrArithmetic, err, "fee estimation overflow")
+			}
+			newAvailable := totalChange - newFee
+			if newAvailable < 0 {
+				newAvailable = 0
+			}
+			if newAvailable/(addedOutputs+1) <= dustThreshold {
+				break
+			}
+			addedOutputs++
+			nonWitnessSize = newNonWitness
+		}
+	}
+
+	fee, err := safeMultiply64(estimateVSize(nonWitnessSize, witnessDataSize), feeRate)
+	if err != nil {
+		return 0, ce.WrapContractError(ce.ErrArithmetic, err, "fee estimation overflow")
+	}
+	return fee, nil
 }
 
 // returns a list of internal ids of inputs for making a tx
-func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint8, int64, error) {
-	// approximate size of including a new PSWSH input (base tx size plus signature)
-	// slight overestimate (+1 at the end) to make sure there's enough balance
-	const P2WSHAPPROXINPUTSIZE = 40 + 1 + (72+68+3)/4 + 1
-
-	inputs := []uint8{}
+func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint16, int64, error) {
+	inputs := []uint16{}
 
 	// accumulates amount of all inputs
 	accAmount := int64(0)
@@ -93,16 +145,19 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint8, int64, error) {
 		if entry.Id < constants.UtxoConfirmedPoolStart {
 			continue
 		}
-		fee := cs.estimateFee(1, amount, entry.Amount)
+		fee, err := cs.estimateFee(1, amount, entry.Amount)
+		if err != nil {
+			return nil, 0, err
+		}
 		requiredAmount := amount + fee
 		if entry.Amount >= requiredAmount {
-			return []uint8{entry.Id}, entry.Amount, nil
+			return []uint16{entry.Id}, entry.Amount, nil
 		}
 	}
 
 	// second loop: accumulate confirmed UTXOs, fall back to unconfirmed if needed
 	type unconfirmedEntry struct {
-		id     uint8
+		id     uint16
 		amount int64
 	}
 	unconfirmedTxs := []unconfirmedEntry{}
@@ -116,7 +171,10 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint8, int64, error) {
 				return nil, 0, ce.WrapContractError(ce.ErrArithmetic, err, "error gathering utxos")
 			}
 
-			fee := cs.estimateFee(int64(len(inputs)), amount, accAmount)
+			fee, err := cs.estimateFee(int64(len(inputs)), amount, accAmount)
+			if err != nil {
+				return nil, 0, err
+			}
 			requiredAmount := amount + fee
 
 			if accAmount >= requiredAmount {
@@ -138,7 +196,10 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint8, int64, error) {
 			return nil, 0, ce.WrapContractError(ce.ErrArithmetic, err, "error gathering utxos")
 		}
 
-		fee := cs.estimateFee(int64(len(inputs)), amount, accAmount)
+		fee, err := cs.estimateFee(int64(len(inputs)), amount, accAmount)
+		if err != nil {
+			return nil, 0, err
+		}
 		requiredAmount := amount + fee
 
 		if accAmount >= requiredAmount {
@@ -149,26 +210,34 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint8, int64, error) {
 	return nil, 0, ce.NewContractError(ce.ErrBalance, "total available balance insufficient to complete transaction")
 }
 
-func (cs *ContractState) calculateSegwitFee(baseSize int64, witnessScripts map[int][]byte) int64 {
-	// estimates size of segwit signatures
+func (cs *ContractState) calculateSegwitFee(baseSize int64, witnessScripts map[int][]byte) (int64, error) {
+	feeRate := clampedFeeRate(cs.Supply.BaseFeeRate)
+	// Witness stack per input: <sig> <branch_selector> <witness_script>
+	// Serialized: item_count(1) + sig_len(1) + sig(72) + branch_len(1) + branch(1) + script_len(1) + script(N)
 	witnessDataSize := int64(0)
 	for _, witnessScript := range witnessScripts {
-		// +3 is for size flags, but small enough to be represented by themselves so just 1 byte per
-		witnessDataSize += 72 + int64(len(witnessScript)) + 3
+		witnessDataSize += 72 + int64(len(witnessScript)) + 5
 	}
 	totalSize := baseSize + witnessDataSize
 	// +3 to round up, + 2 for has witness data flag
 	vSize := (baseSize*3+totalSize+3)/4 + 2
-	return vSize * cs.Supply.BaseFeeRate
+	fee, err := safeMultiply64(vSize, feeRate)
+	if err != nil {
+		return 0, ce.WrapContractError(ce.ErrArithmetic, err, "fee calculation overflow")
+	}
+	return fee, nil
 }
 
-func (cs *ContractState) createSpendTransaction(
+// buildSpendTransaction constructs the Bitcoin withdrawal transaction and
+// computes the miner fee, but does NOT request TSS signing. Call
+// signSpendTransaction after all validation checks pass.
+func (cs *ContractState) buildSpendTransaction(
 	inputs []*Utxo,
 	totalInputsAmount int64,
 	destAddress string,
 	changeAddress string,
 	sendAmount int64,
-) (*SigningData, *wire.MsgTx, int64, error) {
+) (*wire.MsgTx, map[int][]byte, int64, error) {
 	tx := wire.NewMsgTx(wire.TxVersion)
 
 	// create all witness scripts now for better size estimation
@@ -201,7 +270,7 @@ func (cs *ContractState) createSpendTransaction(
 		return nil, nil, 0, ce.WrapContractError(
 			ce.ErrInput,
 			err,
-			"error decoding destination address ["+destAddress+"]",
+			"error decoding destination btc address ["+destAddress+"]",
 		)
 	}
 
@@ -215,14 +284,21 @@ func (cs *ContractState) createSpendTransaction(
 	tx.AddTxOut(destTxOut)
 
 	baseSize := int64(tx.SerializeSize())
-	fee := cs.calculateSegwitFee(baseSize, witnessScripts)
+	fee, err := cs.calculateSegwitFee(baseSize, witnessScripts)
+	if err != nil {
+		return nil, nil, 0, err
+	}
 
 	totalChange := totalInputsAmount - sendAmount
 
-	// if change is not dust
-	if totalChange > dustThreshold {
-		// split if above SPLITTHRESHOLD, taking into account the added fee
-		// for each split (about 34 bytes per output)
+	// Account for the base fee before computing available change
+	availableChange := totalChange - fee
+	if availableChange < 0 {
+		availableChange = 0
+	}
+
+	// Add change outputs if above dust, splitting across multiple outputs
+	if availableChange > dustThreshold {
 		changeAddressObj, err := btcutil.DecodeAddress(changeAddress, cs.NetworkParams)
 		if err != nil {
 			return nil, nil, 0, err
@@ -231,31 +307,55 @@ func (cs *ContractState) createSpendTransaction(
 		if err != nil {
 			return nil, nil, 0, err
 		}
-		// create a dummy change output to calculate additional fee for adding change outputs
 		changeOutputSize := int64(wire.NewTxOut(int64(0), changeScript).SerializeSize())
 
-		numChangeOuputs := min(max(totalChange/splitThreshold, 1), maxChangeOutputs)
+		numChangeOuputs := min(max(availableChange/splitThreshold, 1), maxChangeOutputs)
 
-		// recalculate the size/fee
-		baseSize += numChangeOuputs * changeOutputSize
-		fee = cs.calculateSegwitFee(baseSize, witnessScripts)
+		// Add change outputs one at a time, recalculating fee after each
+		addedOutputs := int64(0)
+		for range numChangeOuputs {
+			newBaseSize := baseSize + (addedOutputs+1)*changeOutputSize
+			newFee, err := cs.calculateSegwitFee(newBaseSize, witnessScripts)
+			if err != nil {
+				return nil, nil, 0, err
+			}
+			newAvailable := totalChange - newFee
+			if newAvailable < 0 {
+				newAvailable = 0
+			}
 
-		eachChangeAmount := (totalChange - fee) / numChangeOuputs
-		firstChangeAmount := eachChangeAmount
-		if (eachChangeAmount * numChangeOuputs) != (totalChange - fee) {
-			firstChangeAmount += (totalChange - fee - eachChangeAmount*numChangeOuputs)
+			// Check if adding this output still leaves enough for all outputs to be above dust
+			perOutput := newAvailable / (addedOutputs + 1)
+			if perOutput <= dustThreshold {
+				break
+			}
+
+			addedOutputs++
+			baseSize = newBaseSize
+			fee = newFee
+			availableChange = newAvailable
 		}
 
-		txOutChange := wire.NewTxOut(firstChangeAmount, changeScript)
-		tx.AddTxOut(txOutChange)
+		if addedOutputs > 0 {
+			eachChangeAmount := availableChange / addedOutputs
+			remainder := availableChange - eachChangeAmount*addedOutputs
 
-		for range numChangeOuputs - 1 {
-			txOutChange := wire.NewTxOut(eachChangeAmount, changeScript)
+			txOutChange := wire.NewTxOut(eachChangeAmount+remainder, changeScript)
 			tx.AddTxOut(txOutChange)
+
+			for range addedOutputs - 1 {
+				txOutChange := wire.NewTxOut(eachChangeAmount, changeScript)
+				tx.AddTxOut(txOutChange)
+			}
 		}
 	}
 
-	// P2WSH: Calculate witness sighash
+	return tx, witnessScripts, fee, nil
+}
+
+// signSpendTransaction computes witness sighashes and requests TSS signing
+// for each input. Call this only after all validation checks have passed.
+func signSpendTransaction(tx *wire.MsgTx, inputs []*Utxo, witnessScripts map[int][]byte) (*SigningData, error) {
 	unsignedSigHashes := make([]UnsignedSigHash, len(inputs))
 	for i, utxo := range inputs {
 		witnessScript := witnessScripts[i]
@@ -272,7 +372,7 @@ func (cs *ContractState) createSpendTransaction(
 		)
 
 		if err != nil {
-			return nil, nil, 0, err
+			return nil, err
 		}
 
 		sdk.TssSignKey(constants.TssKeyName, sigHash)
@@ -285,15 +385,15 @@ func (cs *ContractState) createSpendTransaction(
 	}
 
 	var buf bytes.Buffer
-	err = tx.Serialize(&buf)
+	err := tx.Serialize(&buf)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, err
 	}
 
 	return &SigningData{
 		Tx:                buf.Bytes(),
 		UnsignedSigHashes: unsignedSigHashes,
-	}, tx, fee, nil
+	}, nil
 }
 
 func indexUnconfimedOutputs(tx *wire.MsgTx, changeAddress string, network *chaincfg.Params) ([]*Utxo, error) {

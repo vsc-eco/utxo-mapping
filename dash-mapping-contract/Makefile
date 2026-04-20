@@ -12,38 +12,39 @@ CONTRACTS_DIR	:= contract
 
 TINYGO_IMAGE := tinygo/tinygo:0.39.0
 WORKDIR      := /work
-DOCKER_TINYGO = docker run --rm \
-	-e HOME=/tmp \
-	-v $(CURDIR):$(WORKDIR) \
-	-w $(WORKDIR) \
-	$(TINYGO_IMAGE) \
-	tinygo
 
-TINYGO_CMD = tinygo
+# For each local path in go.work (use/replace directives), add a Docker volume
+# mount so the container can resolve the same relative paths as the host.
+# Container path is computed by normalising WORKDIR/relative_path.
+GOWORK_EXTRA_MOUNTS := $(if $(wildcard go.work),$(shell \
+  awk '($$1=="use"||$$1=="replace") && $$NF~/^(\.|\/|~)/ && $$NF!="." {print $$NF}' go.work 2>/dev/null | \
+  while read rel; do \
+    host=$$(realpath "$(CURDIR)/$$rel" 2>/dev/null); \
+    ctr=$$(python3 -c "import os,sys; print(os.path.normpath(sys.argv[1]))" "$(WORKDIR)/$$rel"); \
+    [ -d "$$host" ] && printf -- '-v %s:%s ' "$$host" "$$ctr"; \
+  done),)
 
-ifdef USE_DOCKER
-    TINYGO_CMD = docker run --rm \
-        -u $(shell id -u):$(shell id -g) \
-        -v $(CURDIR):$(WORKDIR) \
-        -w $(WORKDIR) \
-        $(TINYGO_IMAGE) \
-        tinygo
+TINYGO_CMD = docker run --rm \
+    -u $(shell id -u):$(shell id -g) \
+    $(GOWORK_EXTRA_MOUNTS) \
+    -v $(CURDIR):$(WORKDIR) \
+    -w $(WORKDIR) \
+    $(TINYGO_IMAGE) \
+    tinygo
+
+ifeq ($(USE_DOCKER),0)
+    TINYGO_CMD = tinygo
 endif
 
-NETWORK ?= testnet
 FILTER ?= .
 
 RUN_ARGS := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
 ifneq ($(RUN_ARGS),)
   ifeq ($(firstword $(MAKECMDGOALS)),test)
     FILTER := $(firstword $(RUN_ARGS))
-  else
-    NETWORK := $(firstword $(RUN_ARGS))
   endif
 endif
 $(eval $(RUN_ARGS):;@:)
-
-CFLAGS = $(BASEFLAGS) $(call netflags,$(NETWORK))
 
 netflags = \
 	$(if $(filter testnet,$1),$(TESTNETFLAGS), \
@@ -53,23 +54,60 @@ netflags = \
 
 all: dev
 
+# Dash uses a local replace directive (see go.mod). update-vsc-node is a no-op
+# here; bump the replace target in go.mod manually when upgrading.
+update-vsc-node:
+	@true
+
+.PHONY: update-vsc-node
+
+# Run update-vsc-node before any build or test target.
+all dev testnet mainnet regtest test: | update-vsc-node
+
 pull-tinygo:
 	docker pull $(TINYGO_IMAGE)
 
-dev: NETWORK = dev
-dev:
-	@echo "Building $@ with $(NETWORK) flags"
-	$(TINYGO_CMD) build $(CFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
+MODULE := $(shell head -1 go.mod | awk '{print $$2}')
 
-testnet: NETWORK ?= testnet
-testnet:
-	@echo "Building $@ with $(NETWORK) flags"
-	$(TINYGO_CMD) build $(CFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
-
-mainnet: NETWORK ?= mainnet
-mainnet:
-	@echo "Building $@ with $(NETWORK) flags"
-	$(TINYGO_CMD) build $(CFLAGS) -o $(BIN_DIR)/$@.wasm $(TARGET)
+dev testnet mainnet regtest:
+	@wasm_file="$(BIN_DIR)/$@.wasm"; \
+	dir="$(ROOT_DIR)/$(dir $(TARGET))"; \
+	dir="$${dir%/}"; \
+	if [ -f "$$wasm_file" ]; then \
+		dep_dirs="$$dir"; \
+		queue="$$dir"; \
+		while [ -n "$$queue" ]; do \
+			next_queue=""; \
+			for d in $$queue; do \
+				for imp in $$(grep -roh '"$(MODULE)/[^"]*"' "$$d"/*.go 2>/dev/null | tr -d '"' | sed 's|$(MODULE)/||' | sort -u); do \
+					resolved="$(ROOT_DIR)/$$imp"; \
+					case " $$dep_dirs " in \
+						*" $$resolved "*) ;; \
+						*) [ -d "$$resolved" ] && dep_dirs="$$dep_dirs $$resolved" && next_queue="$$next_queue $$resolved" ;; \
+					esac; \
+				done; \
+			done; \
+			queue="$$next_queue"; \
+		done; \
+		needs_rebuild=0; \
+		for dep_dir in $$dep_dirs; do \
+			if find "$$dep_dir" -maxdepth 1 -type f -name '*.go' -newer "$$wasm_file" 2>/dev/null | grep -q .; then \
+				needs_rebuild=1; \
+				break; \
+			fi; \
+		done; \
+		if [ "$$needs_rebuild" -eq 0 ] && \
+		   [ ! "$(ROOT_DIR)/go.mod" -nt "$$wasm_file" ] && \
+		   [ ! "$(ROOT_DIR)/go.sum" -nt "$$wasm_file" ]; then \
+			echo "⏩ $@ is up to date, skipping"; \
+		else \
+			echo "Building $@ ..."; \
+			$(TINYGO_CMD) build $(BASEFLAGS) $(call netflags,$@) -o $$wasm_file $(TARGET); \
+		fi; \
+	else \
+		echo "Building $@ ..."; \
+		$(TINYGO_CMD) build $(BASEFLAGS) $(call netflags,$@) -o $$wasm_file $(TARGET); \
+	fi
 
 strip:
 	@for file in $(BIN_DIR)/*.wasm; do \
@@ -173,7 +211,6 @@ tinyjson:
 		fi; \
 	done
 
-.PHONY: test
 test:
 	cd tests/current && go test -v -p 1 -parallel 1 -run "$(FILTER)"
 

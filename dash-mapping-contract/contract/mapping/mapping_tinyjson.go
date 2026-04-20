@@ -115,6 +115,16 @@ func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp1(in *jle
 			out.From = string(in.String())
 		case "deduct_fee":
 			out.DeductFee = bool(in.Bool())
+		case "max_fee":
+			if in.IsNull() {
+				in.Skip()
+				out.MaxFee = nil
+			} else {
+				if out.MaxFee == nil {
+					out.MaxFee = new(int64)
+				}
+				*out.MaxFee = int64(in.Int64())
+			}
 		default:
 			in.SkipRecursive()
 		}
@@ -148,6 +158,11 @@ func tinyjsonA043f2bcEncodeBtcMappingContractContractMappingTinyjsonTmp1(out *jw
 		const prefix string = ",\"deduct_fee\":"
 		out.RawString(prefix)
 		out.Bool(bool(in.DeductFee))
+	}
+	if in.MaxFee != nil {
+		const prefix string = ",\"max_fee\":"
+		out.RawString(prefix)
+		out.Int64(int64(*in.MaxFee))
 	}
 	out.RawByte('}')
 }
@@ -556,25 +571,15 @@ func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp7(in *jle
 			out.AssetOut = string(in.String())
 		case "recipient":
 			out.Recipient = string(in.String())
-		case "slippage_bps":
-			if in.IsNull() {
-				in.Skip()
-				out.SlippageBps = nil
-			} else {
-				if out.SlippageBps == nil {
-					out.SlippageBps = new(int)
-				}
-				*out.SlippageBps = int(in.Int())
-			}
 		case "min_amount_out":
 			if in.IsNull() {
 				in.Skip()
 				out.MinAmountOut = nil
 			} else {
 				if out.MinAmountOut == nil {
-					out.MinAmountOut = new(int64)
+					out.MinAmountOut = new(string)
 				}
-				*out.MinAmountOut = int64(in.Int64())
+				*out.MinAmountOut = string(in.String())
 			}
 		case "beneficiary":
 			if in.IsNull() {
@@ -592,9 +597,9 @@ func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp7(in *jle
 				out.RefBps = nil
 			} else {
 				if out.RefBps == nil {
-					out.RefBps = new(int)
+					out.RefBps = new(uint64)
 				}
-				*out.RefBps = int(in.Int())
+				*out.RefBps = uint64(in.Uint64())
 			}
 		case "return_address":
 			if in.IsNull() {
@@ -628,6 +633,8 @@ func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp7(in *jle
 			}
 		case "amount_in":
 			out.AmountIn = string(in.String())
+		case "destination_chain":
+			out.DestinationChain = string(in.String())
 		default:
 			in.SkipRecursive()
 		}
@@ -667,15 +674,10 @@ func tinyjsonA043f2bcEncodeBtcMappingContractContractMappingTinyjsonTmp7(out *jw
 		out.RawString(prefix)
 		out.String(string(in.Recipient))
 	}
-	if in.SlippageBps != nil {
-		const prefix string = ",\"slippage_bps\":"
-		out.RawString(prefix)
-		out.Int(int(*in.SlippageBps))
-	}
 	if in.MinAmountOut != nil {
 		const prefix string = ",\"min_amount_out\":"
 		out.RawString(prefix)
-		out.Int64(int64(*in.MinAmountOut))
+		out.String(string(*in.MinAmountOut))
 	}
 	if in.Beneficiary != nil {
 		const prefix string = ",\"beneficiary\":"
@@ -685,7 +687,7 @@ func tinyjsonA043f2bcEncodeBtcMappingContractContractMappingTinyjsonTmp7(out *jw
 	if in.RefBps != nil {
 		const prefix string = ",\"ref_bps\":"
 		out.RawString(prefix)
-		out.Int(int(*in.RefBps))
+		out.Uint64(uint64(*in.RefBps))
 	}
 	if in.ReturnAddress != nil {
 		const prefix string = ",\"return_address\":"
@@ -715,6 +717,11 @@ func tinyjsonA043f2bcEncodeBtcMappingContractContractMappingTinyjsonTmp7(out *jw
 		const prefix string = ",\"amount_in\":"
 		out.RawString(prefix)
 		out.String(string(in.AmountIn))
+	}
+	if in.DestinationChain != "" {
+		const prefix string = ",\"destination_chain\":"
+		out.RawString(prefix)
+		out.String(string(in.DestinationChain))
 	}
 	out.RawByte('}')
 }
@@ -777,7 +784,7 @@ func tinyjsonA043f2bcEncodeBtcMappingContractContractMappingTinyjsonTmp8(out *jw
 	}
 	out.RawByte('}')
 }
-func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp9(in *jlexer.Lexer, out *AccountInfo) {
+func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp9(in *jlexer.Lexer, out *ConfirmSpendParams) {
 	isTopLevel := in.IsStart()
 	if in.IsNull() {
 		if isTopLevel {
@@ -796,10 +803,39 @@ func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp9(in *jle
 			continue
 		}
 		switch key {
-		case "modified_at":
-			out.ModifiedAt = uint64(in.Uint64())
-		case "address":
-			out.Address = string(in.String())
+		case "tx_data":
+			if in.IsNull() {
+				in.Skip()
+				out.TxData = nil
+			} else {
+				if out.TxData == nil {
+					out.TxData = new(VerificationRequest)
+				}
+				(*out.TxData).UnmarshalTinyJSON(in)
+			}
+		case "indices":
+			if in.IsNull() {
+				in.Skip()
+				out.Indices = nil
+			} else {
+				in.Delim('[')
+				if out.Indices == nil {
+					if !in.IsDelim(']') {
+						out.Indices = make([]uint32, 0, 16)
+					} else {
+						out.Indices = []uint32{}
+					}
+				} else {
+					out.Indices = (out.Indices)[:0]
+				}
+				for !in.IsDelim(']') {
+					var v6 uint32
+					v6 = uint32(in.Uint32())
+					out.Indices = append(out.Indices, v6)
+					in.WantComma()
+				}
+				in.Delim(']')
+			}
 		default:
 			in.SkipRecursive()
 		}
@@ -810,30 +846,45 @@ func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp9(in *jle
 		in.Consumed()
 	}
 }
-func tinyjsonA043f2bcEncodeBtcMappingContractContractMappingTinyjsonTmp9(out *jwriter.Writer, in AccountInfo) {
+func tinyjsonA043f2bcEncodeBtcMappingContractContractMappingTinyjsonTmp9(out *jwriter.Writer, in ConfirmSpendParams) {
 	out.RawByte('{')
 	first := true
 	_ = first
 	{
-		const prefix string = ",\"modified_at\":"
+		const prefix string = ",\"tx_data\":"
 		out.RawString(prefix[1:])
-		out.Uint64(uint64(in.ModifiedAt))
+		if in.TxData == nil {
+			out.RawString("null")
+		} else {
+			(*in.TxData).MarshalTinyJSON(out)
+		}
 	}
 	{
-		const prefix string = ",\"address\":"
+		const prefix string = ",\"indices\":"
 		out.RawString(prefix)
-		out.String(string(in.Address))
+		if in.Indices == nil && (out.Flags&jwriter.NilSliceAsEmpty) == 0 {
+			out.RawString("null")
+		} else {
+			out.RawByte('[')
+			for v7, v8 := range in.Indices {
+				if v7 > 0 {
+					out.RawByte(',')
+				}
+				out.Uint32(uint32(v8))
+			}
+			out.RawByte(']')
+		}
 	}
 	out.RawByte('}')
 }
 
 // MarshalTinyJSON supports tinyjson.Marshaler interface
-func (v AccountInfo) MarshalTinyJSON(w *jwriter.Writer) {
+func (v ConfirmSpendParams) MarshalTinyJSON(w *jwriter.Writer) {
 	tinyjsonA043f2bcEncodeBtcMappingContractContractMappingTinyjsonTmp9(w, v)
 }
 
 // UnmarshalTinyJSON supports tinyjson.Unmarshaler interface
-func (v *AccountInfo) UnmarshalTinyJSON(l *jlexer.Lexer) {
+func (v *ConfirmSpendParams) UnmarshalTinyJSON(l *jlexer.Lexer) {
 	tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp9(l, v)
 }
 func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp10(in *jlexer.Lexer, out *AllowanceParams) {
@@ -895,7 +946,7 @@ func (v AllowanceParams) MarshalTinyJSON(w *jwriter.Writer) {
 func (v *AllowanceParams) UnmarshalTinyJSON(l *jlexer.Lexer) {
 	tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp10(l, v)
 }
-func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp11(in *jlexer.Lexer, out *ConfirmSpendParams) {
+func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp11(in *jlexer.Lexer, out *AccountInfo) {
 	isTopLevel := in.IsStart()
 	if in.IsNull() {
 		if isTopLevel {
@@ -914,8 +965,10 @@ func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp11(in *jl
 			continue
 		}
 		switch key {
-		case "tx_id":
-			out.TxId = string(in.String())
+		case "modified_at":
+			out.ModifiedAt = uint64(in.Uint64())
+		case "address":
+			out.Address = string(in.String())
 		default:
 			in.SkipRecursive()
 		}
@@ -926,24 +979,29 @@ func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp11(in *jl
 		in.Consumed()
 	}
 }
-func tinyjsonA043f2bcEncodeBtcMappingContractContractMappingTinyjsonTmp11(out *jwriter.Writer, in ConfirmSpendParams) {
+func tinyjsonA043f2bcEncodeBtcMappingContractContractMappingTinyjsonTmp11(out *jwriter.Writer, in AccountInfo) {
 	out.RawByte('{')
 	first := true
 	_ = first
 	{
-		const prefix string = ",\"tx_id\":"
+		const prefix string = ",\"modified_at\":"
 		out.RawString(prefix[1:])
-		out.String(string(in.TxId))
+		out.Uint64(uint64(in.ModifiedAt))
+	}
+	{
+		const prefix string = ",\"address\":"
+		out.RawString(prefix)
+		out.String(string(in.Address))
 	}
 	out.RawByte('}')
 }
 
 // MarshalTinyJSON supports tinyjson.Marshaler interface
-func (v ConfirmSpendParams) MarshalTinyJSON(w *jwriter.Writer) {
+func (v AccountInfo) MarshalTinyJSON(w *jwriter.Writer) {
 	tinyjsonA043f2bcEncodeBtcMappingContractContractMappingTinyjsonTmp11(w, v)
 }
 
 // UnmarshalTinyJSON supports tinyjson.Unmarshaler interface
-func (v *ConfirmSpendParams) UnmarshalTinyJSON(l *jlexer.Lexer) {
+func (v *AccountInfo) UnmarshalTinyJSON(l *jlexer.Lexer) {
 	tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp11(l, v)
 }

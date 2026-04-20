@@ -96,7 +96,6 @@ require (
 	github.com/ipld/go-ipld-prime v0.21.0 // indirect
 	github.com/jackpal/go-nat-pmp v1.0.2 // indirect
 	github.com/jbenet/go-temp-err-catcher v0.1.0 // indirect
-	github.com/jorrizza/ed2curve25519 v0.1.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/kilic/bls12-381 v0.1.0 // indirect
 	github.com/klauspost/compress v1.17.11 // indirect
@@ -213,8 +212,9 @@ require (
 )
 
 require (
+	filippo.io/bigmod v0.1.0 // indirect
 	github.com/agl/ed25519 v0.0.0-20200225211852-fd4d107ace12 // indirect
-	github.com/bnb-chain/tss-lib/v2 v2.0.2 // indirect
+	github.com/bnb-chain/tss-lib/v3 v3.0.0 // indirect
 	github.com/btcsuite/btcd/btcec/v2 v2.3.5 // indirect
 	github.com/btcsuite/btclog v1.0.0 // indirect
 	github.com/decred/dcrd/crypto/blake256 v1.1.0 // indirect
