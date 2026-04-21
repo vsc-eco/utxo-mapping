@@ -134,8 +134,8 @@ func (cs *ContractState) parseInstructions(
 			mappingType = MapDeposit
 		} else if params.Has(constants.SwapToKey) {
 			recipient = params.Get(constants.SwapToKey)
-			recipientNetwork := params.Get(constants.SwapNetworkOut)
-			if recipientNetwork == "btc" {
+			destinationChain := params.Get(constants.DestinationChainKey)
+			if strings.ToLower(destinationChain) == "btc" {
 				return nil, ce.NewContractError(ce.ErrInput, "output network cannot be btc")
 			}
 			mappingType = MapSwap
