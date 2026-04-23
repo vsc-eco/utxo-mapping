@@ -196,3 +196,24 @@ type ConfirmSpendParams struct {
 	TxData  *VerificationRequest `json:"tx_data"`
 	Indices []uint32             `json:"indices"`
 }
+
+//tinyjson:json
+type MapPageParams struct {
+	TxId        string `json:"tx_id"`
+	Vout        uint32 `json:"vout"`
+	BlockHeight uint32 `json:"block_height"`
+	PageIdx     uint32 `json:"page_idx"`
+	TotalPages  uint32 `json:"total_pages"`
+	Payload     string `json:"payload"`
+}
+
+//tinyjson:json
+type ConfirmSpendPageParams struct {
+	TxId        string `json:"tx_id"`
+	Vout        uint32 `json:"vout"`
+	BlockHeight uint32 `json:"block_height"`
+	PageIdx     uint32 `json:"page_idx"`
+	TotalPages  uint32 `json:"total_pages"`
+	Payload     string `json:"payload"`
+}
+

@@ -10,6 +10,7 @@ import (
 
 	"btc-mapping-contract/contract/constants"
 	ce "btc-mapping-contract/contract/contracterrors"
+	"btc-mapping-contract/contract/mapping"
 
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/btcutil"
@@ -191,6 +192,7 @@ func PruneOldHeaders(lastHeight uint32) int {
 		// Also prune the observed tx list for this block height
 		observedKey := constants.ObservedBlockPrefix + strconv.FormatInt(h, 10)
 		sdk.StateDeleteObject(observedKey)
+		mapping.PrunePagesForHeight(uint32(h))
 	}
 	sdk.StateSetObject(constants.PruneFloorKey, strconv.FormatInt(h, 10))
 	return pruned

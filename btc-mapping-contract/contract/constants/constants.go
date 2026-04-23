@@ -89,6 +89,17 @@ const MaxBlockRetention = 1080
 const MaxPrunePerCall = 50
 
 const (
+	PageDataPrefix  = "g" // binary-packed keyspace (no delimiter)
+	PageMetaPrefix  = "m" // binary-packed keyspace (no delimiter)
+	PageIndexPrefix = "n" // binary-packed keyspace (no delimiter)
+	PageCountPrefix = "c" // binary-packed keyspace (no delimiter)
+)
+
+const MaxPagesPerPlan uint32 = 128
+const MaxPlansPerHeight uint32 = 256
+const MaxRawPageBytes int = 12288 // 16 KB base64 -> ~12 KB raw
+
+const (
 	Testnet3 string = "testnet3"
 	Testnet4 string = "testnet4"
 	Mainnet  string = "mainnet"
