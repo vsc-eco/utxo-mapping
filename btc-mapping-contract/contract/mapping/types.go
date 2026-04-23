@@ -197,29 +197,23 @@ type ConfirmSpendParams struct {
 	Indices []uint32             `json:"indices"`
 }
 
-// MapPageParams is the on-wire shape for a single page of a paginated `map`
-// submission. `Payload` is the JSON-encoded MapParams bytes for that page.
-//
-// The ParentId MUST equal `hex(sha256(full-payload))` computed by the relay
-// before chunking. The contract verifies this hash on reassembly to prevent
-// tampering across pages.
-//
 //tinyjson:json
 type MapPageParams struct {
-	ParentId   string `json:"parent_id"`
-	PageIdx    uint32 `json:"page_idx"`
-	TotalPages uint32 `json:"total_pages"`
-	Payload    string `json:"payload"`
+	TxId        string `json:"tx_id"`
+	Vout        uint32 `json:"vout"`
+	BlockHeight uint32 `json:"block_height"`
+	PageIdx     uint32 `json:"page_idx"`
+	TotalPages  uint32 `json:"total_pages"`
+	Payload     string `json:"payload"`
 }
 
-// ConfirmSpendPageParams mirrors MapPageParams but for paginated
-// `confirmSpend` submissions.
-//
 //tinyjson:json
 type ConfirmSpendPageParams struct {
-	ParentId   string `json:"parent_id"`
-	PageIdx    uint32 `json:"page_idx"`
-	TotalPages uint32 `json:"total_pages"`
-	Payload    string `json:"payload"`
+	TxId        string `json:"tx_id"`
+	Vout        uint32 `json:"vout"`
+	BlockHeight uint32 `json:"block_height"`
+	PageIdx     uint32 `json:"page_idx"`
+	TotalPages  uint32 `json:"total_pages"`
+	Payload     string `json:"payload"`
 }
 

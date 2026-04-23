@@ -22,6 +22,7 @@ import (
 	ce "btc-mapping-contract/contract/contracterrors"
 	"btc-mapping-contract/contract/mapping"
 	_ "btc-mapping-contract/sdk" // ensure sdk is imported
+	"bytes"
 	"encoding/hex"
 	"strconv"
 	"strings"
@@ -29,6 +30,7 @@ import (
 	"btc-mapping-contract/sdk"
 
 	"github.com/CosmWasm/tinyjson"
+	"github.com/btcsuite/btcd/wire"
 )
 
 // passed via ldflags, will compile for testnet when set to "testnet"
@@ -472,16 +474,30 @@ func DecreaseAllowance(input *string) *string {
 //
 //go:wasmexport mapPage
 func MapPage(input *string) *string {
+	checkNotPaused()
 	var page mapping.MapPageParams
 	err := tinyjson.Unmarshal([]byte(*input), &page)
 	if err != nil {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
 	}
+	sender := sdk.GetEnv().Sender.Address.String()
+	if sender == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "sender address required"))
+	}
+	txidBytes, err := hex.DecodeString(page.TxId)
+	if err != nil || len(txidBytes) != 32 {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "tx_id must be 64-char hex"))
+	}
+	var txid [32]byte
+	copy(txid[:], txidBytes)
 
-	result, err := mapping.SubmitPage(
+	assembled, err := mapping.SubmitPage(
 		mapping.SdkPageStore{},
 		mapping.PagePayloadMap,
-		page.ParentId,
+		sender,
+		txid,
+		page.Vout,
+		page.BlockHeight,
 		page.PageIdx,
 		page.TotalPages,
 		[]byte(page.Payload),
@@ -490,15 +506,27 @@ func MapPage(input *string) *string {
 		ce.CustomAbort(err)
 	}
 
-	if !result.Complete || result.Assembled == nil {
-		// page accepted (or duplicate) but assembly still pending.
-		return mapping.StrPtr("pending:" + strconv.FormatUint(uint64(page.PageIdx), 10))
+	if assembled == nil {
+		return mapping.StrPtr("0")
 	}
 
 	var mapInstructions mapping.MapParams
-	err = tinyjson.Unmarshal(result.Assembled, &mapInstructions)
+	err = tinyjson.Unmarshal(assembled, &mapInstructions)
 	if err != nil {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
+	}
+	if mapInstructions.TxData == nil || mapInstructions.TxData.RawTxHex == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "tx_data.raw_tx_hex required"))
+	}
+	if mapInstructions.TxData.BlockHeight != page.BlockHeight {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "tx_data.block_height must match envelope block_height"))
+	}
+	txidFromPayload, err := txidFromRawTxHex(mapInstructions.TxData.RawTxHex)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	if txidFromPayload != page.TxId {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "tx_data.raw_tx_hex txid must match envelope tx_id"))
 	}
 
 	publicKeys, err := loadPublicKeys()
@@ -673,16 +701,30 @@ func GetInfo(_ *string) *string {
 //
 //go:wasmexport confirmSpendPage
 func ConfirmSpendPage(input *string) *string {
+	checkNotPaused()
 	var page mapping.ConfirmSpendPageParams
 	err := tinyjson.Unmarshal([]byte(*input), &page)
 	if err != nil {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
 	}
+	sender := sdk.GetEnv().Sender.Address.String()
+	if sender == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "sender address required"))
+	}
+	txidBytes, err := hex.DecodeString(page.TxId)
+	if err != nil || len(txidBytes) != 32 {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "tx_id must be 64-char hex"))
+	}
+	var txid [32]byte
+	copy(txid[:], txidBytes)
 
-	result, err := mapping.SubmitPage(
+	assembled, err := mapping.SubmitPage(
 		mapping.SdkPageStore{},
 		mapping.PagePayloadConfirmSpend,
-		page.ParentId,
+		sender,
+		txid,
+		page.Vout,
+		page.BlockHeight,
 		page.PageIdx,
 		page.TotalPages,
 		[]byte(page.Payload),
@@ -691,17 +733,27 @@ func ConfirmSpendPage(input *string) *string {
 		ce.CustomAbort(err)
 	}
 
-	if !result.Complete || result.Assembled == nil {
-		return mapping.StrPtr("pending:" + strconv.FormatUint(uint64(page.PageIdx), 10))
+	if assembled == nil {
+		return mapping.StrPtr("0")
 	}
 
 	var params mapping.ConfirmSpendParams
-	err = tinyjson.Unmarshal(result.Assembled, &params)
+	err = tinyjson.Unmarshal(assembled, &params)
 	if err != nil {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
 	}
 	if params.TxData == nil || params.TxData.RawTxHex == "" {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "tx_data.raw_tx_hex required"))
+	}
+	if params.TxData.BlockHeight != page.BlockHeight {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "tx_data.block_height must match envelope block_height"))
+	}
+	txidFromPayload, err := txidFromRawTxHex(params.TxData.RawTxHex)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	if txidFromPayload != page.TxId {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "tx_data.raw_tx_hex txid must match envelope tx_id"))
 	}
 
 	publicKeys, err := loadPublicKeys()
@@ -744,6 +796,18 @@ func loadPublicKeys() (mapping.PublicKeys, error) {
 	}
 	copy(keys.Backup[:], backupRaw)
 	return keys, nil
+}
+
+func txidFromRawTxHex(rawTxHex string) (string, error) {
+	rawTx, err := hex.DecodeString(rawTxHex)
+	if err != nil {
+		return "", ce.NewContractError(ce.ErrInvalidHex, "error decoding raw transaction hex")
+	}
+	var msgTx wire.MsgTx
+	if err := msgTx.Deserialize(bytes.NewReader(rawTx)); err != nil {
+		return "", ce.NewContractError(ce.ErrInput, "could not deserialize transaction")
+	}
+	return msgTx.TxID(), nil
 }
 
 func validateAndDecodeKey(keyHex string) (mapping.CompressedPubKey, error) {

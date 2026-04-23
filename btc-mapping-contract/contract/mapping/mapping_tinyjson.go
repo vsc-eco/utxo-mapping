@@ -561,8 +561,12 @@ func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp7(in *jle
 			continue
 		}
 		switch key {
-		case "parent_id":
-			out.ParentId = string(in.String())
+		case "tx_id":
+			out.TxId = string(in.String())
+		case "vout":
+			out.Vout = uint32(in.Uint32())
+		case "block_height":
+			out.BlockHeight = uint32(in.Uint32())
 		case "page_idx":
 			out.PageIdx = uint32(in.Uint32())
 		case "total_pages":
@@ -584,9 +588,19 @@ func tinyjsonA043f2bcEncodeBtcMappingContractContractMappingTinyjsonTmp7(out *jw
 	first := true
 	_ = first
 	{
-		const prefix string = ",\"parent_id\":"
+		const prefix string = ",\"tx_id\":"
 		out.RawString(prefix[1:])
-		out.String(string(in.ParentId))
+		out.String(string(in.TxId))
+	}
+	{
+		const prefix string = ",\"vout\":"
+		out.RawString(prefix)
+		out.Uint32(uint32(in.Vout))
+	}
+	{
+		const prefix string = ",\"block_height\":"
+		out.RawString(prefix)
+		out.Uint32(uint32(in.BlockHeight))
 	}
 	{
 		const prefix string = ",\"page_idx\":"
@@ -979,8 +993,12 @@ func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp11(in *jl
 			continue
 		}
 		switch key {
-		case "parent_id":
-			out.ParentId = string(in.String())
+		case "tx_id":
+			out.TxId = string(in.String())
+		case "vout":
+			out.Vout = uint32(in.Uint32())
+		case "block_height":
+			out.BlockHeight = uint32(in.Uint32())
 		case "page_idx":
 			out.PageIdx = uint32(in.Uint32())
 		case "total_pages":
@@ -1002,9 +1020,19 @@ func tinyjsonA043f2bcEncodeBtcMappingContractContractMappingTinyjsonTmp11(out *j
 	first := true
 	_ = first
 	{
-		const prefix string = ",\"parent_id\":"
+		const prefix string = ",\"tx_id\":"
 		out.RawString(prefix[1:])
-		out.String(string(in.ParentId))
+		out.String(string(in.TxId))
+	}
+	{
+		const prefix string = ",\"vout\":"
+		out.RawString(prefix)
+		out.Uint32(uint32(in.Vout))
+	}
+	{
+		const prefix string = ",\"block_height\":"
+		out.RawString(prefix)
+		out.Uint32(uint32(in.BlockHeight))
 	}
 	{
 		const prefix string = ",\"page_idx\":"
