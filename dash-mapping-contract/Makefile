@@ -57,7 +57,13 @@ all: dev
 # Dash uses a local replace directive (see go.mod). update-vsc-node is a no-op
 # here; bump the replace target in go.mod manually when upgrading.
 update-vsc-node:
-	@true
+	@NEWVER=$$(go list -m github.com/vsc-eco/go-vsc-node@main | awk '{print $$2}') && \
+	CURVER=$$(awk '!/^[[:space:]]*\/\// && /replace vsc-node =>/ {print $$NF}' go.mod) && \
+	if [ "$$NEWVER" != "$$CURVER" ]; then \
+		echo "vsc-node $$CURVER -> $$NEWVER" && \
+		go mod edit -replace=vsc-node=github.com/vsc-eco/go-vsc-node@$$NEWVER && \
+		go mod tidy; \
+	fi
 
 .PHONY: update-vsc-node
 

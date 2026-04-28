@@ -31,13 +31,23 @@ func dashMainNetParams() *chaincfg.Params {
 	return &p
 }
 
+func dashRegTestParams() *chaincfg.Params {
+	// Dash regtest reuses Dash testnet base58 prefixes. Bech32HRPSegwit is
+	// left at the inherited "bcrt" since Dash has no native segwit and the
+	// regtest test harness uses bcrt1... destination addresses.
+	p := chaincfg.RegressionNetParams
+	p.PubKeyHashAddrID = 0x8c // 'y' prefix
+	p.ScriptHashAddrID = 0x13 // '8'/'9' prefix
+	return &p
+}
+
 func IntializeContractState(publicKeys PublicKeys, networkMode string) (*ContractState, error) {
 	var networkParams *chaincfg.Params
 	switch networkMode {
 	case constants.Testnet:
 		networkParams = dashTestNetParams()
 	case constants.Regtest:
-		networkParams = &chaincfg.RegressionNetParams
+		networkParams = dashRegTestParams()
 	default:
 		networkParams = dashMainNetParams()
 	}

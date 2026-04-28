@@ -58,7 +58,7 @@ all: dev
 
 # Fetch the latest commit on the testnet branch and update the replace directive.
 update-vsc-node:
-	@NEWVER=$$(go list -m github.com/vsc-eco/go-vsc-node@testnet | awk '{print $$2}') && \
+	@NEWVER=$$(go list -m github.com/vsc-eco/go-vsc-node@main | awk '{print $$2}') && \
 	CURVER=$$(awk '!/^[[:space:]]*\/\// && /replace vsc-node =>/ {print $$NF}' go.mod) && \
 	if [ "$$NEWVER" != "$$CURVER" ]; then \
 		echo "vsc-node $$CURVER -> $$NEWVER" && \

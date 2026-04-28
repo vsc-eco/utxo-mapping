@@ -2,9 +2,13 @@ module dash-mapping-contract
 
 go 1.25.6
 
+// DO NOT modify. Auto-updated by the Makefile. To use a local or deprecated version, use a go.work file, e.g.
+//
+// // go.work - gitignored, not committed
+// go 1.25.6
+// use .
 // replace vsc-node => path-to-local-node
-
-replace vsc-node => /home/dockeruser/magi/testnet/go-vsc-node
+replace vsc-node => github.com/vsc-eco/go-vsc-node v0.0.0-20260425182415-33648cd530e2
 
 replace github.com/agl/ed25519 => github.com/binance-chain/edwards25519 v0.0.0-20200305024217-f36fc4b53d43
 

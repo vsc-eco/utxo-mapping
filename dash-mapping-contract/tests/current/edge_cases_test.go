@@ -9,6 +9,7 @@ import (
 
 	"vsc-node/lib/test_utils"
 	"vsc-node/modules/db/vsc/contracts"
+	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	stateEngine "vsc-node/modules/state-processing"
 
 	"github.com/CosmWasm/tinyjson"
@@ -698,6 +699,9 @@ func TestMapThenUnmapFullCycle(t *testing.T) {
 	t.Cleanup(func() { ct.DataLayer.Stop() })
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
+	// Top up the caller's HBD balance so RCs cover both map and unmap in one
+	// test (the 10k free tier alone is borderline for a single op).
+	ct.Deposit("hive:milo-hpr", 10000, ledgerDb.AssetHbd)
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
 	ct.StateSet(contractId, constants.LastHeightKey, "100")
 	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
