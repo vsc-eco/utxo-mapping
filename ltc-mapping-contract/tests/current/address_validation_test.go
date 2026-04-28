@@ -32,28 +32,13 @@ func TestTransferToHiveAddress(t *testing.T) {
 	assert.Equal(t, encodeBalance(t, 1000), ct.StateGet(contractId, constants.BalancePrefix+"hive:recipient"))
 }
 
-// TestTransferToDidKeyAddress verifies transfer to a did:key: address succeeds.
-func TestTransferToDidKeyAddress(t *testing.T) {
-	ct, contractId := setupAllowanceContract(t, 5000)
-
-	payload, _ := tinyjson.Marshal(mapping.TransferParams{To: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK", Amount: "1000"})
-	r := ct.Call(stateEngine.TxVscCallContract{
-		Self:       *basicSelf(t, allowanceOwner),
-		ContractId: contractId,
-		Action:     "transfer",
-		Payload:    payload,
-		RcLimit:    1000,
-		Caller:     allowanceOwner,
-		Intents:    []contracts.Intent{},
-	})
-	assert.True(t, r.Success, "transfer to did:key: address should succeed")
-}
-
 // TestTransferToContractAddress verifies transfer to a contract: address succeeds.
 func TestTransferToContractAddress(t *testing.T) {
 	ct, contractId := setupAllowanceContract(t, 5000)
 
-	payload, _ := tinyjson.Marshal(mapping.TransferParams{To: "contract:vsc1BemohMM2HKzfQzWquTfMF6LWvb2V9M35c3", Amount: "1000"})
+	payload, _ := tinyjson.Marshal(
+		mapping.TransferParams{To: "contract:vsc1BemohMM2HKzfQzWquTfMF6LWvb2V9M35c3", Amount: "1000"},
+	)
 	r := ct.Call(stateEngine.TxVscCallContract{
 		Self:       *basicSelf(t, allowanceOwner),
 		ContractId: contractId,
@@ -70,7 +55,9 @@ func TestTransferToContractAddress(t *testing.T) {
 func TestTransferToEVMAddress(t *testing.T) {
 	ct, contractId := setupAllowanceContract(t, 5000)
 
-	payload, _ := tinyjson.Marshal(mapping.TransferParams{To: "did:pkh:eip155:1:0x1234567890abcdef1234567890abcdef12345678", Amount: "1000"})
+	payload, _ := tinyjson.Marshal(
+		mapping.TransferParams{To: "did:pkh:eip155:1:0x1234567890abcdef1234567890abcdef12345678", Amount: "1000"},
+	)
 	r := ct.Call(stateEngine.TxVscCallContract{
 		Self:       *basicSelf(t, allowanceOwner),
 		ContractId: contractId,

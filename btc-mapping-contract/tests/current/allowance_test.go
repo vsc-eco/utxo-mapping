@@ -18,7 +18,7 @@ import (
 
 const (
 	allowanceOwner   = "hive:alice"
-	allowanceSpender = "spender_contract"
+	allowanceSpender = "hive:spender"
 	allowanceTarget  = "hive:bob"
 )
 
