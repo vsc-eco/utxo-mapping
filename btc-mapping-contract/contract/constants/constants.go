@@ -74,10 +74,17 @@ const BackupPublicKeyStateKey = "backupkey"
 
 const BlockPrefix = "b" + DirPathDelimiter
 
-// MaxBaseFeeRate caps the base fee rate at 1000 sats/vbyte.
-// Any rate above this is clamped during fee calculation to prevent
-// overflow or unreasonable withdrawal fees from a misconfigured oracle.
-const MaxBaseFeeRate int64 = 1000
+// MaxBaseFeeRate caps the base fee rate at 500 sats/vbyte.
+// Pentest finding BTC-C6: the previous 1000 sat/vbyte ceiling
+// only protected against int overflow — within that range a
+// misbehaving or compromised oracle can drive a typical
+// ~200-vbyte withdrawal fee to ~$200, which is griefing. BTC
+// mainnet historical peaks (2017 bull run, 2023 inscription
+// mania) topped out near 500–750 sat/vbyte for short windows,
+// so 500 covers genuine extreme markets while halving the
+// oracle's griefing range. Any rate above this is clamped
+// during fee calculation; rates below 1 are clamped up to 1.
+const MaxBaseFeeRate int64 = 500
 
 // MaxBlockRetention is the number of recent block headers to keep.
 // Older headers are pruned during addBlocks to prevent unbounded state growth.
