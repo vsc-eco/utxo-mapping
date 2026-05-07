@@ -222,13 +222,42 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 				swapResultStr := sdk.ContractCall(routerId, "execute", string(instrJson), &sdk.ContractCallOptions{})
 				// Clean up any remaining allowance after swap to prevent lingering authorization
 				setAllowance(selfAddr, routerAddr, 0)
+
+				// Pentest finding BTC-C4: when the router fails or returns a
+				// useless result, previously this branch reverted the entire
+				// map → user's BTC sat in the contract vault with no L2
+				// credit until the backup CSV timelock (~1 month) let them
+				// reclaim. Now: if the router didn't successfully pull the
+				// allowance, transfer the contract's self-credit to the
+				// depositor instead. The user gets BTC-equivalent L2 tokens
+				// and can retry the swap separately.
+				routerFailed := false
 				var swapResult SwapResult
-				err = tinyjson.Unmarshal([]byte(*swapResultStr), &swapResult)
-				if err != nil {
-					return ce.WrapContractError(ce.ErrJson, err, "error unmarshalling swap result")
+				if swapResultStr == nil || *swapResultStr == "" {
+					routerFailed = true
+				} else if uerr := tinyjson.Unmarshal([]byte(*swapResultStr), &swapResult); uerr != nil {
+					routerFailed = true
+				} else if swapResult.AmountOut == "" || swapResult.AmountOut == "0" {
+					routerFailed = true
 				}
-				if swapResult.AmountOut == "" || swapResult.AmountOut == "0" {
-					return ce.NewContractError(ce.ErrInput, "swap returned zero amount out")
+
+				if routerFailed {
+					// Refund only when selfAddr's balance still equals the
+					// pre-call credit — i.e. the router did not pull the
+					// allowance. If it did pull and still failed, tokens are
+					// stuck in the router; revert (current behaviour) so the
+					// supply accounting stays consistent.
+					selfBal := getAccBal(selfAddr)
+					if selfBal < utxo.Amount {
+						return ce.NewContractError(ce.ErrTransaction,
+							"swap failed and allowance partially consumed; manual recovery required")
+					}
+					setAccBal(selfAddr, selfBal-utxo.Amount)
+					if err := incAccBalance(metadata.Recipient, utxo.Amount); err != nil {
+						return ce.Prepend(err, "btc-c4 refund: error crediting depositor")
+					}
+					sdk.Log("btc-c4 refund: swap failed; credited " + metadata.Recipient + " " +
+						strconv.FormatInt(utxo.Amount, 10) + " sats")
 				}
 			default:
 				// should never happen
