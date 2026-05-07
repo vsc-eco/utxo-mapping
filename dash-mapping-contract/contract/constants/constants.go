@@ -77,10 +77,17 @@ const BackupPublicKeyStateKey = "backupkey"
 
 const BlockPrefix = "b" + DirPathDelimiter
 
-// MaxBaseFeeRate caps the base fee rate at 1000 sats/vbyte.
-// Any rate above this is clamped during fee calculation to prevent
-// overflow or unreasonable withdrawal fees from a misconfigured oracle.
-const MaxBaseFeeRate int64 = 1000
+// MaxBaseFeeRate caps the base fee rate at 500 duffs/vbyte.
+// Pentest finding BTC-C6 (propagated from btc-mapping-contract): the
+// previous 1000 sat/vbyte ceiling only protected against int overflow
+// — within that range a misbehaving or compromised oracle can drive
+// fees to griefing levels. 500 duffs/vbyte still admits genuine
+// extreme-market spikes while halving the oracle's griefing range.
+// Dash duffs are 1 satoshi-equivalent per the same 8-decimal model,
+// so the absolute economic impact is comparable to BTC. Rates above
+// this are clamped during fee calculation; rates below 1 are clamped
+// up to 1.
+const MaxBaseFeeRate int64 = 500
 
 // MaxBlockRetention is the number of recent block headers to keep.
 // Older headers are pruned during addBlocks to prevent unbounded state growth.
