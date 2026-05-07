@@ -11,7 +11,7 @@ toolchain go1.25.10
 // use .
 // replace vsc-node => path-to-local-node
 
-replace vsc-node => github.com/vsc-eco/go-vsc-node v0.0.0-20260526171655-39d38f4a66ad
+replace vsc-node => github.com/vsc-eco/go-vsc-node v0.0.0-20260603163117-d1bcb4112419
 
 replace github.com/agl/ed25519 => github.com/binance-chain/edwards25519 v0.0.0-20200305024217-f36fc4b53d43
 
@@ -162,7 +162,6 @@ require (
 	github.com/ugorji/go/codec v1.2.6 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.57.0 // indirect
-	github.com/vsc-eco/go-ethereum v0.0.1 // indirect
 	github.com/vsc-eco/hivego v0.0.0-20260224180332-508b8c394435 // indirect
 	github.com/whyrusleeping/cbor-gen v0.1.2 // indirect
 	github.com/whyrusleeping/go-keyspace v0.0.0-20160322163242-5b898ac5add1 // indirect
