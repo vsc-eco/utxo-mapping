@@ -350,6 +350,21 @@ func (cs *ContractState) buildSpendTransaction(
 		}
 	}
 
+	// Pentest finding BTC-C5: when availableChange ≤ dustThreshold the
+	// change output is omitted; the residual sats are implicitly paid
+	// to the miner. The size-based fee variable above does NOT capture
+	// that absorbed dust, so callers (HandleUnmap) under-decrement
+	// ActiveSupply, drifting the contract's BTC accounting up to 545
+	// sats per affected withdrawal. Recompute the fee from the actual
+	// tx outputs so the returned value reflects real outflow in every
+	// branch (normal change-output paths balance trivially; the math
+	// is equivalent there).
+	var outSum int64
+	for _, o := range tx.TxOut {
+		outSum += o.Value
+	}
+	fee = totalInputsAmount - outSum
+
 	return tx, witnessScripts, fee, nil
 }
 
