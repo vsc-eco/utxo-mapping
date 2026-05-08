@@ -211,11 +211,11 @@ func tinyjson223cdf42EncodeBtcMappingContractSdkTinyjsonTmp1(out *jwriter.Writer
 			out.RawString("null")
 		} else {
 			out.RawByte('[')
-			for v5, v6 := range in.Intents {
-				if v5 > 0 {
+			for v4, v5 := range in.Intents {
+				if v4 > 0 {
 					out.RawByte(',')
 				}
-				tinyjson223cdf42EncodeBtcMappingContractSdkTinyjsonTmp3(out, v6)
+				tinyjson223cdf42EncodeBtcMappingContractSdkTinyjsonTmp3(out, v5)
 			}
 			out.RawByte(']')
 		}
@@ -262,9 +262,9 @@ func tinyjson223cdf42DecodeBtcMappingContractSdkTinyjsonTmp3(in *jlexer.Lexer, o
 				for !in.IsDelim('}') {
 					key := string(in.String())
 					in.WantColon()
-					var v9 string
-					v9 = string(in.String())
-					(out.Args)[key] = v9
+					var v6 string
+					v6 = string(in.String())
+					(out.Args)[key] = v6
 					in.WantComma()
 				}
 				in.Delim('}')
@@ -295,16 +295,16 @@ func tinyjson223cdf42EncodeBtcMappingContractSdkTinyjsonTmp3(out *jwriter.Writer
 			out.RawString(`null`)
 		} else {
 			out.RawByte('{')
-			v10First := true
-			for v10Name, v10Value := range in.Args {
-				if v10First {
-					v10First = false
+			v7First := true
+			for v7Name, v7Value := range in.Args {
+				if v7First {
+					v7First = false
 				} else {
 					out.RawByte(',')
 				}
-				out.String(string(v10Name))
+				out.String(string(v7Name))
 				out.RawByte(':')
-				out.String(string(v10Value))
+				out.String(string(v7Value))
 			}
 			out.RawByte('}')
 		}
@@ -348,9 +348,9 @@ func tinyjson223cdf42DecodeBtcMappingContractSdkTinyjsonTmp2(in *jlexer.Lexer, o
 					out.RequiredAuths = (out.RequiredAuths)[:0]
 				}
 				for !in.IsDelim(']') {
-					var v11 Address
-					v11 = Address(in.String())
-					out.RequiredAuths = append(out.RequiredAuths, v11)
+					var v8 Address
+					v8 = Address(in.String())
+					out.RequiredAuths = append(out.RequiredAuths, v8)
 					in.WantComma()
 				}
 				in.Delim(']')
@@ -371,9 +371,9 @@ func tinyjson223cdf42DecodeBtcMappingContractSdkTinyjsonTmp2(in *jlexer.Lexer, o
 					out.RequiredPostingAuths = (out.RequiredPostingAuths)[:0]
 				}
 				for !in.IsDelim(']') {
-					var v12 Address
-					v12 = Address(in.String())
-					out.RequiredPostingAuths = append(out.RequiredPostingAuths, v12)
+					var v9 Address
+					v9 = Address(in.String())
+					out.RequiredPostingAuths = append(out.RequiredPostingAuths, v9)
 					in.WantComma()
 				}
 				in.Delim(']')
@@ -404,11 +404,11 @@ func tinyjson223cdf42EncodeBtcMappingContractSdkTinyjsonTmp2(out *jwriter.Writer
 			out.RawString("null")
 		} else {
 			out.RawByte('[')
-			for v13, v14 := range in.RequiredAuths {
-				if v13 > 0 {
+			for v10, v11 := range in.RequiredAuths {
+				if v10 > 0 {
 					out.RawByte(',')
 				}
-				out.String(string(v14))
+				out.String(string(v11))
 			}
 			out.RawByte(']')
 		}
@@ -420,11 +420,11 @@ func tinyjson223cdf42EncodeBtcMappingContractSdkTinyjsonTmp2(out *jwriter.Writer
 			out.RawString("null")
 		} else {
 			out.RawByte('[')
-			for v15, v16 := range in.RequiredPostingAuths {
-				if v15 > 0 {
+			for v12, v13 := range in.RequiredPostingAuths {
+				if v12 > 0 {
 					out.RawByte(',')
 				}
-				out.String(string(v16))
+				out.String(string(v13))
 			}
 			out.RawByte(']')
 		}
@@ -466,9 +466,9 @@ func tinyjson223cdf42DecodeBtcMappingContractSdkTinyjsonTmp4(in *jlexer.Lexer, o
 					out.Intents = (out.Intents)[:0]
 				}
 				for !in.IsDelim(']') {
-					var v17 Intent
-					tinyjson223cdf42DecodeBtcMappingContractSdkTinyjsonTmp3(in, &v17)
-					out.Intents = append(out.Intents, v17)
+					var v14 Intent
+					tinyjson223cdf42DecodeBtcMappingContractSdkTinyjsonTmp3(in, &v14)
+					out.Intents = append(out.Intents, v14)
 					in.WantComma()
 				}
 				in.Delim(']')
@@ -493,11 +493,11 @@ func tinyjson223cdf42EncodeBtcMappingContractSdkTinyjsonTmp4(out *jwriter.Writer
 		out.RawString(prefix[1:])
 		{
 			out.RawByte('[')
-			for v18, v19 := range in.Intents {
-				if v18 > 0 {
+			for v15, v16 := range in.Intents {
+				if v15 > 0 {
 					out.RawByte(',')
 				}
-				tinyjson223cdf42EncodeBtcMappingContractSdkTinyjsonTmp3(out, v19)
+				tinyjson223cdf42EncodeBtcMappingContractSdkTinyjsonTmp3(out, v16)
 			}
 			out.RawByte(']')
 		}
