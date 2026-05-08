@@ -5,20 +5,46 @@ import (
 	ce "doge-mapping-contract/contract/contracterrors"
 	"doge-mapping-contract/sdk"
 	"crypto/sha256"
+	"encoding/binary"
 	"net/url"
+	"strings"
 
 	"github.com/btcsuite/btcd/chaincfg"
 )
+
+// DOGE-specific network params for address validation. DOGE uses
+// PubKeyHashAddrID 0x1e (mainnet) / 0x71 (testnet) — distinct from
+// Bitcoin's 0x00 / 0x6f. Native bech32 is unused.
+func dogeTestNetParams() *chaincfg.Params {
+	p := chaincfg.TestNet3Params
+	p.PubKeyHashAddrID = 0x71
+	p.ScriptHashAddrID = 0xc4
+	return &p
+}
+
+func dogeMainNetParams() *chaincfg.Params {
+	p := chaincfg.MainNetParams
+	p.PubKeyHashAddrID = 0x1e
+	p.ScriptHashAddrID = 0x16
+	return &p
+}
+
+func dogeRegTestParams() *chaincfg.Params {
+	p := chaincfg.RegressionNetParams
+	p.PubKeyHashAddrID = 0x71
+	p.ScriptHashAddrID = 0xc4
+	return &p
+}
 
 func IntializeContractState(publicKeys PublicKeys, networkMode string) (*ContractState, error) {
 	var networkParams *chaincfg.Params
 	switch networkMode {
 	case constants.Testnet:
-		networkParams = &chaincfg.TestNet3Params
+		networkParams = dogeTestNetParams()
 	case constants.Regtest:
-		networkParams = &chaincfg.RegressionNetParams
+		networkParams = dogeRegTestParams()
 	default:
-		networkParams = &chaincfg.MainNetParams
+		networkParams = dogeMainNetParams()
 	}
 
 	// Load UTXO registry (binary: 9 bytes/entry)
@@ -32,13 +58,14 @@ func IntializeContractState(publicKeys PublicKeys, networkMode string) (*Contrac
 		}
 	}
 
-	// Load UTXO pool counters (2 bytes: [confirmedNext, unconfirmedNext])
-	confirmedNextId := uint8(constants.UtxoConfirmedPoolStart)
-	unconfirmedNextId := uint8(0)
+	// Load UTXO pool counters (4 bytes: two uint16 BE [confirmedNext, unconfirmedNext])
+	confirmedNextId := uint16(constants.UtxoConfirmedPoolStart)
+	unconfirmedNextId := uint16(0)
 	counterState := sdk.StateGetObject(constants.UtxoLastIdKey)
-	if len(*counterState) == 2 {
-		confirmedNextId = (*counterState)[0]
-		unconfirmedNextId = (*counterState)[1]
+	if len(*counterState) == 4 {
+		counterBytes := []byte(*counterState)
+		confirmedNextId = binary.BigEndian.Uint16(counterBytes[0:])
+		unconfirmedNextId = binary.BigEndian.Uint16(counterBytes[2:])
 	}
 
 	// Load TX spends registry (binary: 32 bytes/entry)
@@ -71,7 +98,6 @@ func IntializeContractState(publicKeys PublicKeys, networkMode string) (*Contrac
 		Supply:            supply,
 		PublicKeys:        publicKeys,
 		NetworkParams:     networkParams,
-		NetworkOptions:    initNetworkLookup(networkParams),
 	}, nil
 }
 
@@ -120,25 +146,25 @@ func (cs *ContractState) parseInstructions(
 		var mappingType MappingType
 		if params.Has(constants.DepositToKey) {
 			recipient = params.Get(constants.DepositToKey)
-			if !cs.NetworkOptions[Vsc].ValidateAddress(recipient) {
+			if sdk.VerifyAddress(recipient) == string(sdk.AddressDomainUnknown) {
 				return nil, ce.NewContractError(
 					ce.ErrInput,
-					"address \""+recipient+"\" invalid on network \""+string(Vsc)+"\"",
+					"address \""+recipient+"\" invalid on magi",
 					"bad instruction \""+instr+"\"",
 				)
 			}
 			mappingType = MapDeposit
 		} else if params.Has(constants.SwapToKey) {
 			recipient = params.Get(constants.SwapToKey)
-			recipientNetwork, err := cs.getNetwork(params.Get(constants.SwapNetworkOut))
-			if err != nil {
-				recipientNetwork = cs.NetworkOptions[Vsc]
+			destinationChain := params.Get(constants.DestinationChainKey)
+			if strings.ToLower(destinationChain) == "btc" {
+				return nil, ce.NewContractError(ce.ErrInput, "output network cannot be btc")
 			}
 			mappingType = MapSwap
-			if !recipientNetwork.ValidateAddress(recipient) {
+			if !strings.HasPrefix(sdk.VerifyAddress(recipient), "user:") {
 				return nil, ce.NewContractError(
 					ce.ErrInput,
-					"address \""+recipient+"\" invalid on network \""+string(recipientNetwork.Name())+"\"",
+					"address \""+recipient+"\" is not a user address",
 					"bad instruction \""+instr+"\"",
 				)
 			}
@@ -173,8 +199,11 @@ func (cs *ContractState) SaveToState() error {
 	// UTXO registry (binary)
 	sdk.StateSetObject(constants.UtxoRegistryKey, string(MarshalUtxoRegistry(cs.UtxoList)))
 
-	// UTXO pool counters (2 bytes: [confirmedNext, unconfirmedNext])
-	sdk.StateSetObject(constants.UtxoLastIdKey, string([]byte{cs.ConfirmedNextId, cs.UnconfirmedNextId}))
+	// UTXO pool counters (4 bytes: two uint16 BE [confirmedNext, unconfirmedNext])
+	var counterBuf [4]byte
+	binary.BigEndian.PutUint16(counterBuf[0:], cs.ConfirmedNextId)
+	binary.BigEndian.PutUint16(counterBuf[2:], cs.UnconfirmedNextId)
+	sdk.StateSetObject(constants.UtxoLastIdKey, string(counterBuf[:]))
 
 	// TX spends registry (binary)
 	sdk.StateSetObject(constants.TxSpendsRegistryKey, string(MarshalTxSpendsRegistry(cs.TxSpendsList)))
