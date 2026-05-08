@@ -35,6 +35,23 @@ const LastHeightKey = "h"
 const SeedHeightKey = "sh"
 const PruneFloorKey = "pf" // lowest unpruned block height, updated during pruning
 
+// BTC-C3: per-Hive-block withdrawal rate limit. The accumulator tracks
+// total sats deducted by HandleUnmap within a single Hive L1 block;
+// when MaxUnmapPerBlock is positive, HandleUnmap rejects any unmap
+// that would push the accumulator above the cap. The accumulator
+// resets on each new Hive block (=3s tick).
+//
+// Default 1 BTC / Hive block = 1200 BTC/hour upper bound on a
+// TSS-quorum-compromise drain. Operators can tune via the
+// setMaxUnmapPerBlock admin handler; setting it to 0 disables the
+// limit (legacy behaviour).
+const DefaultMaxUnmapPerBlock int64 = 100_000_000 // 1 BTC in sats
+const MaxUnmapPerBlockKey = "muxb"
+
+// BlockUnmapAccKey stores the per-block unmap accumulator: 16 bytes
+// = uint64 BE Hive block height || uint64 BE accumulated sats.
+const BlockUnmapAccKey = "buac"
+
 // Instruction URL search param keys
 const (
 	DepositToKey        = "deposit_to"

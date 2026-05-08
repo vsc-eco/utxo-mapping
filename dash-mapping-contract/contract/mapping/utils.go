@@ -669,3 +669,88 @@ func DecodeCompressedPubKey(hexStr string) (CompressedPubKey, error) {
 	copy(key[:], b)
 	return key, nil
 }
+
+// ---------------------------------------------------------------------------
+// Pentest finding BTC-C3 (propagated): per-Hive-block withdrawal rate limit.
+//
+// Context: HandleUnmap deducts user balance and contract supply on every
+// successful unmap with no aggregate cap. A TSS-quorum compromise (2/3 of
+// 19 = 12 colluding witnesses) can drain the entire bridge in a single
+// Hive block, since they sign every unmap that arrives. Capping the
+// aggregate per-Hive-block outflow gives operators a window (multiple
+// Hive blocks worth of drain attempts) to detect and freeze.
+//
+// Mechanism: a 16-byte accumulator at constants.BlockUnmapAccKey,
+// uint64 BE Hive block height || uint64 BE accumulated duffs. On every
+// HandleUnmap that passes preliminary checks, the helper below reads
+// the accumulator. If the stored block height differs from the current
+// env.BlockHeight, the accumulator resets (new block). The helper then
+// adds the current unmap's finalAmt and rejects if the new total
+// exceeds getMaxUnmapPerBlock(). Otherwise it persists the updated
+// accumulator and returns nil.
+//
+// Disable: set MaxUnmapPerBlockKey to "0" via the setMaxUnmapPerBlock
+// admin handler. Default is constants.DefaultMaxUnmapPerBlock.
+// ---------------------------------------------------------------------------
+
+func getMaxUnmapPerBlock() int64 {
+	s := sdk.StateGetObject(constants.MaxUnmapPerBlockKey)
+	if s == nil || *s == "" {
+		return constants.DefaultMaxUnmapPerBlock
+	}
+	v, err := strconv.ParseInt(*s, 10, 64)
+	if err != nil || v < 0 {
+		return constants.DefaultMaxUnmapPerBlock
+	}
+	return v
+}
+
+func loadUnmapAccumulator() (storedHeight uint64, accum int64) {
+	s := sdk.StateGetObject(constants.BlockUnmapAccKey)
+	if s == nil || len(*s) != 16 {
+		return 0, 0
+	}
+	buf := []byte(*s)
+	storedHeight = binary.BigEndian.Uint64(buf[0:8])
+	accum = int64(binary.BigEndian.Uint64(buf[8:16]))
+	return
+}
+
+func saveUnmapAccumulator(blockHeight uint64, accum int64) {
+	var buf [16]byte
+	binary.BigEndian.PutUint64(buf[0:8], blockHeight)
+	binary.BigEndian.PutUint64(buf[8:16], uint64(accum))
+	sdk.StateSetObject(constants.BlockUnmapAccKey, string(buf[:]))
+}
+
+// checkAndUpdateUnmapRateLimit enforces the per-Hive-block cap on the
+// aggregate unmap throughput and persists the updated accumulator.
+// Returns an error when the cap would be exceeded; the caller is
+// expected to surface it as a contract-level reject so the runtime
+// reverts the entire transaction (including the accumulator update).
+func checkAndUpdateUnmapRateLimit(blockHeight uint64, amount int64) error {
+	cap := getMaxUnmapPerBlock()
+	if cap <= 0 {
+		return nil // limit disabled
+	}
+
+	storedHeight, accum := loadUnmapAccumulator()
+	if storedHeight != blockHeight {
+		// Different Hive block — accumulator carries no relevance.
+		accum = 0
+	}
+
+	newAccum, err := safeAdd64(accum, amount)
+	if err != nil {
+		return ce.WrapContractError(ce.ErrArithmetic, err, "rate-limit accumulator overflow")
+	}
+	if newAccum > cap {
+		return ce.NewContractError(
+			ce.ErrTransaction,
+			"unmap rate limit exceeded: "+strconv.FormatInt(newAccum, 10)+
+				" duffs this Hive block > cap "+strconv.FormatInt(cap, 10)+" duffs per block",
+		)
+	}
+	saveUnmapAccumulator(blockHeight, newAccum)
+	return nil
+}
