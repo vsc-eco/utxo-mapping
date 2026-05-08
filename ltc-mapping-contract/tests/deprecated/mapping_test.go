@@ -100,6 +100,7 @@ func TestMapping(t *testing.T) {
 
 func TestUnmapping(t *testing.T) {
 	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
 	ct.StateSet(contractId, "balhive:milo-hpr", "10000")

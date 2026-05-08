@@ -1,9 +1,9 @@
 package current_test
 
 import (
-	"fmt"
 	"ltc-mapping-contract/contract/constants"
 	"ltc-mapping-contract/contract/mapping"
+	"fmt"
 	"testing"
 
 	"vsc-node/modules/db/vsc/contracts"
@@ -32,7 +32,8 @@ func TestTransferToHiveAddress(t *testing.T) {
 	assert.Equal(t, encodeBalance(t, 1000), ct.StateGet(contractId, constants.BalancePrefix+"hive:recipient"))
 }
 
-// TestTransferToContractAddress verifies transfer to a contract: address succeeds.
+// TestTransferToContractAddress verifies transfer to a contract: address succeeds
+// (newly supported via SDK validation).
 func TestTransferToContractAddress(t *testing.T) {
 	ct, contractId := setupAllowanceContract(t, 5000)
 
@@ -48,7 +49,7 @@ func TestTransferToContractAddress(t *testing.T) {
 		Caller:     allowanceOwner,
 		Intents:    []contracts.Intent{},
 	})
-	assert.True(t, r.Success, "transfer to contract: address should succeed")
+	assert.True(t, r.Success, "transfer to contract: address should succeed, "+r.Err+": "+r.ErrMsg)
 }
 
 // TestTransferToEVMAddress verifies transfer to a did:pkh:eip155 address succeeds.

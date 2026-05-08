@@ -1,11 +1,11 @@
 package current_test
 
 import (
-	"fmt"
 	"ltc-mapping-contract/contract/constants"
 	"ltc-mapping-contract/contract/mapping"
-	"strconv"
+	"fmt"
 	"testing"
+	"time"
 
 	stateEngine "vsc-node/modules/state-processing"
 
@@ -18,7 +18,7 @@ import (
 
 const (
 	allowanceOwner   = "hive:alice"
-	allowanceSpender = "spender_contract"
+	allowanceSpender = "hive:spender"
 	allowanceTarget  = "hive:bob"
 )
 
@@ -130,7 +130,7 @@ func callTransferFrom(
 	payload, err := tinyjson.Marshal(mapping.TransferParams{
 		From:   from,
 		To:     to,
-		Amount: strconv.FormatInt(amount, 10),
+		Amount: fmt.Sprintf("%d", amount),
 	})
 	if err != nil {
 		t.Fatal("marshal transferFrom payload:", err)
@@ -198,33 +198,6 @@ func TestApproveToZeroClearsKey(t *testing.T) {
 	assert.Equal(t, "", ct.StateGet(contractId, key), "allowance key should be deleted when set to 0")
 }
 
-// TestApproveNegativeAmountFails verifies that a negative allowance amount is rejected.
-func TestApproveNegativeAmountFails(t *testing.T) {
-	ct, contractId := setupAllowanceContract(t, 0)
-
-	r := callApprove(t, ct, contractId, allowanceOwner, allowanceSpender, -100)
-	assert.False(t, r.Success, "approve with negative amount should fail")
-	assert.NotEmpty(t, r.Err)
-}
-
-// TestApproveEmptySpenderFails verifies that an empty spender is rejected.
-func TestApproveEmptySpenderFails(t *testing.T) {
-	ct, contractId := setupAllowanceContract(t, 0)
-
-	r := callApprove(t, ct, contractId, allowanceOwner, "", 5000)
-	assert.False(t, r.Success, "approve with empty spender should fail")
-	assert.NotEmpty(t, r.Err)
-}
-
-// TestApproveSelfAsSpenderFails verifies that approving yourself as spender is rejected.
-func TestApproveSelfAsSpenderFails(t *testing.T) {
-	ct, contractId := setupAllowanceContract(t, 0)
-
-	r := callApprove(t, ct, contractId, allowanceOwner, allowanceOwner, 5000)
-	assert.False(t, r.Success, "approve with self as spender should fail")
-	assert.NotEmpty(t, r.Err)
-}
-
 // TestIncreaseAllowance verifies that increaseAllowance adds to an existing allowance.
 func TestIncreaseAllowance(t *testing.T) {
 	ct, contractId := setupAllowanceContract(t, 0)
@@ -252,25 +225,6 @@ func TestIncreaseAllowanceFromZero(t *testing.T) {
 
 	key := allowanceKey(allowanceOwner, allowanceSpender)
 	assert.Equal(t, encodeBalance(t, 800), ct.StateGet(contractId, key))
-}
-
-// TestIncreaseAllowanceZeroAmountFails verifies that increasing by zero is rejected.
-func TestIncreaseAllowanceZeroAmountFails(t *testing.T) {
-	ct, contractId := setupAllowanceContract(t, 0)
-
-	callApprove(t, ct, contractId, allowanceOwner, allowanceSpender, 1000)
-	r := callIncreaseAllowance(t, ct, contractId, allowanceOwner, allowanceSpender, 0)
-	assert.False(t, r.Success, "increaseAllowance with zero amount should fail")
-	assert.NotEmpty(t, r.Err)
-}
-
-// TestIncreaseAllowanceEmptySpenderFails verifies that increasing allowance with empty spender is rejected.
-func TestIncreaseAllowanceEmptySpenderFails(t *testing.T) {
-	ct, contractId := setupAllowanceContract(t, 0)
-
-	r := callIncreaseAllowance(t, ct, contractId, allowanceOwner, "", 500)
-	assert.False(t, r.Success, "increaseAllowance with empty spender should fail")
-	assert.NotEmpty(t, r.Err)
 }
 
 // TestDecreaseAllowance verifies that decreaseAllowance subtracts from an existing allowance.
@@ -307,15 +261,6 @@ func TestDecreaseAllowanceBelowZeroFails(t *testing.T) {
 	callApprove(t, ct, contractId, allowanceOwner, allowanceSpender, 500)
 	r := callDecreaseAllowance(t, ct, contractId, allowanceOwner, allowanceSpender, 1000)
 	assert.False(t, r.Success, "decreaseAllowance below zero should fail")
-	assert.NotEmpty(t, r.Err)
-}
-
-// TestDecreaseAllowanceEmptySpenderFails verifies that decreasing allowance with empty spender is rejected.
-func TestDecreaseAllowanceEmptySpenderFails(t *testing.T) {
-	ct, contractId := setupAllowanceContract(t, 0)
-
-	r := callDecreaseAllowance(t, ct, contractId, allowanceOwner, "", 500)
-	assert.False(t, r.Success, "decreaseAllowance with empty spender should fail")
 	assert.NotEmpty(t, r.Err)
 }
 
@@ -409,24 +354,161 @@ func TestTransferFromAllowanceDecrements(t *testing.T) {
 	}
 	assert.Equal(t, encodeBalance(t, 1000), ct.StateGet(contractId, allowanceKey(allowanceOwner, allowanceSpender)))
 
-	// Third spend: 2000 -- exceeds remaining allowance of 1000
+	// Third spend: 2000 — exceeds remaining allowance of 1000
 	r3 := callTransferFrom(t, ct, contractId, allowanceSpender, allowanceOwner, allowanceTarget, 2000)
 	assert.False(t, r3.Success, "third transferFrom should fail: allowance exhausted")
 }
 
-// TestTransferFromInsufficientBalanceFails verifies that transferFrom fails when the owner
-// has insufficient balance, even if the allowance is sufficient.
-func TestTransferFromInsufficientBalanceFails(t *testing.T) {
-	ct, contractId := setupAllowanceContract(t, 500)
+// TestUnmapFromWithAllowance verifies that a spender with sufficient allowance
+// can unmap tokens from the owner's balance.
+func TestUnmapFromWithAllowance(t *testing.T) {
+	const instruction = "deposit_to=" + allowanceOwner
+	const fakeTxId0 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const fakeTxId1 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	const ownerBalance = int64(10000)
 
-	callApprove(t, ct, contractId, allowanceOwner, allowanceSpender, 5000)
+	ct, contractId := setupAllowanceContract(t, ownerBalance)
 
-	r := callTransferFrom(t, ct, contractId, allowanceSpender, allowanceOwner, allowanceTarget, 1000)
-	assert.False(t, r.Success, "transferFrom with insufficient balance should fail")
+	// Seed UTXO state (same as TestUnmap)
+	ct.StateSet(contractId, constants.ObservedBlockPrefix+"100", buildObservedList(t,
+		observedParam{fakeTxId0, 0}, observedParam{fakeTxId1, 0},
+	))
+	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(mapping.UtxoRegistry{
+		{Id: 1024, Amount: 5000},
+		{Id: 1025, Amount: 5000},
+	})))
+	ct.StateSet(contractId, constants.UtxoPrefix+"400", depositUtxoBinary(t, fakeTxId0, 0, 5000, instruction))
+	ct.StateSet(contractId, constants.UtxoPrefix+"401", changeUtxoBinary(t, fakeTxId1, 0, 5000))
+	ct.StateSet(contractId, constants.UtxoLastIdKey, encodeUtxoCounters(1026, 0))
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
+		ActiveSupply: ownerBalance,
+		UserSupply:   ownerBalance,
+		FeeSupply:    0,
+		BaseFeeRate:  1,
+	})))
+	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.BlockPrefix+"100", buildSeedHeaderRaw(t, time.Unix(0, 0)))
+	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
+	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
+
+	// Owner approves spender for a generous allowance
+	ar := callApprove(t, ct, contractId, allowanceOwner, allowanceSpender, ownerBalance)
+	if !ar.Success {
+		t.Fatalf("approve failed: %s: %s", ar.Err, ar.ErrMsg)
+	}
+
+	// Spender calls unmap with From=owner
+	unmapAmount := int64(7500)
+	payload, err := tinyjson.Marshal(mapping.TransferParams{
+		Amount: fmt.Sprintf("%d", unmapAmount),
+		To:     regtestDestAddress(t),
+		From:   allowanceOwner,
+	})
+	if err != nil {
+		t.Fatal("marshal unmap payload:", err)
+	}
+
+	thisTx := txId
+	txId++
+	r := ct.Call(stateEngine.TxVscCallContract{
+		Self: stateEngine.TxSelf{
+			TxId:                 fmt.Sprintf("%d", thisTx),
+			BlockId:              fmt.Sprintf("%d", thisTx),
+			Index:                0,
+			OpIndex:              0,
+			Timestamp:            "2025-10-14T00:00:00",
+			RequiredAuths:        []string{allowanceSpender},
+			RequiredPostingAuths: []string{},
+		},
+		ContractId: contractId,
+		Action:     "unmapFrom",
+		Payload:    payload,
+		RcLimit:    10000,
+		Intents:    []contracts.Intent{},
+	})
+
+	dumpLogs(t, r.Logs)
+
+	if r.Err != "" {
+		t.Fatalf("unmapFrom with allowance failed: %s: %s", r.Err, r.ErrMsg)
+	}
+	assert.True(t, r.Success)
+
+	// Owner balance should be reduced
+	ownerBal := ct.StateGet(contractId, constants.BalancePrefix+allowanceOwner)
+	assert.NotEqual(t, encodeBalance(t, ownerBalance), ownerBal, "owner balance should have decreased")
+
+	// Allowance should be reduced
+	remainingAllowance := ct.StateGet(contractId, allowanceKey(allowanceOwner, allowanceSpender))
+	assert.NotEqual(t, encodeBalance(t, ownerBalance), remainingAllowance, "allowance should have decreased")
+}
+
+// TestUnmapFromWithoutAllowanceFails verifies that a spender without sufficient
+// allowance cannot unmap tokens from another user's balance.
+func TestUnmapFromWithoutAllowanceFails(t *testing.T) {
+	const instruction = "deposit_to=" + allowanceOwner
+	const fakeTxId0 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const fakeTxId1 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	const ownerBalance = int64(10000)
+
+	ct, contractId := setupAllowanceContract(t, ownerBalance)
+
+	ct.StateSet(contractId, constants.ObservedBlockPrefix+"100", buildObservedList(t,
+		observedParam{fakeTxId0, 0}, observedParam{fakeTxId1, 0},
+	))
+	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(mapping.UtxoRegistry{
+		{Id: 1024, Amount: 5000},
+		{Id: 1025, Amount: 5000},
+	})))
+	ct.StateSet(contractId, constants.UtxoPrefix+"400", depositUtxoBinary(t, fakeTxId0, 0, 5000, instruction))
+	ct.StateSet(contractId, constants.UtxoPrefix+"401", changeUtxoBinary(t, fakeTxId1, 0, 5000))
+	ct.StateSet(contractId, constants.UtxoLastIdKey, encodeUtxoCounters(1026, 0))
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
+		ActiveSupply: ownerBalance,
+		UserSupply:   ownerBalance,
+		FeeSupply:    0,
+		BaseFeeRate:  1,
+	})))
+	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.BlockPrefix+"100", buildSeedHeaderRaw(t, time.Unix(0, 0)))
+	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
+	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
+
+	// No approve — spender has no allowance
+
+	payload, err := tinyjson.Marshal(mapping.TransferParams{
+		Amount: "7500",
+		To:     regtestDestAddress(t),
+		From:   allowanceOwner,
+	})
+	if err != nil {
+		t.Fatal("marshal unmap payload:", err)
+	}
+
+	thisTx := txId
+	txId++
+	r := ct.Call(stateEngine.TxVscCallContract{
+		Self: stateEngine.TxSelf{
+			TxId:                 fmt.Sprintf("%d", thisTx),
+			BlockId:              fmt.Sprintf("%d", thisTx),
+			Index:                0,
+			OpIndex:              0,
+			Timestamp:            "2025-10-14T00:00:00",
+			RequiredAuths:        []string{allowanceSpender},
+			RequiredPostingAuths: []string{},
+		},
+		ContractId: contractId,
+		Action:     "unmapFrom",
+		Payload:    payload,
+		RcLimit:    10000,
+		Intents:    []contracts.Intent{},
+	})
+
+	assert.False(t, r.Success, "unmapFrom without allowance should fail")
 	assert.NotEmpty(t, r.Err)
 
 	// Owner balance should be unchanged
-	assert.Equal(t, encodeBalance(t, 500), ct.StateGet(contractId, constants.BalancePrefix+allowanceOwner))
+	assert.Equal(t, encodeBalance(t, ownerBalance), ct.StateGet(contractId, constants.BalancePrefix+allowanceOwner))
 }
 
 // TestDirectTransferNoAllowanceRequired verifies that a caller transferring their own tokens

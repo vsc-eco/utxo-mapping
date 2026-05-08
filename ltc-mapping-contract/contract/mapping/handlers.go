@@ -2,7 +2,6 @@ package mapping
 
 import (
 	"ltc-mapping-contract/contract/constants"
-	ce "ltc-mapping-contract/contract/contracterrors"
 	"ltc-mapping-contract/sdk"
 	"bytes"
 	"encoding/hex"
@@ -10,9 +9,11 @@ import (
 	"strconv"
 
 	"github.com/btcsuite/btcd/wire"
+
+	ce "ltc-mapping-contract/contract/contracterrors"
 )
 
-const MaxMerkleProofLength = 33 // 2^33 blocks > total LTC supply
+const MaxMerkleProofLength = 33 // 2^33 blocks > total BTC supply
 
 func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 	rawTx, err := hex.DecodeString(txData.RawTxHex)
@@ -26,7 +27,7 @@ func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 	var msgTx wire.MsgTx
 	err = msgTx.Deserialize(bytes.NewReader(rawTx))
 	if err != nil {
-		return ce.WrapContractError(ce.ErrInput, err, "could not construct LTC transaction from input")
+		return ce.WrapContractError(ce.ErrInput, err, "could not construct BTC transaction from input")
 	}
 
 	// gets all outputs the address of which is specified in the deposit instructions
@@ -41,7 +42,7 @@ func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 	}
 
 	// TODO: return mapping results for each relevenat address as part of contract output, or at least log them
-	err = ms.processUtxos(relevantOutputs, senderLabel(msgTx.TxIn, ms.NetworkParams))
+	err = ms.processUtxos(relevantOutputs, senderLabel(msgTx.TxIn, ms.NetworkParams), txData.BlockHeight)
 	if err != nil {
 		return err
 	}
@@ -63,14 +64,22 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	if amount <= 0 {
 		return ce.NewContractError(ce.ErrInput, "amount must be positive")
 	}
+	if amount <= dustThreshold {
+		return ce.NewContractError(ce.ErrInput, "amount below dust threshold")
+	}
 
 	vscFee, err := calcVscFee(amount)
 	if err != nil {
 		return err
 	}
 
+	from := instructions.From
+	if from == "" {
+		from = env.Caller.String()
+	}
+
 	// Preliminary balance check before expensive UTXO selection and TSS signing
-	prelimBal := getAccBal(env.Caller.String())
+	prelimBal := getAccBal(from)
 	var prelimRequired int64
 	if instructions.DeductFee {
 		prelimRequired = amount
@@ -128,14 +137,17 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	// by the change output.
 	sendAmount := amount
 	if instructions.DeductFee {
-		btcFeeEst := cs.estimateFee(int64(len(inputUtxoIds)), utxoSelectionAmount, totalInputAmt)
+		btcFeeEst, err := cs.estimateFee(int64(len(inputUtxoIds)), utxoSelectionAmount, totalInputAmt)
+		if err != nil {
+			return err
+		}
 		sendAmount, err = safeSubtract64(utxoSelectionAmount, btcFeeEst)
 		if err != nil || sendAmount <= dustThreshold {
 			return ce.NewContractError(ce.ErrBalance, "amount too small to cover fees")
 		}
 	}
 
-	signingData, tx, btcFee, err := cs.createSpendTransaction(
+	tx, witnessScripts, btcFee, err := cs.buildSpendTransaction(
 		inputUtxos,
 		totalInputAmt,
 		instructions.To,
@@ -144,6 +156,18 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	)
 	if err != nil {
 		return err
+	}
+
+	totalFee, err := safeAdd64(vscFee, btcFee)
+	if err != nil {
+		return ce.WrapContractError(ce.ErrArithmetic, err, "error computing total fee")
+	}
+	if instructions.MaxFee != nil && totalFee > *instructions.MaxFee {
+		return ce.NewContractError(
+			ce.ErrTransaction,
+			"total fee "+strconv.FormatInt(totalFee, 10)+
+				" exceeds max_fee "+strconv.FormatInt(*instructions.MaxFee, 10),
+		)
 	}
 
 	sdk.Log(createFeeLog(vscFee, btcFee))
@@ -162,10 +186,24 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		}
 	}
 
-	// check whether caller has enough balance to cover transaction
-	err = checkAndDeductBalance(env, env.Caller.String(), finalAmt)
+	// check whether caller (or delegated from) has enough balance to cover transaction
+	err = checkAndDeductBalance(env, from, finalAmt)
 	if err != nil {
 		return err
+	}
+
+	// Pentest finding BTC-C3: enforce per-Hive-block aggregate unmap
+	// cap before incurring TSS signing cost. The runtime reverts the
+	// entire transaction (including the balance deduction above and
+	// the accumulator update inside the helper) if this returns.
+	if err := checkAndUpdateUnmapRateLimit(env.BlockHeight, finalAmt); err != nil {
+		return err
+	}
+
+	// All checks passed — now request TSS signing
+	signingData, err := signSpendTransaction(tx, inputUtxos, witnessScripts)
+	if err != nil {
+		return ce.WrapContractError(ce.ErrTransaction, err, "error signing spend transaction")
 	}
 
 	unconfirmedUtxos, err := indexUnconfimedOutputs(tx, changeAddress, cs.NetworkParams)
@@ -196,7 +234,7 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 
 	sdk.StateSetObject(constants.TxSpendsPrefix+tx.TxID(), string(signingDataBytes))
 	cs.TxSpendsList = append(cs.TxSpendsList, tx.TxID())
-	sdk.Log(createUnmapLog(tx.TxID()))
+	sdk.Log(createUnmapLog(tx.TxID(), from, instructions.To, finalAmt, sendAmount))
 
 	// update supply
 	newActive, err := safeSubtract64(cs.Supply.ActiveSupply, finalAmt)
@@ -247,16 +285,67 @@ func HandleDecreaseAllowance(owner, spender string, amount int64) error {
 	return nil
 }
 
-// HandleConfirmSpend confirms a pending spend transaction by promoting its
-// unconfirmed change UTXOs to the confirmed pool. Called by the bot/oracle
-// when a withdrawal transaction is confirmed on the Litecoin network.
+// HandleConfirmSpend confirms a pending spend transaction by verifying its
+// Merkle inclusion proof against the stored block headers, then promoting the
+// unconfirmed change UTXOs at the specified output indices to the confirmed pool.
 //
-// SECURITY: This function performs no cryptographic verification of the transaction.
-// Access control is enforced by the caller (main.go ConfirmSpend) via checkAdmin().
-// Unlike the BTC contract which requires an SPV Merkle proof, alt-chain confirmSpend
-// relies on oracle trust.
-func (cs *ContractState) HandleConfirmSpend(txId string) error {
-	return cs.updateUtxoSpends(txId)
+// This function has no access control by design: it is trustlessly permissionless
+// because the caller must supply a valid SPV Merkle proof linking the transaction
+// to a block header already accepted by the contract. Without a valid proof the
+// call reverts, so no authorization check is needed.
+func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices []uint32) error {
+	rawTx, err := hex.DecodeString(txData.RawTxHex)
+	if err != nil {
+		return ce.WrapContractError(ce.ErrInput, err, "invalid raw tx hex")
+	}
+	if err := verifyTransaction(txData, rawTx); err != nil {
+		return ce.Prepend(err, "error verifying transaction")
+	}
+	var msgTx wire.MsgTx
+	if err := msgTx.Deserialize(bytes.NewReader(rawTx)); err != nil {
+		return ce.WrapContractError(ce.ErrInput, err, "could not deserialize transaction")
+	}
+	txId := msgTx.TxID()
+
+	indexSet := make(map[uint32]struct{}, len(indices))
+	for _, idx := range indices {
+		indexSet[idx] = struct{}{}
+	}
+
+	for i, entry := range cs.UtxoList {
+		if entry.Id >= constants.UtxoConfirmedPoolStart {
+			continue
+		}
+		utxo, err := loadUtxo(entry.Id)
+		if err != nil {
+			return err
+		}
+		if utxo.TxId != txId {
+			continue
+		}
+		if _, ok := indexSet[utxo.Vout]; !ok {
+			continue
+		}
+		newId, err := cs.allocateConfirmedId()
+		if err != nil {
+			return err
+		}
+		saveUtxo(newId, utxo)
+		sdk.StateDeleteObject(getUtxoKey(cs.UtxoList[i].Id))
+		cs.UtxoList[i].Id = newId
+	}
+
+	// Clean up signing data for this tx if present.
+	sdk.StateDeleteObject(constants.TxSpendsPrefix + txId)
+	for i, val := range cs.TxSpendsList {
+		if val == txId {
+			cs.TxSpendsList[i] = cs.TxSpendsList[len(cs.TxSpendsList)-1]
+			cs.TxSpendsList = cs.TxSpendsList[:len(cs.TxSpendsList)-1]
+			break
+		}
+	}
+
+	return nil
 }
 
 // handles a transfer where funds are drawn from the caller
@@ -275,7 +364,7 @@ func HandleTransfer(instructions *TransferParams) error {
 	}
 
 	if sdk.VerifyAddress(instructions.To) == "unknown" {
-		return ce.NewContractError(ce.ErrInput, "invalid recipient address")
+		return ce.NewContractError(ce.ErrInput, "invalid recipient address \""+instructions.To+"\"")
 	}
 
 	from := instructions.From
@@ -294,6 +383,8 @@ func HandleTransfer(instructions *TransferParams) error {
 		return ce.WrapContractError(ce.ErrArithmetic, err, "error incrementing user balance")
 	}
 	setAccBal(instructions.To, newBal)
+
+	sdk.Log(createTransferLog(from, instructions.To, amount))
 
 	return nil
 }
