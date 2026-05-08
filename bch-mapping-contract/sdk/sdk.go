@@ -53,70 +53,40 @@ func EphemStateDeleteObject(key string) {
 func GetEnv() Env {
 	envStr := *getEnv(nil)
 	env := Env{}
-	// envMap := map[string]interface{}{}
 	tinyjson.Unmarshal([]byte(envStr), &env)
 	envMap := EnvMap{}
 	tinyjson.Unmarshal([]byte(envStr), &envMap)
 
 	requiredAuths := make([]Address, 0)
-	for _, auth := range envMap["msg.required_auths"].([]interface{}) {
-		addr := auth.(string)
-		requiredAuths = append(requiredAuths, Address(addr))
+	if auths, ok := envMap["msg.required_auths"].([]interface{}); ok {
+		for _, auth := range auths {
+			if addr, ok := auth.(string); ok {
+				requiredAuths = append(requiredAuths, Address(addr))
+			}
+		}
 	}
 	requiredPostingAuths := make([]Address, 0)
-	for _, auth := range envMap["msg.required_posting_auths"].([]interface{}) {
-		addr := auth.(string)
-		requiredPostingAuths = append(requiredPostingAuths, Address(addr))
+	if auths, ok := envMap["msg.required_posting_auths"].([]interface{}); ok {
+		for _, auth := range auths {
+			if addr, ok := auth.(string); ok {
+				requiredPostingAuths = append(requiredPostingAuths, Address(addr))
+			}
+		}
+	}
+
+	senderAddr := ""
+	if s, ok := envMap["msg.sender"].(string); ok {
+		senderAddr = s
+	}
+	if senderAddr == "" {
+		Abort("msg.sender is missing from environment")
 	}
 
 	env.Sender = Sender{
-		Address:              Address(envMap["msg.sender"].(string)),
+		Address:              Address(senderAddr),
 		RequiredAuths:        requiredAuths,
 		RequiredPostingAuths: requiredPostingAuths,
 	}
-
-	// env.ContractId = envMap["contract.id"].(string)
-	// env.Index = envMap["tx.index"].(int64)
-	// env.OpIndex = envMap["tx.op_index"].(int64)
-
-	// for _, v := range envMap {
-	// 	switch v {
-	// 	case "contract.id":
-	// 		env.CONTRACT_ID = *_GET_ENV(&v)
-	// 	case "tx.origin":
-	// 		env.TX_ORIGIN = *_GET_ENV(&v)
-	// 	case "tx.id":
-	// 		env.TX_ID = *_GET_ENV(&v)
-	// 	case "tx.index":
-	// 		indexStr := *_GET_ENV(&v)
-	// 		index, err := strconv.Atoi(indexStr)
-	// 		if err != nil {
-	// 			Log("Das broken: " + err.Error())
-	// 			panic(fmt.Sprintf("Failed to parse index: %s", err))
-	// 		}
-	// 		env.INDEX = index
-	// 	case "tx.op_index":
-	// 		opIndexStr := *_GET_ENV(&v)
-	// 		opIndex, err := strconv.Atoi(opIndexStr)
-	// 		if err != nil {
-	// 			panic(fmt.Sprintf("Failed to parse op_index: %s", err))
-	// 		}
-	// 		env.OP_INDEX = opIndex
-	// 	case "block.id":
-	// 		env.BLOCK_ID = *_GET_ENV(&v)
-	// 	case "block.height":
-	// 		heightStr := *_GET_ENV(&v)
-	// 		height, err := strconv.ParseUint(heightStr, 10, 64)
-	// 		if err != nil {
-	// 			panic(fmt.Sprintf("Failed to parse block height: %s", err))
-	// 		}
-	// 		env.BLOCK_HEIGHT = height
-	// 	case "block.timestamp":
-	// 		env.TIMESTAMP = *_GET_ENV(&v)
-	// 	default:
-	// 		panic(fmt.Sprintf("Unknown environment variable: %s", v[0]))
-	// 	}
-	// }
 	return env
 }
 
@@ -196,12 +166,17 @@ func ContractCall(contractId string, method string, payload string, options *Con
 	return contractCall(&contractId, &method, &payload, &optStr)
 }
 
-func TssCreateKey(keyId string, algo string) string {
+func TssCreateKey(keyId string, algo string, epochs uint64) string {
 	if algo != "ecdsa" && algo != "eddsa" {
 		Abort("algo must be ecdsa or eddsa")
 	}
+	epochsStr := strconv.FormatUint(epochs, 10)
+	return *tssCreateKey(&keyId, &algo, &epochsStr)
+}
 
-	return *tssCreateKey(&keyId, &algo)
+func TssRenewKey(keyId string, additionalEpochs uint64) string {
+	epochsStr := strconv.FormatUint(additionalEpochs, 10)
+	return *tssRenewKey(&keyId, &epochsStr)
 }
 
 func TssGetKey(keyId string) string {

@@ -49,7 +49,7 @@ func TestTransferToContractAddress(t *testing.T) {
 		Caller:     allowanceOwner,
 		Intents:    []contracts.Intent{},
 	})
-	assert.True(t, r.Success, "transfer to contract: address should succeed")
+	assert.True(t, r.Success, "transfer to contract: address should succeed, "+r.Err+": "+r.ErrMsg)
 }
 
 // TestTransferToEVMAddress verifies transfer to a did:pkh:eip155 address succeeds.
