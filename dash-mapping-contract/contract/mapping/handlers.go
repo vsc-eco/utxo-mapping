@@ -192,6 +192,12 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		return err
 	}
 
+	// Pentest finding BTC-C3 (propagated): enforce per-Hive-block
+	// aggregate unmap cap before incurring TSS signing cost.
+	if err := checkAndUpdateUnmapRateLimit(env.BlockHeight, finalAmt); err != nil {
+		return err
+	}
+
 	// All checks passed — now request TSS signing
 	signingData, err := signSpendTransaction(tx, inputUtxos, witnessScripts)
 	if err != nil {

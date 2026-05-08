@@ -35,6 +35,19 @@ const LastHeightKey = "h"
 const SeedHeightKey = "sh"
 const PruneFloorKey = "pf" // lowest unpruned block height, updated during pruning
 
+// BTC-C3 (propagated): per-Hive-block withdrawal rate limit. The
+// accumulator tracks total duffs deducted by HandleUnmap within a
+// single Hive L1 block; when MaxUnmapPerBlock is positive,
+// HandleUnmap rejects any unmap that would push the accumulator
+// above the cap. Default 1 DASH per Hive block; operators can tune
+// via setMaxUnmapPerBlock. Setting 0 disables the limit.
+const DefaultMaxUnmapPerBlock int64 = 100_000_000 // 1 DASH in duffs
+const MaxUnmapPerBlockKey = "muxb"
+
+// BlockUnmapAccKey stores the per-block unmap accumulator: 16 bytes
+// = uint64 BE Hive block height || uint64 BE accumulated duffs.
+const BlockUnmapAccKey = "buac"
+
 // Instruction URL search param keys
 const (
 	DepositToKey        = "deposit_to"

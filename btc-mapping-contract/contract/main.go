@@ -121,6 +121,31 @@ func InitPruning(input *string) *string {
 	return mapping.StrPtr("prune floor set to " + strconv.FormatUint(floor, 10))
 }
 
+// setMaxUnmapPerBlock tunes the BTC-C3 per-Hive-block withdrawal cap.
+// Argument is a non-negative integer string in sats. Setting 0
+// disables the rate limit; any positive value caps the aggregate
+// finalAmt across all unmaps in a single Hive block. Operators
+// should set this proportional to TVL — at very low TVL the
+// default 1 BTC / block (= 1200 BTC/hour worst-case drain) is
+// loose; tighten as TVL grows.
+//
+//go:wasmexport setMaxUnmapPerBlock
+func SetMaxUnmapPerBlock(input *string) *string {
+	checkAdmin()
+	if input == nil || *input == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "expected sats-per-block as integer string"))
+	}
+	v, err := strconv.ParseInt(strings.TrimSpace(*input), 10, 64)
+	if err != nil || v < 0 {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "expected non-negative integer sats-per-block"))
+	}
+	sdk.StateSetObject(constants.MaxUnmapPerBlockKey, strconv.FormatInt(v, 10))
+	if v == 0 {
+		return mapping.StrPtr("max unmap per block disabled (rate limit off)")
+	}
+	return mapping.StrPtr("max unmap per block set to " + strconv.FormatInt(v, 10) + " sats")
+}
+
 // prune removes old block headers beyond the retention window.
 // Can be called independently of addBlocks to reduce state size.
 // Returns the number of headers pruned and the current prune floor.
