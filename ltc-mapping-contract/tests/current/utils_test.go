@@ -31,20 +31,6 @@ func dumpLogs(t *testing.T, logs map[string]contract_session.LogOutput) {
 		}
 	}
 }
-
-func logStateDiff(t *testing.T, sdm map[string]contract_session.StateDiff) {
-	t.Helper()
-	for name, sd := range sdm {
-		log.Println("state diff for", name)
-		for del := range sd.Deletions {
-			fmt.Printf("    %*s:\n", 16, del)
-		}
-		for key, diff := range sd.KeyDiff {
-			fmt.Printf("    %*s: %s -> %s\n", 16, key, diff.Previous, diff.Current)
-		}
-	}
-}
-
 func dumpStateDiff(t *testing.T, sdm map[string]contract_session.StateDiff) {
 	t.Helper()
 	for name, sd := range sdm {
