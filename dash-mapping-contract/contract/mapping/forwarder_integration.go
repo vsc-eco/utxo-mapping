@@ -22,6 +22,7 @@ import (
 	"dash-mapping-contract/sdk"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"strconv"
 	"strings"
 
@@ -29,6 +30,55 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 )
+
+// ValidateHiveAccount enforces the Hive consensus rules for an account
+// name. Exposed so the gen-validator-set-payload CLI can mirror the
+// exact constraints the contract applies — round-6 audit R6-CORR-05
+// caught CLI-vs-contract drift. Rules:
+//   - total length 3..16
+//   - one or more '.'-separated segments
+//   - each segment ≥3 chars
+//   - each segment starts with [a-z], ends with [a-z0-9], inner chars [a-z0-9-]
+//   - no leading/trailing '.', no consecutive '.', no segment ending in '-'.
+func ValidateHiveAccount(account string) error {
+	return validateHiveAccount(account)
+}
+
+func validateHiveAccount(account string) error {
+	if len(account) < 3 || len(account) > 16 {
+		return errors.New("length must be 3..16")
+	}
+	segments := strings.Split(account, ".")
+	for _, seg := range segments {
+		if err := validateHiveAccountSegment(seg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateHiveAccountSegment(seg string) error {
+	if len(seg) < 3 {
+		return errors.New("segment must be ≥3 chars")
+	}
+	// First char [a-z].
+	if !(seg[0] >= 'a' && seg[0] <= 'z') {
+		return errors.New("segment must start with [a-z]")
+	}
+	// Last char [a-z0-9].
+	last := seg[len(seg)-1]
+	if !((last >= 'a' && last <= 'z') || (last >= '0' && last <= '9')) {
+		return errors.New("segment must end with [a-z0-9]")
+	}
+	for i := 1; i < len(seg)-1; i++ {
+		c := seg[i]
+		ok := (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'
+		if !ok {
+			return errors.New("segment inner chars must be [a-z0-9-]")
+		}
+	}
+	return nil
+}
 
 // ----- payload types -----
 
@@ -683,22 +733,23 @@ func ParseValidatorSetPayload(payload string) (uint64, map[string]string, map[st
 			return 0, nil, nil, nil, ce.NewContractError(ce.ErrInput,
 				"pop must be 96 bytes (192 hex chars), got "+pop)
 		}
-		// Round-5 audit R5-ADV-02: enforce Hive's account-name
-		// constraints so a malicious admin can't smuggle delimiters
-		// or arbitrary bytes through the account field. Hive
-		// usernames are [a-z0-9.-], 3..16 chars (per the Hive
-		// consensus rules). Reject anything else.
-		if len(account) < 3 || len(account) > 16 {
+		// Round-5 audit R5-ADV-02 / round-6 audit R6-CORR-06:
+		// enforce Hive's full account-name consensus rules so the
+		// contract can't be persuaded to register a validator under
+		// a string that L1 would reject. Rules per Hive consensus:
+		//   - total length 3..16
+		//   - one or more '.'-separated segments
+		//   - each segment: starts with [a-z], min 3 chars when
+		//     ending in [a-z0-9] (with optional [a-z0-9-] middle).
+		//     Single-letter segments are NOT allowed in L1; we
+		//     mirror that.
+		//   - no consecutive '.', no leading/trailing '.'/'-',
+		//     segments don't end in '-'.
+		// The earlier R5-ADV-02 fix only enforced length + charset,
+		// which accepted '.aa', 'al..ce', '1alice', 'alice-', etc.
+		if err := validateHiveAccount(account); err != nil {
 			return 0, nil, nil, nil, ce.NewContractError(ce.ErrInput,
-				"account length must be 3..16, got "+account)
-		}
-		for i := 0; i < len(account); i++ {
-			c := account[i]
-			ok := (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-'
-			if !ok {
-				return 0, nil, nil, nil, ce.NewContractError(ce.ErrInput,
-					"account contains illegal char (allowed: [a-z0-9.-]): "+account)
-			}
+				"invalid Hive account "+account+": "+err.Error())
 		}
 		pubkeys[did] = pk
 		pops[did] = pop

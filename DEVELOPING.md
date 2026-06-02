@@ -138,6 +138,40 @@ Once the upstream replace target is bumped past the commit landing
 lib/islock-instruction, the cross-repo lane will compile in CI without
 a go.work file and the cross_repo build tag can be retired.
 
+## Admin helper: gen-validator-set-payload
+
+The R5-DRIFT-04 / round-6 `dash-mapping-contract/cmd/gen-validator-set-payload`
+CLI composes the 4-field SetValidatorSet admin payload from announcer
+outputs. Build + run:
+
+```bash
+cd dash-mapping-contract
+go run ./cmd/gen-validator-set-payload \
+    -epoch 42 \
+    -entry 'did:key:bls:z...,<pk_hex_96>,<pop_base64_rawurl>,<account>' \
+    -entry 'did:key:bls:z...,<pk_hex_96>,<pop_base64_rawurl>,<account>'
+```
+
+The CLI validates pk hex length (96), pop base64 → 96-byte length,
+and the account against Hive consensus rules
+(`ValidateHiveAccount` — round-6 R6-CORR-05/R6-CORR-06 mirror the
+contract). Output goes to stdout; pipe into your deployer.
+
+## IS-service operator flags
+
+Round-5 / round-6 operator-tunable flags on `cmd/is-service`:
+
+* `-validatorSetCacheTTLSeconds` (default 30s, R4-001 / R5-DRIFT-06 /
+  R6-OP-04 — lower for faster admin-rotation reflection, higher to
+  rate-limit upstream GraphQL). Must be > 0.
+* `-drainTimeoutSeconds` (default 240s, R3-05). MUST be >=
+  CollectTimeout + SubmitTimeout + reconcileL2 budget.
+* `-trustedProxies` (TC2-06). Honour X-Forwarded-For only from this
+  list (+ loopback). IPv6 / mixed-case automatically normalized
+  (R4-SEC-05).
+
+The full operator list is also visible via `is-service -help`.
+
 ## Known test-coverage gaps
 
 Round-2 audit TC2-09 identified that `dispatchForward` (the C4 fix path with 6 sequenced

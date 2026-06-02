@@ -483,7 +483,8 @@ func CancelAllowedTargetRemove(payload *string) *string {
 // prior account-vs-DID mismatch that bricked the gate.
 //
 // To produce a payload entry from announcer-format outputs, use the
-// utxo-mapping/cmd/gen-validator-set-payload helper. The PoP encoding
+// utxo-mapping/dash-mapping-contract/cmd/gen-validator-set-payload
+// helper. The PoP encoding
 // pipeline is:
 //
 //	popB64, _ := dids.GenerateBlsPoP(privKey, account) // base64 raw-url

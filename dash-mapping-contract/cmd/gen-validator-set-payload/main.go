@@ -27,6 +27,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"dash-mapping-contract/contract/mapping"
 )
 
 type stringSlice []string
@@ -63,6 +65,25 @@ func main() {
 		did, pkHex, popB64, account := fields[0], fields[1], fields[2], fields[3]
 		if did == "" || pkHex == "" || popB64 == "" || account == "" {
 			fmt.Fprintf(os.Stderr, "entry #%d has empty field(s)\n", i+1)
+			os.Exit(2)
+		}
+		// Round-6 audit R6-CORR-05: mirror the contract-side
+		// account validation rather than just non-empty. The
+		// contract rejects accounts outside Hive's consensus rules
+		// at runtime — catch it here so operators don't pay L1
+		// fees just to discover the constraint.
+		if err := mapping.ValidateHiveAccount(account); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"entry #%d: account %q violates Hive consensus rules: %v\n",
+				i+1, account, err)
+			os.Exit(2)
+		}
+		// Reject delimiter / shell metachars in the did field so a
+		// downstream shell pipeline can't expand smuggled bytes.
+		if strings.ContainsAny(did, "|=$`;\n\r\t ") {
+			fmt.Fprintf(os.Stderr,
+				"entry #%d: did %q contains payload-grammar or shell metachar — reject\n",
+				i+1, did)
 			os.Exit(2)
 		}
 		if len(pkHex) != 96 {
