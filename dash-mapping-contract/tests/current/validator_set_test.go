@@ -3,8 +3,12 @@
 // reads/writes (including PoP verify) are exercised in the WASM-level
 // integration suite when it lands (workstream 6 follow-up).
 //
-// Round-3 audit R3-001: payload format now requires PoP per entry:
-//   <epoch>;<did1>=<pubkey1>=<pop1>|<did2>=<pubkey2>=<pop2>|...
+// Round-3 audit R3-001: payload format now requires PoP per entry.
+// Round-4 audit R4-CSM-01: payload format now ALSO carries the
+// validator's Hive account so the contract can reconstruct
+// lib/dids/bls.go's canonical PoP message:
+//
+//	<epoch>;<did1>=<pubkey1>=<pop1>=<account1>|...
 package current_test
 
 import (
@@ -28,68 +32,83 @@ const validatorPubkey96 = "" +
 // the integration suite — the parser only enforces length+presence.
 const validatorPoP192 = validatorPubkey96 + validatorPubkey96
 
+const validatorAccount1 = "tibfox"
+const validatorAccount2 = "magi.contracts"
+
 func TestParseValidatorSetPayload_HappyPath(t *testing.T) {
-	payload := "42;did:key:validator-1=" + validatorPubkey96 + "=" + validatorPoP192 +
-		"|did:key:validator-2=" + validatorPubkey96 + "=" + validatorPoP192
-	epoch, set, pops, err := mapping.ParseValidatorSetPayload(payload)
+	payload := "42;did:key:validator-1=" + validatorPubkey96 + "=" + validatorPoP192 + "=" + validatorAccount1 +
+		"|did:key:validator-2=" + validatorPubkey96 + "=" + validatorPoP192 + "=" + validatorAccount2
+	epoch, set, pops, accounts, err := mapping.ParseValidatorSetPayload(payload)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(42), epoch)
 	assert.Len(t, set, 2)
 	assert.Len(t, pops, 2)
+	assert.Len(t, accounts, 2)
 	assert.Equal(t, validatorPubkey96, set["did:key:validator-1"])
 	assert.Equal(t, validatorPubkey96, set["did:key:validator-2"])
 	assert.Equal(t, validatorPoP192, pops["did:key:validator-1"])
+	assert.Equal(t, validatorAccount1, accounts["did:key:validator-1"])
+	assert.Equal(t, validatorAccount2, accounts["did:key:validator-2"])
 }
 
 func TestParseValidatorSetPayload_EmptyEntries(t *testing.T) {
 	// Extra pipes / trailing pipe must be tolerated (skipped silently).
-	payload := "1;did:key:v1=" + validatorPubkey96 + "=" + validatorPoP192 + "||"
-	epoch, set, _, err := mapping.ParseValidatorSetPayload(payload)
+	payload := "1;did:key:v1=" + validatorPubkey96 + "=" + validatorPoP192 + "=" + validatorAccount1 + "||"
+	epoch, set, _, _, err := mapping.ParseValidatorSetPayload(payload)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(1), epoch)
 	assert.Len(t, set, 1)
 }
 
 func TestParseValidatorSetPayload_RejectsMissingSemicolon(t *testing.T) {
-	_, _, _, err := mapping.ParseValidatorSetPayload("no-semicolon")
+	_, _, _, _, err := mapping.ParseValidatorSetPayload("no-semicolon")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "<epoch>;<entries>")
 }
 
 func TestParseValidatorSetPayload_RejectsBadEpoch(t *testing.T) {
-	_, _, _, err := mapping.ParseValidatorSetPayload("not-a-number;x=y=z")
+	_, _, _, _, err := mapping.ParseValidatorSetPayload("not-a-number;x=y=z=q")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid epoch")
 }
 
 // Round-3 audit R3-001: legacy 2-field <did>=<pubkey> entries must
-// now be rejected; the parser requires the third PoP field.
+// now be rejected; the parser requires PoP. Round-4 audit R4-CSM-01:
+// 3-field entries are ALSO rejected — the parser now requires account
+// to bind the PoP correctly.
 func TestParseValidatorSetPayload_RejectsTwoFieldLegacyFormat(t *testing.T) {
-	_, _, _, err := mapping.ParseValidatorSetPayload("0;did:key:v=" + validatorPubkey96)
+	_, _, _, _, err := mapping.ParseValidatorSetPayload("0;did:key:v=" + validatorPubkey96)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "<did>=<pubkey>=<pop>")
+	assert.Contains(t, err.Error(), "<did>=<pubkey>=<pop>=<account>")
+}
+
+func TestParseValidatorSetPayload_RejectsThreeFieldLegacyFormat(t *testing.T) {
+	_, _, _, _, err := mapping.ParseValidatorSetPayload("0;did:key:v=" + validatorPubkey96 + "=" + validatorPoP192)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "<did>=<pubkey>=<pop>=<account>")
 }
 
 func TestParseValidatorSetPayload_RejectsEmptyComponents(t *testing.T) {
 	cases := []string{
-		"0;=" + validatorPubkey96 + "=" + validatorPoP192, // empty did
-		"0;did:key:v==" + validatorPoP192,                 // empty pubkey
-		"0;did:key:v=" + validatorPubkey96 + "=",          // empty pop
+		"0;=" + validatorPubkey96 + "=" + validatorPoP192 + "=" + validatorAccount1, // empty did
+		"0;did:key:v==" + validatorPoP192 + "=" + validatorAccount1,                 // empty pubkey
+		"0;did:key:v=" + validatorPubkey96 + "==" + validatorAccount1,               // empty pop
+		"0;did:key:v=" + validatorPubkey96 + "=" + validatorPoP192 + "=",            // empty account
 	}
 	for _, p := range cases {
-		_, _, _, err := mapping.ParseValidatorSetPayload(p)
+		_, _, _, _, err := mapping.ParseValidatorSetPayload(p)
 		assert.Error(t, err, "payload %q must reject", p)
 	}
 }
 
 func TestParseValidatorSetPayload_RejectsShortPubkey(t *testing.T) {
-	_, _, _, err := mapping.ParseValidatorSetPayload("0;did:key:v=deadbeef=" + validatorPoP192)
+	_, _, _, _, err := mapping.ParseValidatorSetPayload("0;did:key:v=deadbeef=" + validatorPoP192 + "=" + validatorAccount1)
 	assert.Error(t, err)
 	assert.Contains(t, strings.ToLower(err.Error()), "96 hex")
 }
 
 func TestParseValidatorSetPayload_RejectsShortPoP(t *testing.T) {
-	_, _, _, err := mapping.ParseValidatorSetPayload("0;did:key:v=" + validatorPubkey96 + "=deadbeef")
+	_, _, _, _, err := mapping.ParseValidatorSetPayload("0;did:key:v=" + validatorPubkey96 + "=deadbeef=" + validatorAccount1)
 	assert.Error(t, err)
 	assert.Contains(t, strings.ToLower(err.Error()), "192 hex")
 }

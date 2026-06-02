@@ -461,32 +461,38 @@ func CancelAllowedTargetRemove(payload *string) *string {
 	return mapping.StrPtr("0")
 }
 
-// SetValidatorSet — admin action. Payload format:
+// SetValidatorSet — admin action to record the {validator DID →
+// pubkey hex} list for an epoch. Payload format:
 //
-//	<epoch>;<did1>=<pubkey1>=<pop1>|<did2>=<pubkey2>=<pop2>|...
+//	<epoch>;<did1>=<pubkey1>=<pop1>=<account1>|<did2>=<pubkey2>=<pop2>=<account2>|...
+//
+// pubkey is hex-encoded 48-byte compressed G1 (96 chars). PoP is a
+// 96-byte BLS signature hex-encoded (192 chars). account is the
+// validator's Hive account name — the value that lib/dids/bls.go's
+// GenerateBlsPoP was called with on the announcer side.
 //
 // Per-validator PoP (proof-of-possession) is mandatory (audit R3-001) —
 // the contract verifies each (pubkey, pop) pair via sdk.VerifyBls
 // against the canonical BLS-PoP message:
 //
-//	"VSC-BLS-POP-v1" || pubkey_bytes || did_bytes
+//	"VSC-BLS-POP-v1" || pubkey_bytes || account_bytes
 //
 // matching lib/dids/bls.go's GenerateBlsPoP / VerifyBlsPoP. Without
 // PoP, the aggregate verifier is exposed to a rogue-key attack once
-// QuorumThreshold rises above 1.
+// QuorumThreshold rises above 1. Round-4 audit R4-CSM-01 fixed a
+// prior account-vs-DID mismatch that bricked the gate.
 //
-// Validator-side admin tools can produce the PoP via dids.GenerateBlsPoP
-// and hex-encode the resulting base64 bytes for inclusion in the
-// payload.
+// To produce a payload entry from announcer-format outputs, use the
+// utxo-mapping/cmd/gen-validator-set-payload helper. The PoP encoding
+// pipeline is:
 //
-// SetValidatorSet — admin action to record the {validator DID →
-// pubkey hex} list for an epoch. Payload format:
+//	popB64, _ := dids.GenerateBlsPoP(privKey, account) // base64 raw-url
+//	raw, _   := base64.RawURLEncoding.DecodeString(popB64)
+//	popHex   := hex.EncodeToString(raw)                // 192 chars
 //
-//	<epoch>;<did1>=<pubkey1>|<did2>=<pubkey2>|...
-//
-// HandleMapInstantSendV2 reads this to gate which validator
-// attestations are accepted at body.Epoch. Without an entry, the
-// fast-path is closed for that epoch.
+// HandleMapInstantSendV2 reads the persisted set to gate which
+// validator attestations are accepted at body.Epoch. Without an
+// entry, the fast-path is closed for that epoch.
 //
 //go:wasmexport setValidatorSet
 func SetValidatorSet(payload *string) *string {
@@ -494,11 +500,11 @@ func SetValidatorSet(payload *string) *string {
 	if payload == nil || *payload == "" {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "validator-set payload required"))
 	}
-	epoch, set, pops, err := mapping.ParseValidatorSetPayload(*payload)
+	epoch, set, pops, accounts, err := mapping.ParseValidatorSetPayload(*payload)
 	if err != nil {
 		ce.CustomAbort(err)
 	}
-	if err := mapping.SaveValidatorSetForEpoch(epoch, set, pops); err != nil {
+	if err := mapping.SaveValidatorSetForEpoch(epoch, set, pops, accounts); err != nil {
 		ce.CustomAbort(err)
 	}
 	return mapping.StrPtr("0")

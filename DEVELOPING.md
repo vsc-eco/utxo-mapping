@@ -104,11 +104,12 @@ does NOT use `go.work`. Bump the replace target when promoting the upstream chan
 
 ### Cross-repo parity tests
 
-Tests that import `vsc-node/modules/islock-attestation` (currently only
+Tests that import `vsc-node/modules/islock-attestation` or
+`vsc-node/lib/islock-instruction` (currently only
 `parity_cross_repo_test.go`) require a `go.work` pointing at a local
-go-vsc-node-develop checkout that includes the islock-attestation
-module — the upstream `replace` target predates it. These tests are
-behind the `cross_repo` build tag so the default suite compiles without
+go-vsc-node-develop checkout that includes those modules — the upstream
+`replace` target may predate them. These tests are behind the
+`cross_repo` build tag so the default suite compiles without
 go.work. Run them as:
 
 ```bash
@@ -118,6 +119,24 @@ go test -tags cross_repo ./tests/current/...
 Round-3 audit OP-001 introduced this split — the previous default-tag
 inclusion made the entire pure-Go suite fail to compile under
 documented CI mode.
+
+Round-4 audit R4-011 verified that the cross-repo lane will FAIL to
+compile under `GOWORK=off` until the contract's `replace vsc-node =>`
+target is bumped past the upstream commit introducing
+lib/islock-instruction. The intended CI workflow is:
+
+  1. Pure-Go default lane (`go test ./tests/current/...`) MUST be
+     green at all times. It does NOT depend on cross-repo wiring.
+  2. The cross-repo lane (`go test -tags cross_repo ...`) requires a
+     gitignored `go.work` until the lib/islock-instruction commit is
+     promoted upstream into vsc-eco/go-vsc-node and the replace
+     pseudo-version is bumped past it. Developers running this lane
+     locally must add `use ../../../go-vsc-node-develop` to their
+     gitignored go.work alongside the contract repo `use .`.
+
+Once the upstream replace target is bumped past the commit landing
+lib/islock-instruction, the cross-repo lane will compile in CI without
+a go.work file and the cross_repo build tag can be retired.
 
 ## Known test-coverage gaps
 
