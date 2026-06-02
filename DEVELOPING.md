@@ -207,13 +207,29 @@ Round-5 audit R5-ADV-01 / round-6 R6-OP-01 added a structured
 that fires when every libp2p attestation responder is rejected by
 the L2 GraphQL validator-set lookup. The log includes
 `validatorSetSource` (the configured `-l2GqlURL` value, sanitised
-to scheme://host so embedded credentials never reach log shippers —
-R7-OP-01-logleak). Treat this signal as **L2 GraphQL endpoint
+to scheme-and-host only — userinfo/query/path are dropped, and any
+malformed URL becomes an explicit `<redacted: -l2GqlURL ...>` marker
+that names the offending flag — R7-OP-01-logleak / R8-SEC-01 /
+R9-INFO-MARKER-HINT-01). Treat this signal as **L2 GraphQL endpoint
 returns a wrong or stale validator set**; investigate that
 upstream first.
 
-Do not embed credentials in `-l2GqlURL` — production endpoints
-should be reached via a network-trust boundary, not bearer-in-URL.
+### URL-flag validation (fail-fast at startup)
+
+Round-8 audit R8-SEC-01 + round-9 audit R9-INFO-SCHEME-01 /
+R9-SEC-QUERY-01 made `parseArgs` reject malformed URL flags at
+process start. `-l2GqlURL` and `-dashdRPC` MUST:
+
+* parse as a well-formed URL with an explicit `http://` or `https://`
+  scheme and non-empty host;
+* NOT embed userinfo (`user:pass@host`) — use a network-trust
+  boundary instead;
+* NOT carry a query string or fragment — secrets there would still
+  reach the upstream call.
+
+These rules are enforced by `args.go::validateOperatorURL`; the IS
+service refuses to start with a clear CLI error on any violation
+so a misconfigured URL never reaches a log shipper.
 
 ## Known test-coverage gaps
 
