@@ -10,3 +10,5 @@ go.work
 go.work.sum
 .claude/
 .vscode/
+# Round-5 R5-DRIFT-04: compiled helper binaries
+/dash-mapping-contract/gen-validator-set-payload

@@ -113,6 +113,35 @@ func TestParseValidatorSetPayload_RejectsShortPoP(t *testing.T) {
 	assert.Contains(t, strings.ToLower(err.Error()), "192 hex")
 }
 
+// Round-5 audit R5-ADV-02: account charset/length validation.
+func TestParseValidatorSetPayload_RejectsAccountLength(t *testing.T) {
+	cases := []string{
+		"ab",                       // too short
+		"abcdefghijklmnopq",        // too long (17 > 16)
+	}
+	for _, account := range cases {
+		_, _, _, _, err := mapping.ParseValidatorSetPayload(
+			"0;did:key:v=" + validatorPubkey96 + "=" + validatorPoP192 + "=" + account)
+		assert.Error(t, err, "account %q must reject (length)", account)
+		assert.Contains(t, strings.ToLower(err.Error()), "length")
+	}
+}
+
+func TestParseValidatorSetPayload_RejectsAccountCharset(t *testing.T) {
+	cases := []string{
+		"Mallory",        // uppercase
+		"alice|smuggle",  // pipe
+		"alice=smuggle",  // equals (smuggling delimiter)
+		"alice/bob",      // slash
+		"al ice",         // space
+	}
+	for _, account := range cases {
+		_, _, _, _, err := mapping.ParseValidatorSetPayload(
+			"0;did:key:v=" + validatorPubkey96 + "=" + validatorPoP192 + "=" + account)
+		assert.Error(t, err, "account %q must reject (charset)", account)
+	}
+}
+
 func TestSaveMinAttestations_RejectsZero(t *testing.T) {
 	err := mapping.SaveMinAttestations(0)
 	assert.Error(t, err)

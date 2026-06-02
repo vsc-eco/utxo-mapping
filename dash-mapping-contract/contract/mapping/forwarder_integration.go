@@ -683,6 +683,23 @@ func ParseValidatorSetPayload(payload string) (uint64, map[string]string, map[st
 			return 0, nil, nil, nil, ce.NewContractError(ce.ErrInput,
 				"pop must be 96 bytes (192 hex chars), got "+pop)
 		}
+		// Round-5 audit R5-ADV-02: enforce Hive's account-name
+		// constraints so a malicious admin can't smuggle delimiters
+		// or arbitrary bytes through the account field. Hive
+		// usernames are [a-z0-9.-], 3..16 chars (per the Hive
+		// consensus rules). Reject anything else.
+		if len(account) < 3 || len(account) > 16 {
+			return 0, nil, nil, nil, ce.NewContractError(ce.ErrInput,
+				"account length must be 3..16, got "+account)
+		}
+		for i := 0; i < len(account); i++ {
+			c := account[i]
+			ok := (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-'
+			if !ok {
+				return 0, nil, nil, nil, ce.NewContractError(ce.ErrInput,
+					"account contains illegal char (allowed: [a-z0-9.-]): "+account)
+			}
+		}
 		pubkeys[did] = pk
 		pops[did] = pop
 		accounts[did] = account
