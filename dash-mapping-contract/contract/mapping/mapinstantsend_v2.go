@@ -59,6 +59,17 @@ func (ms *MappingState) HandleMapInstantSendV2(params MapInstantSendV2ParamsFull
 			"derived deposit address "+D+" not found in tx outputs (mismatched instruction?)")
 	}
 
+	// ===== Step 1.5: idempotency short-circuit BEFORE crypto + state writes =====
+	//
+	// Fixes audit findings `mapv2-expensive-before-idempotency` and
+	// `rate-limit-bumped-before-idempotency-check`: replays of an
+	// already-processed tx must short-circuit before BLS verify (which
+	// burns crypto gas) and before checkAndBumpRateLimit (which mutates
+	// state and would otherwise grief the victim's rate-limit budget).
+	if isAlreadyProcessed(body.RawTxHex) {
+		return nil
+	}
+
 	// ===== Step 2: verify BLS aggregate attestation =====
 
 	// Build the canonical signed message exactly as validators did.
@@ -154,11 +165,7 @@ func (ms *MappingState) HandleMapInstantSendV2(params MapInstantSendV2ParamsFull
 	withinLimit := checkAndBumpRateLimit(senderDID, now)
 
 	// ===== Step 6 + 7: credit + idempotency marker =====
-
-	// Idempotency: if we've already processed this txid, skip cleanly.
-	if isAlreadyProcessed(body.RawTxHex) {
-		return nil
-	}
+	// (idempotency-already-processed check ran at Step 1.5 above.)
 
 	if err := incInternalBalance(senderDID, "dash", paidAmount); err != nil {
 		return err
@@ -193,9 +200,19 @@ func (ms *MappingState) HandleMapInstantSendV2(params MapInstantSendV2ParamsFull
 	}
 }
 
-// dispatchForward performs the §5.2.3 steps 4-9: debit user, credit target,
-// write forwardQueue, call forwarder.execute, on success deduct RC
-// reimbursement HBD, on failure roll back the debit/credit.
+// dispatchForward performs the §5.2.3 steps 4-9: pre-check HBD reserves,
+// debit user, credit target, write forwardQueue, call forwarder.execute,
+// on success deduct the RC reimbursement HBD, on failure (forwarder
+// abort) refund the target → sender.
+//
+// CRITICAL ORDERING (audit `post-forward-rc-rollback-drains-target`):
+// the HBD pre-check runs BEFORE the forwarder is invoked. The previous
+// order — invoke forwarder, then check HBD, then roll back if short —
+// allowed an allow-listed target with any internal-transfer surface to
+// pocket callFunding while the rollback's silently-swallowed
+// decInternalBalance error left the sender double-credited (phantom
+// DASH mint). Never roll back ledger state after a successful external
+// call.
 func (ms *MappingState) dispatchForward(
 	senderDID string,
 	parsed ParsedInstruction,
@@ -233,14 +250,48 @@ func (ms *MappingState) dispatchForward(
 			"forwarder contract not configured; cannot dispatch op=call")
 	}
 
-	// Move callFunding from sender to target's internal balance.
+	// ===== HBD reimbursement PRE-CHECK + DEBIT (spec §5.2.6) =====
+	//
+	// Compute the L2-tx RC cost upper-bound and convert via the
+	// 1000 RC = 1 HBD rate (params.go:11). Deduct from sender's
+	// internal HBD balance BEFORE invoking the forwarder. If
+	// insufficient, mark FORWARD_FAILED_INSUFFICIENT_RC and skip
+	// dispatch entirely — the user keeps their DASH credit but the
+	// forward never runs. This is the only safe order: rolling back
+	// after a successful external call leaks funds (see audit
+	// `post-forward-rc-rollback-drains-target`).
+	rcCost := estimateRcCost(parsed)
+	rcReimbursementHBD := rcCost // 1 RC = 1 milli-HBD per params comment
+
+	if err := decInternalBalance(senderDID, "hbd", rcReimbursementHBD); err != nil {
+		// Insufficient HBD: skip dispatch entirely (callFunding has NOT
+		// moved yet; sender keeps their DASH credit). FORWARD_FAILED_
+		// INSUFFICIENT_RC tells operators / explorers the user needs
+		// to fund their HBD balance (e.g. via a first DASH→HBD swap).
+		saveForwardQueueEntry(txid, ForwardQueueEntry{
+			Sender:      senderDID,
+			Instruction: marshalInstruction(parsed),
+			CallFunding: callFunding,
+			Status:      constants.StatusForwardFailedInsufficientRC,
+		})
+		return nil
+	}
+
+	// Move callFunding from sender to target's internal balance. The
+	// HBD debit above has already committed — if the DASH transfer
+	// fails (which only happens if the sender's DASH balance is short
+	// of callFunding, e.g. concurrent unmap drained it), refund the
+	// HBD pre-debit.
 	if callFunding > 0 {
 		if err := decInternalBalance(senderDID, "dash", callFunding); err != nil {
+			_ = incInternalBalance(senderDID, "hbd", rcReimbursementHBD)
 			return err
 		}
 		if err := incInternalBalance("contract:"+targetAddr, "dash", callFunding); err != nil {
-			// Roll back the decrement before returning.
+			// Roll back BOTH the dash dec and the hbd dec. Sender state
+			// goes back to pre-dispatch.
 			_ = incInternalBalance(senderDID, "dash", callFunding)
+			_ = incInternalBalance(senderDID, "hbd", rcReimbursementHBD)
 			return err
 		}
 	}
@@ -257,11 +308,15 @@ func (ms *MappingState) dispatchForward(
 	// Invoke forwarder.
 	result := sdk.ContractCall(*forwarderId, "execute", txid, &sdk.ContractCallOptions{})
 	if result == nil || isAbortResult(*result) {
-		// Forward failed. Roll back target funding.
+		// Forwarder ABORTed. Roll back the local pre-debits (target
+		// funding + HBD reimbursement). The forwarder didn't touch
+		// either of these (it operated on the target only) so the
+		// refunds are safe.
 		if callFunding > 0 {
 			_ = decInternalBalance("contract:"+targetAddr, "dash", callFunding)
 			_ = incInternalBalance(senderDID, "dash", callFunding)
 		}
+		_ = incInternalBalance(senderDID, "hbd", rcReimbursementHBD)
 		entry.Status = constants.StatusForwardFailed
 		saveForwardQueueEntry(txid, entry)
 		return nil
@@ -271,44 +326,10 @@ func (ms *MappingState) dispatchForward(
 	entry.Status = constants.StatusForwarded
 	saveForwardQueueEntry(txid, entry)
 
-	// ===== RC reimbursement (spec §5.2.6) =====
-	//
-	// Compute the L2-tx RC cost upper-bound and convert via the
-	// 1000 RC = 1 HBD rate (params.go:11). Deduct from sender's
-	// internal HBD balance. If insufficient, mark FORWARD_FAILED_
-	// INSUFFICIENT_RC, refund the target funding, keep the DASH credit.
-	rcCost := estimateRcCost(parsed)
-	rcReimbursementHBD := rcCost // 1 RC = 1 milli-HBD per params comment; calibrate
-
-	hbdBal := getInternalBalance(senderDID, "hbd")
-	if hbdBal < rcReimbursementHBD {
-		// Insufficient HBD. Per spec §5.2.6, mark FORWARD_FAILED_INSUFFICIENT_RC
-		// — but the forwarded call SUCCEEDED. This is an edge case (the
-		// forwarder shouldn't have been allowed to dispatch without
-		// reasonable HBD reserves), so we ALSO roll back the dispatch
-		// to keep accounting consistent.
-		// Roll back: refund target → sender, leave DASH credit intact.
-		if callFunding > 0 {
-			_ = decInternalBalance("contract:"+targetAddr, "dash", callFunding)
-			_ = incInternalBalance(senderDID, "dash", callFunding)
-		}
-		entry.Status = constants.StatusForwardFailedInsufficientRC
-		saveForwardQueueEntry(txid, entry)
-		return nil
-	}
-
-	// Deduct RC reimbursement from sender's internal HBD.
-	_ = decInternalBalance(senderDID, "hbd", rcReimbursementHBD)
-	// Send native HBD from the mapping contract to the L2 tx submitter
-	// (the IS service that paid the RC). Mapping contract holds native
-	// HBD reserves 1:1-backing the sum of internal HBD balances; each
-	// RC reimbursement debits user internal HBD AND sends native HBD
-	// out — keeping the invariant
-	//
-	//   sum(internal HBD) == contract.native.HBD
-	//
-	// HBD-bearing routes mint internal HBD when native HBD enters the
-	// contract; here we burn internal HBD and send native HBD out.
+	// User's internal HBD was already debited above (pre-check). Now
+	// send the matching native HBD out of the contract's reserves to
+	// the L2 submitter (the IS service that paid the RC). Keeps the
+	// invariant sum(internal HBD) == contract.native.HBD.
 	submitter := sdk.GetEnv().Caller
 	sdk.HiveTransfer(submitter, rcReimbursementHBD, sdk.AssetHbd)
 

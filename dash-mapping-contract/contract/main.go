@@ -369,7 +369,9 @@ func AddAllowedTarget(payload *string) *string {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "target contract id required"))
 	}
 	currentBlock := sdk.GetEnv().BlockHeight
-	mapping.ProposeAllowedTargetAdd(*payload, currentBlock)
+	if err := mapping.ProposeAllowedTargetAdd(*payload, currentBlock); err != nil {
+		ce.CustomAbort(err)
+	}
 	return mapping.StrPtr("0")
 }
 
@@ -420,7 +422,9 @@ func RemoveAllowedTarget(payload *string) *string {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "target contract id required"))
 	}
 	currentBlock := sdk.GetEnv().BlockHeight
-	mapping.ProposeAllowedTargetRemove(*payload, currentBlock)
+	if err := mapping.ProposeAllowedTargetRemove(*payload, currentBlock); err != nil {
+		ce.CustomAbort(err)
+	}
 	return mapping.StrPtr("0")
 }
 

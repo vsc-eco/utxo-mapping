@@ -23,6 +23,8 @@ import (
 	"dash-mapping-contract/contract/constants"
 	"dash-mapping-contract/contract/mapping"
 
+	islock "vsc-node/modules/islock-attestation"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -111,6 +113,46 @@ func TestCanonicalAttestationMessage_DomainSeparationPresent(t *testing.T) {
 func TestCanonicalAttestationMessage_RejectsBadHex(t *testing.T) {
 	_, err := mapping.CanonicalAttestationMessage("vsc-testnet", 1, "not-hex", "op=auth;sid=x")
 	assert.Error(t, err)
+}
+
+// TestCanonicalAttestationMessage_ByteParityWithValidator — regression
+// for the audit's `canonical-message-txid-byte-order-drift`. Given the
+// same (chainId, epoch, rawTxHex, instruction), the contract's
+// CanonicalAttestationMessage and the validator-side
+// islock-attestation.CanonicalSigningMessage must produce IDENTICAL
+// 32-byte digests. Drift = the BLS aggregate never verifies.
+func TestCanonicalAttestationMessage_ByteParityWithValidator(t *testing.T) {
+	chainID := "vsc-testnet"
+	var epoch uint64 = 42
+	rawTxBytes := []byte("a-fake-but-stable-raw-tx-payload-bytes-for-testing")
+	rawTxHex := hex.EncodeToString(rawTxBytes)
+	instruction := "op=auth;sid=parity-test"
+
+	// Contract side: computes from rawTxHex + instruction.
+	contractMsg, err := mapping.CanonicalAttestationMessage(chainID, epoch, rawTxHex, instruction)
+	require.NoError(t, err)
+	require.Len(t, contractMsg, 32)
+
+	// Validator side: re-derives the canonical request the validator
+	// would sign. Wire-form hex is DISPLAY (reverse of internal sha256d).
+	first := sha256.Sum256(rawTxBytes)
+	internal := sha256.Sum256(first[:])
+	displayHash := islock.ReverseBytesCopy(internal[:])
+	instrHash := sha256.Sum256([]byte(instruction))
+
+	req := islock.IsLockAttestationRequest{
+		TxId:               hex.EncodeToString(displayHash), // display = reverse(internal)
+		RawTxHashHex:       hex.EncodeToString(displayHash),
+		InstructionHashHex: hex.EncodeToString(instrHash[:]),
+		Epoch:              epoch,
+		ChainId:            chainID,
+	}
+	validatorMsg, err := islock.CanonicalSigningMessage(req)
+	require.NoError(t, err)
+
+	assert.Equal(t, contractMsg, validatorMsg,
+		"contract and validator MUST produce identical canonical-message digests; "+
+			"drift here breaks every BLS aggregate verification")
 }
 
 // ----- FindOutputAmount + ResolveSenderDashDID -----

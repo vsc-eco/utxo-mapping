@@ -196,9 +196,15 @@ const (
 // contract still credits the IS deposit (no fund loss) but skips the
 // forward dispatch. Defends against the economically-asymmetric
 // RC-exhaustion DoS analysed in §8.3.
+//
+// IMPORTANT (audit `rate-limit-uses-block-height-as-seconds`): the
+// check uses sdk.GetEnv().BlockHeight as a monotonic clock, so the
+// window is counted in BLOCKS, not seconds. At Hive's ~3s block time
+// 600 blocks ≈ 30 min. The constant is named *Blocks* to reflect that.
 const (
-	PerDashDIDRateLimitWindowSec int64 = 600 // 10 min
-	PerDashDIDRateLimitMax       int   = 30  // 30 ops / 10 min
+	// PerDashDIDRateLimitWindowBlocks: ~30 min at Hive's 3s blocks.
+	PerDashDIDRateLimitWindowBlocks uint64 = 600
+	PerDashDIDRateLimitMax          int    = 30 // 30 ops / window
 )
 
 // ForwardQueuePruneAgeBlocks: terminal-state entries older than this
@@ -228,7 +234,19 @@ const DefaultMinAttestations = 1
 const (
 	ValidatorSetEntryDelim = "|"
 	ValidatorSetKVDelim    = "="
+	// ValidatorSetRegisteredAtDelim separates the leading registeredAt
+	// block-height from the rest of the serialized entries. Format:
+	//   "<registeredAt_block>#<did1>=<pk1>|<did2>=<pk2>|..."
+	ValidatorSetRegisteredAtDelim = "#"
 )
+
+// ValidatorSetGraceBlocks bounds how long after epoch (N-1)'s
+// registration the contract will fall back to N-1's set when epoch N is
+// unregistered. ~1h of Hive blocks (3s each). Without this bound,
+// kicked-out validators retain attestation authority forever if the
+// admin delays registering N's set. Audit
+// `validator-set-fallback-uses-stale-set-indefinitely`.
+const ValidatorSetGraceBlocks uint64 = 1200
 
 // AllowListGovernanceKeyPrefix: pending allow-list adds wait
 // AllowListGovernanceTimelockBlocks blocks before they take effect.

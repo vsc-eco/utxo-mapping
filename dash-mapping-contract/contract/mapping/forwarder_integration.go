@@ -270,13 +270,17 @@ func CanonicalAttestationMessage(
 	if err != nil {
 		return nil, ce.NewContractError(ce.ErrInput, "raw tx not hex")
 	}
-	// Dash txid is sha256d(rawTx) (Bitcoin convention).
+	// sha256d (double-SHA-256) — Bitcoin's tx-hashing convention. We use
+	// this for BOTH the txid slot and the rawTxHash slot in the signed
+	// buffer. Earlier versions used single sha256 for rawTxHash, which
+	// silently disagreed with the validator-side wire format and broke
+	// every aggregate BLS verify. Pinned to the internal byte order;
+	// the validator's CanonicalSigningMessage reverses display→internal
+	// before writing to its buffer. See audit finding
+	// `canonical-message-txid-byte-order-drift`.
 	first := sha256.Sum256(rawTxBytes)
-	txidRaw := sha256.Sum256(first[:])
-	// Note: Dash displays txids in little-endian reverse; the raw bytes
-	// here match what validators signed (they use the same big-endian
-	// of sha256d as we do).
-	rawTxHashRaw := sha256.Sum256(rawTxBytes)
+	txidInternal := sha256.Sum256(first[:])
+	rawTxHashInternal := txidInternal // both slots carry sha256d(rawTx)
 	instrHashRaw := sha256.Sum256([]byte(instruction))
 
 	var buf bytes.Buffer
@@ -285,8 +289,8 @@ func CanonicalAttestationMessage(
 	var epochBuf [8]byte
 	binary.BigEndian.PutUint64(epochBuf[:], epoch)
 	buf.Write(epochBuf[:])
-	buf.Write(txidRaw[:])
-	buf.Write(rawTxHashRaw[:])
+	buf.Write(txidInternal[:])
+	buf.Write(rawTxHashInternal[:])
 	buf.Write(instrHashRaw[:])
 
 	digest := sha256.Sum256(buf.Bytes())
@@ -380,7 +384,7 @@ func saveRateLimitState(did string, windowStart uint64, count uint32) {
 // all the sliding window needs.
 func checkAndBumpRateLimit(did string, now uint64) bool {
 	windowStart, count := loadRateLimitState(did)
-	window := uint64(constants.PerDashDIDRateLimitWindowSec)
+	window := constants.PerDashDIDRateLimitWindowBlocks
 	if now-windowStart > window {
 		// New window.
 		saveRateLimitState(did, now, 1)
@@ -478,15 +482,23 @@ func atoi64(s string) (int64, error) {
 // stays the same — only the source-of-truth swaps.
 
 // validatorSetForEpoch returns the {did → pubkeyHex} map registered
-// for the given epoch. Empty map if no admin-registered set.
-func validatorSetForEpoch(epoch uint64) map[string]string {
+// for the given epoch and the block-height at which it was registered.
+// Empty map + 0 if no admin-registered set.
+//
+// Storage format (audit `validator-set-fallback-uses-stale-set-indefinitely`):
+//   "<registeredAt_block>#<did1>=<pk1>|<did2>=<pk2>|..."
+//
+// The leading registeredAt prefix lets verifyAttestationsAgainstValidatorSet
+// bound the epoch-(N-1) fallback to ValidatorSetGraceBlocks.
+func validatorSetForEpoch(epoch uint64) (map[string]string, uint64) {
 	key := constants.ValidatorSetKeyPrefix + strconv.FormatUint(epoch, 10)
 	raw := sdk.StateGetObject(key)
 	if raw == nil || *raw == "" {
-		return nil
+		return nil, 0
 	}
+	registeredAt, entriesStr := parseRegisteredAtPrefix(*raw)
 	out := make(map[string]string)
-	for _, entry := range strings.Split(*raw, constants.ValidatorSetEntryDelim) {
+	for _, entry := range strings.Split(entriesStr, constants.ValidatorSetEntryDelim) {
 		if entry == "" {
 			continue
 		}
@@ -496,13 +508,31 @@ func validatorSetForEpoch(epoch uint64) map[string]string {
 		}
 		out[entry[:i]] = entry[i+1:]
 	}
-	return out
+	return out, registeredAt
+}
+
+// parseRegisteredAtPrefix splits "<block>#rest" → (block, rest). For
+// backward compat with the older format (no '#' prefix) returns (0, raw)
+// — those entries don't get the grace-window fallback (treated as
+// "registered at block 0" which is effectively infinitely stale, so
+// only current-epoch matches survive). New admin writes always include
+// the prefix.
+func parseRegisteredAtPrefix(raw string) (uint64, string) {
+	idx := strings.Index(raw, constants.ValidatorSetRegisteredAtDelim)
+	if idx < 0 {
+		return 0, raw
+	}
+	regAt, err := strconv.ParseUint(raw[:idx], 10, 64)
+	if err != nil {
+		return 0, raw[idx+1:]
+	}
+	return regAt, raw[idx+1:]
 }
 
 // serializeValidatorSet builds the admin-set payload from a {did →
 // pubkeyHex} map. Stable ordering by DID-sorted-ascending so state
-// hashes are deterministic.
-func serializeValidatorSet(set map[string]string) string {
+// hashes are deterministic. Includes the leading registeredAt prefix.
+func serializeValidatorSet(registeredAt uint64, set map[string]string) string {
 	dids := make([]string, 0, len(set))
 	for did := range set {
 		dids = append(dids, did)
@@ -514,6 +544,8 @@ func serializeValidatorSet(set map[string]string) string {
 		}
 	}
 	var b strings.Builder
+	b.WriteString(strconv.FormatUint(registeredAt, 10))
+	b.WriteString(constants.ValidatorSetRegisteredAtDelim)
 	for i, did := range dids {
 		if i > 0 {
 			b.WriteString(constants.ValidatorSetEntryDelim)
@@ -526,14 +558,18 @@ func serializeValidatorSet(set map[string]string) string {
 }
 
 // SaveValidatorSetForEpoch persists the admin-supplied set under the
-// epoch's state key. Public for use by main.go's setValidatorSet entry.
+// epoch's state key. Stamps registeredAt with the current block height
+// so the grace-window fallback can bound how long this set remains
+// authoritative for the NEXT epoch. Public for use by main.go's
+// setValidatorSet entry.
 func SaveValidatorSetForEpoch(epoch uint64, didToPubkey map[string]string) {
 	key := constants.ValidatorSetKeyPrefix + strconv.FormatUint(epoch, 10)
 	if len(didToPubkey) == 0 {
 		sdk.StateDeleteObject(key)
 		return
 	}
-	sdk.StateSetObject(key, serializeValidatorSet(didToPubkey))
+	registeredAt := sdk.GetEnv().BlockHeight
+	sdk.StateSetObject(key, serializeValidatorSet(registeredAt, didToPubkey))
 }
 
 // ParseValidatorSetPayload parses the admin call payload format:
@@ -609,21 +645,35 @@ func SaveMinAttestations(n int) error {
 // match the registered one for the claimed DID, or the validator set
 // is empty.
 //
-// Epoch falls back to the previous epoch's set if no set exists for
-// the request's epoch — accommodates the validator-set rotation grace
-// window where attestations may be signed during an epoch transition.
+// Epoch falls back to the previous epoch's set ONLY when:
+//   (a) no set is registered for the requested epoch
+//   (b) the previous epoch's set was registered within
+//       ValidatorSetGraceBlocks of the current block height
+// This bounds how long a kicked-out validator retains attestation
+// authority after rotation — without the bound, an admin delay
+// silently re-empowers the old set forever. Audit
+// `validator-set-fallback-uses-stale-set-indefinitely`.
 func verifyAttestationsAgainstValidatorSet(
 	attestations []ValidatorAttestation,
 	epoch uint64,
 ) (int, error) {
-	set := validatorSetForEpoch(epoch)
+	set, _ := validatorSetForEpoch(epoch)
 	if len(set) == 0 && epoch > 0 {
-		// Grace window: fall back to previous epoch.
-		set = validatorSetForEpoch(epoch - 1)
+		prevSet, prevRegisteredAt := validatorSetForEpoch(epoch - 1)
+		if len(prevSet) > 0 {
+			currentBlock := sdk.GetEnv().BlockHeight
+			// Reject the fallback if either:
+			//   - prevRegisteredAt is 0 (legacy / pre-grace-format entry)
+			//   - the bound has elapsed
+			if prevRegisteredAt > 0 && currentBlock-prevRegisteredAt <= constants.ValidatorSetGraceBlocks {
+				set = prevSet
+			}
+		}
 	}
 	if len(set) == 0 {
 		return 0, ce.NewContractError(ce.ErrNoPermission,
-			"no validator set registered for epoch "+strconv.FormatUint(epoch, 10))
+			"no validator set registered for epoch "+strconv.FormatUint(epoch, 10)+
+				" (and previous-epoch grace window expired or unavailable)")
 	}
 
 	count := 0
@@ -653,12 +703,30 @@ func verifyAttestationsAgainstValidatorSet(
 
 // ProposeAllowedTargetAdd schedules an add at the current block height +
 // timelock. Caller (main.go) gates by admin check.
-func ProposeAllowedTargetAdd(targetId string, currentBlock uint64) {
+//
+// Refuses if the target is already in the active allow-list, if a
+// pending-add already exists (would silently extend the timelock —
+// audit `propose-allowed-target-no-pending-conflict-check`), or if a
+// conflicting pending-remove exists for the same target.
+func ProposeAllowedTargetAdd(targetId string, currentBlock uint64) error {
+	if isTargetAllowed(targetId) {
+		return ce.NewContractError(ce.ErrInput,
+			"target "+targetId+" is already in the allow-list")
+	}
+	if existing := sdk.StateGetObject(constants.PendingAllowedTargetAddKeyPrefix + targetId); existing != nil && *existing != "" {
+		return ce.NewContractError(ce.ErrInput,
+			"target "+targetId+" already has a pending add (cancel first)")
+	}
+	if existing := sdk.StateGetObject(constants.PendingAllowedTargetRemoveKeyPrefix + targetId); existing != nil && *existing != "" {
+		return ce.NewContractError(ce.ErrInput,
+			"target "+targetId+" has a conflicting pending remove (cancel it first)")
+	}
 	unlock := currentBlock + constants.AllowListGovernanceTimelockBlocks
 	sdk.StateSetObject(
 		constants.PendingAllowedTargetAddKeyPrefix+targetId,
 		strconv.FormatUint(unlock, 10),
 	)
+	return nil
 }
 
 // CommitAllowedTarget promotes a pending add to the active allow-list
@@ -688,12 +756,27 @@ func CommitAllowedTarget(targetId string, currentBlock uint64) (bool, uint64, er
 // move so adversaries can't censor a target by getting it removed
 // faster than the community can react.
 // ProposeAllowedTargetRemove schedules a remove at currentBlock + timelock.
-func ProposeAllowedTargetRemove(targetId string, currentBlock uint64) {
+// Refuses if the target isn't on the allow-list, if a pending-remove
+// already exists, or if a pending-add for the same target exists.
+func ProposeAllowedTargetRemove(targetId string, currentBlock uint64) error {
+	if !isTargetAllowed(targetId) {
+		return ce.NewContractError(ce.ErrInput,
+			"target "+targetId+" is not on the allow-list")
+	}
+	if existing := sdk.StateGetObject(constants.PendingAllowedTargetRemoveKeyPrefix + targetId); existing != nil && *existing != "" {
+		return ce.NewContractError(ce.ErrInput,
+			"target "+targetId+" already has a pending remove (cancel first)")
+	}
+	if existing := sdk.StateGetObject(constants.PendingAllowedTargetAddKeyPrefix + targetId); existing != nil && *existing != "" {
+		return ce.NewContractError(ce.ErrInput,
+			"target "+targetId+" has a conflicting pending add (cancel it first)")
+	}
 	unlock := currentBlock + constants.AllowListGovernanceTimelockBlocks
 	sdk.StateSetObject(
 		constants.PendingAllowedTargetRemoveKeyPrefix+targetId,
 		strconv.FormatUint(unlock, 10),
 	)
+	return nil
 }
 
 // CommitAllowedTargetRemove finalises a pending removal once timelock elapsed.
