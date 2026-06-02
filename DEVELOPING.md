@@ -102,6 +102,23 @@ wasm fails with `wasm_init_error: failed to register wasm buffer: unknown import
 Production CI uses the stable `replace vsc-node => github.com/vsc-eco/go-vsc-node v0.0.0-...` directive and
 does NOT use `go.work`. Bump the replace target when promoting the upstream changes from develop to main.
 
+### Cross-repo parity tests
+
+Tests that import `vsc-node/modules/islock-attestation` (currently only
+`parity_cross_repo_test.go`) require a `go.work` pointing at a local
+go-vsc-node-develop checkout that includes the islock-attestation
+module — the upstream `replace` target predates it. These tests are
+behind the `cross_repo` build tag so the default suite compiles without
+go.work. Run them as:
+
+```bash
+go test -tags cross_repo ./tests/current/...
+```
+
+Round-3 audit OP-001 introduced this split — the previous default-tag
+inclusion made the entire pure-Go suite fail to compile under
+documented CI mode.
+
 ## Known test-coverage gaps
 
 Round-2 audit TC2-09 identified that `dispatchForward` (the C4 fix path with 6 sequenced

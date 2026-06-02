@@ -461,6 +461,24 @@ func CancelAllowedTargetRemove(payload *string) *string {
 	return mapping.StrPtr("0")
 }
 
+// SetValidatorSet — admin action. Payload format:
+//
+//	<epoch>;<did1>=<pubkey1>=<pop1>|<did2>=<pubkey2>=<pop2>|...
+//
+// Per-validator PoP (proof-of-possession) is mandatory (audit R3-001) —
+// the contract verifies each (pubkey, pop) pair via sdk.VerifyBls
+// against the canonical BLS-PoP message:
+//
+//	"VSC-BLS-POP-v1" || pubkey_bytes || did_bytes
+//
+// matching lib/dids/bls.go's GenerateBlsPoP / VerifyBlsPoP. Without
+// PoP, the aggregate verifier is exposed to a rogue-key attack once
+// QuorumThreshold rises above 1.
+//
+// Validator-side admin tools can produce the PoP via dids.GenerateBlsPoP
+// and hex-encode the resulting base64 bytes for inclusion in the
+// payload.
+//
 // SetValidatorSet — admin action to record the {validator DID →
 // pubkey hex} list for an epoch. Payload format:
 //
@@ -476,11 +494,13 @@ func SetValidatorSet(payload *string) *string {
 	if payload == nil || *payload == "" {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "validator-set payload required"))
 	}
-	epoch, set, err := mapping.ParseValidatorSetPayload(*payload)
+	epoch, set, pops, err := mapping.ParseValidatorSetPayload(*payload)
 	if err != nil {
 		ce.CustomAbort(err)
 	}
-	mapping.SaveValidatorSetForEpoch(epoch, set)
+	if err := mapping.SaveValidatorSetForEpoch(epoch, set, pops); err != nil {
+		ce.CustomAbort(err)
+	}
 	return mapping.StrPtr("0")
 }
 

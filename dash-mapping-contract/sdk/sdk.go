@@ -202,6 +202,30 @@ func VerifyBlsAggregate(pubkeysConcat string, msgHex string, aggSigHex string) b
 	return *r == "true"
 }
 
+// CryptoBlsVerify verifies a single-pubkey BLS12-381 signature. Wraps
+// the crypto.bls_verify host function. Used by the dash-mapping-contract
+// for per-validator Proof-of-Possession at validator-set registration
+// (audit R3-001 — closes the rogue-key aggregate-forgery hole).
+//
+// pubkeyHex:  hex-encoded 48-byte compressed G1 pubkey (96 chars).
+// msgHex:     hex-encoded arbitrary-length message bytes.
+// sigHex:     hex-encoded 96-byte compressed G2 signature.
+//
+// Returns "true" / "false" — distinct from nil for host-level error.
+func CryptoBlsVerify(pubkeyHex string, msgHex string, sigHex string) *string {
+	return cryptoBlsVerify(&pubkeyHex, &msgHex, &sigHex)
+}
+
+// VerifyBls is the bool-returning convenience wrapper around
+// CryptoBlsVerify. Returns false on malformed inputs.
+func VerifyBls(pubkeyHex string, msgHex string, sigHex string) bool {
+	r := CryptoBlsVerify(pubkeyHex, msgHex, sigHex)
+	if r == nil {
+		return false
+	}
+	return *r == "true"
+}
+
 func TssCreateKey(keyId string, algo string, epochs uint64) string {
 	if algo != "ecdsa" && algo != "eddsa" {
 		Abort("algo must be ecdsa or eddsa")

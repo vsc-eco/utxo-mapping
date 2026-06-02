@@ -569,60 +569,110 @@ func serializeValidatorSet(registeredAt uint64, set map[string]string) string {
 }
 
 // SaveValidatorSetForEpoch persists the admin-supplied set under the
-// epoch's state key. Stamps registeredAt with the current block height
-// so the grace-window fallback can bound how long this set remains
-// authoritative for the NEXT epoch. Public for use by main.go's
-// setValidatorSet entry.
-func SaveValidatorSetForEpoch(epoch uint64, didToPubkey map[string]string) {
+// epoch's state key after verifying each entry's PoP. Stamps
+// registeredAt with the current block height so the grace-window
+// fallback can bound how long this set remains authoritative for the
+// NEXT epoch.
+//
+// Audit R3-001: per-entry PoP verification closes the rogue-key
+// aggregate-forgery hole — without it a rogue validator can register
+// pk_attacker = pk_known − Σ(other_pks) and sign aggregates that
+// "verify" as if the entire quorum signed.
+func SaveValidatorSetForEpoch(epoch uint64, didToPubkey, didToPoP map[string]string) error {
 	key := constants.ValidatorSetKeyPrefix + strconv.FormatUint(epoch, 10)
 	if len(didToPubkey) == 0 {
 		sdk.StateDeleteObject(key)
-		return
+		return nil
+	}
+	// Per-DID PoP verify. Message MUST match lib/dids/bls.go's
+	// blsPoPMessage: blsPoPDomain || pubkey || did.
+	for did, pk := range didToPubkey {
+		pop, ok := didToPoP[did]
+		if !ok {
+			return ce.NewContractError(ce.ErrInput,
+				"PoP missing for validator "+did)
+		}
+		pkBytes, perr := hex.DecodeString(pk)
+		if perr != nil || len(pkBytes) != 48 {
+			return ce.NewContractError(ce.ErrInput,
+				"pubkey decode failed for "+did)
+		}
+		var msgBuf bytes.Buffer
+		msgBuf.WriteString(blsPoPDomain)
+		msgBuf.Write(pkBytes)
+		msgBuf.WriteString(did)
+		msgHex := hex.EncodeToString(msgBuf.Bytes())
+		if !sdk.VerifyBls(pk, msgHex, pop) {
+			return ce.NewContractError(ce.ErrNoPermission,
+				"BLS PoP failed to verify for validator "+did)
+		}
 	}
 	registeredAt := sdk.GetEnv().BlockHeight
 	sdk.StateSetObject(key, serializeValidatorSet(registeredAt, didToPubkey))
+	return nil
 }
+
+// blsPoPDomain MUST match lib/dids/bls.go's blsPoPDomain constant —
+// drift would let a witness PoP generated under one domain be replayed
+// for registration in the contract. The contract recomputes the PoP
+// message and verifies via sdk.VerifyBls. Audit R3-001.
+const blsPoPDomain = "VSC-BLS-POP-v1"
 
 // ParseValidatorSetPayload parses the admin call payload format:
 //
-//	<did1>=<pubkey1>|<did2>=<pubkey2>|...
+//	<did1>=<pubkey1>=<pop1>|<did2>=<pubkey2>=<pop2>|...
+//
+// The PoP (proof-of-possession) is a 96-byte BLS signature, hex-encoded
+// (192 chars), produced by the validator under blsPoPDomain || pubkey
+// || did. The audit found that without PoP at registration the
+// aggregate verifier is open to a rogue-key attack once QuorumThreshold
+// rises above 1 (R3-001).
 //
 // Returns the parsed map plus the requested epoch. Payload is the
-// concatenation: "<epoch>;<entries>".
-func ParseValidatorSetPayload(payload string) (uint64, map[string]string, error) {
+// concatenation: "<epoch>;<entries>". PoP verification runs in
+// SaveValidatorSetForEpoch (it needs sdk.VerifyBls).
+func ParseValidatorSetPayload(payload string) (uint64, map[string]string, map[string]string, error) {
 	semi := strings.Index(payload, ";")
 	if semi < 0 {
-		return 0, nil, ce.NewContractError(ce.ErrInput,
+		return 0, nil, nil, ce.NewContractError(ce.ErrInput,
 			"validator-set payload expects '<epoch>;<entries>'")
 	}
 	epoch, err := strconv.ParseUint(payload[:semi], 10, 64)
 	if err != nil {
-		return 0, nil, ce.NewContractError(ce.ErrInput, "invalid epoch: "+payload[:semi])
+		return 0, nil, nil, ce.NewContractError(ce.ErrInput, "invalid epoch: "+payload[:semi])
 	}
 	entries := strings.Split(payload[semi+1:], constants.ValidatorSetEntryDelim)
-	out := make(map[string]string, len(entries))
+	pubkeys := make(map[string]string, len(entries))
+	pops := make(map[string]string, len(entries))
 	for _, e := range entries {
 		if e == "" {
 			continue
 		}
-		i := strings.Index(e, constants.ValidatorSetKVDelim)
-		if i < 0 {
-			return 0, nil, ce.NewContractError(ce.ErrInput,
-				"validator-set entry missing '=': "+e)
+		// Each entry is now did=pubkey=pop (three fields delimited by '=').
+		// Use SplitN(3) so a hex string can't smuggle '=' (it can't anyway
+		// since hex is 0-9a-f, but SplitN is defensive).
+		parts := strings.SplitN(e, constants.ValidatorSetKVDelim, 3)
+		if len(parts) != 3 {
+			return 0, nil, nil, ce.NewContractError(ce.ErrInput,
+				"validator-set entry expects '<did>=<pubkey>=<pop>': "+e)
 		}
-		did := e[:i]
-		pk := e[i+1:]
-		if did == "" || pk == "" {
-			return 0, nil, ce.NewContractError(ce.ErrInput,
-				"validator-set entry has empty did or pubkey")
+		did, pk, pop := parts[0], parts[1], parts[2]
+		if did == "" || pk == "" || pop == "" {
+			return 0, nil, nil, ce.NewContractError(ce.ErrInput,
+				"validator-set entry has empty did, pubkey, or pop")
 		}
 		if len(pk) != 96 {
-			return 0, nil, ce.NewContractError(ce.ErrInput,
+			return 0, nil, nil, ce.NewContractError(ce.ErrInput,
 				"pubkey must be 48 bytes (96 hex chars), got "+pk)
 		}
-		out[did] = pk
+		if len(pop) != 192 {
+			return 0, nil, nil, ce.NewContractError(ce.ErrInput,
+				"pop must be 96 bytes (192 hex chars), got "+pop)
+		}
+		pubkeys[did] = pk
+		pops[did] = pop
 	}
-	return epoch, out, nil
+	return epoch, pubkeys, pops, nil
 }
 
 // minAttestationsRequired reads the admin-configured quorum threshold.

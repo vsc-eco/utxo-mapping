@@ -64,6 +64,11 @@ func cryptoBlsVerifyAggregate(pubkeysConcat *string, msgHex *string, aggSigHex *
 	return nil
 }
 
+//go:wasmimport sdk crypto.bls_verify
+func cryptoBlsVerify(pubkeyHex *string, msgHex *string, sigHex *string) *string {
+	return nil
+}
+
 //go:wasmimport sdk tss_v2.create_key
 func tssCreateKey(keyId *string, algo *string, epochs *string) *string { return nil }
 
