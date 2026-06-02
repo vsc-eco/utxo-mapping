@@ -172,6 +172,34 @@ Round-5 / round-6 operator-tunable flags on `cmd/is-service`:
 
 The full operator list is also visible via `is-service -help`.
 
+### Readiness behaviour
+
+Round-7 audit R7-OP-01-readiness flipped `/healthz` to return **503**
+during the submitter monitor's warmup window (typically <5s after
+process start, unbounded if the L2 GraphQL endpoint is unreachable).
+This intentionally gates the pod's readiness until the L2 probe has
+succeeded at least once.
+
+Operational implications:
+
+1. `/healthz` returns **503** during warmup with `submitterWarmup: true`
+   in the JSON body. The keys `submitterBalanceHbdCents` and
+   `submitterRcRemaining` are **OMITTED** (not zero) — metric scrapers
+   alerting on `rc<=0` must treat absent keys as "data not yet
+   available", not as "submitter exhausted".
+2. K8s default readinessProbe (`failureThreshold=3, periodSeconds=10`)
+   extends pod ready-time by ~30s vs. pre-R7 behaviour. Recommended:
+   `failureThreshold=5, periodSeconds=2` to bring pods back online
+   within ~10s of probe-success.
+3. The discriminator key is `submitterWarmup`. Alerting tools should
+   gate on `submitterWarmup != true` before raising on `submitterDegraded`
+   or absent funding keys.
+
+After the first successful probe, `/healthz` returns 200 with the full
+field set. The `submitterDegraded` flag flips only after
+`submitterDegradedFailThreshold = 3` consecutive probe failures
+(round-6 R6-CORR-02 hysteresis).
+
 ### Monitoring signal: `roster divergence`
 
 Round-5 audit R5-ADV-01 / round-6 R6-OP-01 added a structured
