@@ -120,3 +120,88 @@ const (
 func IsTestnet(networkName string) bool {
 	return networkName == Testnet || networkName == Regtest
 }
+
+// ---------------------------------------------------------------------------
+// Dash InstantSend login feature (workstream 5)
+//
+// Per spec §5.2.3, the dash-mapping-contract gains a forwardQueue state map
+// and an allowedTargets registry to support the trusted-forwarder pattern.
+// These constants are the keys; the actual state mutations + new
+// mapInstantSend action are added in mapping/op_call.go (TODO).
+//
+// The dash-forwarder-contract (workstream 6) reads forwardQueue[txid] via
+// contracts.read using exactly these prefixes — keep them in sync.
+// ---------------------------------------------------------------------------
+
+// ForwardQueueKeyPrefix: forwardQueue["fq/<txid>"] holds the pending /
+// in-flight / done forward record. Value format is v1 pipe-delimited:
+//
+//	sender|instruction|callFunding|status
+//
+// (Will switch to tinyjson once the schema settles.)
+const ForwardQueueKeyPrefix = "fq" + DirPathDelimiter
+
+// AllowedTargetsKeyPrefix: allowedTargets["at/<contract-id>"] = "1" if
+// the contract may be invoked via the forwarder. Empty / missing = not
+// allowed. Per spec §5.2.7, the v1 list contains exactly one entry (the
+// magi-dex router); additions go through governance with a 7-day timelock.
+const AllowedTargetsKeyPrefix = "at" + DirPathDelimiter
+
+// ForwarderContractIdStateKey holds the canonical
+// dash-forwarder-contract id this mapping trusts. Set once at deploy via
+// an admin action, then immutable. Required before any op=call IS
+// payments will be accepted.
+const ForwarderContractIdStateKey = "forwarder"
+
+// ForwardQueue status values. Plain strings rather than ints for
+// debuggability — operators inspecting state can read these directly.
+const (
+	StatusPendingForward = "PENDING_FORWARD"
+	StatusForwarded      = "FORWARDED"
+	StatusForwardFailed  = "FORWARD_FAILED"
+	// StatusForwardFailedInsufficientRC: forwarder call succeeded but the
+	// post-call RC reimbursement step couldn't extract enough HBD. See
+	// spec §5.2.3 step 9. Credit is preserved; user keeps their DASH.
+	StatusForwardFailedInsufficientRC = "FORWARD_FAILED_INSUFFICIENT_RC"
+)
+
+// Op grammar tokens used by mapInstantSend's instruction parser. Must
+// match dash-forwarder-contract/contract/constants — drift breaks the
+// per-op-unique-address property of the system.
+const (
+	InstructionOpKey       = "op"
+	InstructionContractKey = "contract"
+	InstructionMethodKey   = "method"
+	InstructionArgsKey     = "args"
+	InstructionSidKey      = "sid"
+	InstructionAmountKey   = "amount"
+
+	OpAuthValue = "auth"
+	OpCallValue = "call"
+
+	InstructionFieldDelimiter = ";"
+	InstructionKVDelimiter    = "="
+)
+
+// MinDustDuffs / MinCallFundingDuffs are the per-op amount floors. Spec
+// §5.2.7. MinCallFundingDuffs applies only to value-bearing op=call
+// (amount > 0); value-less calls fall under MinDustDuffs.
+const (
+	MinDustDuffs        int64 = 10_000    // 0.0001 DASH
+	MinCallFundingDuffs int64 = 1_000_000 // 0.01 DASH
+)
+
+// PerDashDIDRateLimitWindow and PerDashDIDRateLimitMax bound spam per
+// authenticated user identity. Spec §5.2.7 — over the limit, the
+// contract still credits the IS deposit (no fund loss) but skips the
+// forward dispatch. Defends against the economically-asymmetric
+// RC-exhaustion DoS analysed in §8.3.
+const (
+	PerDashDIDRateLimitWindowSec int64 = 600 // 10 min
+	PerDashDIDRateLimitMax       int   = 30  // 30 ops / 10 min
+)
+
+// ForwardQueuePruneAgeBlocks: terminal-state entries older than this
+// are eligible for pruning. ~3 days at Hive's 3-second block time.
+// PENDING_FORWARD entries are never auto-pruned (in-flight work).
+const ForwardQueuePruneAgeBlocks uint64 = 86_400
