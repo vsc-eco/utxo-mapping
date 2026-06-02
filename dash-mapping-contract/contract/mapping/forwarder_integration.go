@@ -467,3 +467,262 @@ func atoi64(s string) (int64, error) {
 	}
 	return n, nil
 }
+
+// ----- Validator-set-at-epoch lookup -----
+//
+// The contract's per-epoch validator set is admin-maintained for v1:
+// the admin (or oracle) calls setValidatorSet at epoch turn with the
+// pipe-delimited list of "<did>=<pubkey_hex>" entries. Once a
+// production witness-state-read host fn exists, this gets swapped to
+// read elections state directly. The on-disk format and check below
+// stays the same — only the source-of-truth swaps.
+
+// validatorSetForEpoch returns the {did → pubkeyHex} map registered
+// for the given epoch. Empty map if no admin-registered set.
+func validatorSetForEpoch(epoch uint64) map[string]string {
+	key := constants.ValidatorSetKeyPrefix + strconv.FormatUint(epoch, 10)
+	raw := sdk.StateGetObject(key)
+	if raw == nil || *raw == "" {
+		return nil
+	}
+	out := make(map[string]string)
+	for _, entry := range strings.Split(*raw, constants.ValidatorSetEntryDelim) {
+		if entry == "" {
+			continue
+		}
+		i := strings.Index(entry, constants.ValidatorSetKVDelim)
+		if i < 0 {
+			continue
+		}
+		out[entry[:i]] = entry[i+1:]
+	}
+	return out
+}
+
+// serializeValidatorSet builds the admin-set payload from a {did →
+// pubkeyHex} map. Stable ordering by DID-sorted-ascending so state
+// hashes are deterministic.
+func serializeValidatorSet(set map[string]string) string {
+	dids := make([]string, 0, len(set))
+	for did := range set {
+		dids = append(dids, did)
+	}
+	// Insertion sort is fine — validator set is bounded by tens at most.
+	for i := 1; i < len(dids); i++ {
+		for j := i; j > 0 && dids[j-1] > dids[j]; j-- {
+			dids[j-1], dids[j] = dids[j], dids[j-1]
+		}
+	}
+	var b strings.Builder
+	for i, did := range dids {
+		if i > 0 {
+			b.WriteString(constants.ValidatorSetEntryDelim)
+		}
+		b.WriteString(did)
+		b.WriteString(constants.ValidatorSetKVDelim)
+		b.WriteString(set[did])
+	}
+	return b.String()
+}
+
+// SaveValidatorSetForEpoch persists the admin-supplied set under the
+// epoch's state key. Public for use by main.go's setValidatorSet entry.
+func SaveValidatorSetForEpoch(epoch uint64, didToPubkey map[string]string) {
+	key := constants.ValidatorSetKeyPrefix + strconv.FormatUint(epoch, 10)
+	if len(didToPubkey) == 0 {
+		sdk.StateDeleteObject(key)
+		return
+	}
+	sdk.StateSetObject(key, serializeValidatorSet(didToPubkey))
+}
+
+// ParseValidatorSetPayload parses the admin call payload format:
+//
+//	<did1>=<pubkey1>|<did2>=<pubkey2>|...
+//
+// Returns the parsed map plus the requested epoch. Payload is the
+// concatenation: "<epoch>;<entries>".
+func ParseValidatorSetPayload(payload string) (uint64, map[string]string, error) {
+	semi := strings.Index(payload, ";")
+	if semi < 0 {
+		return 0, nil, ce.NewContractError(ce.ErrInput,
+			"validator-set payload expects '<epoch>;<entries>'")
+	}
+	epoch, err := strconv.ParseUint(payload[:semi], 10, 64)
+	if err != nil {
+		return 0, nil, ce.NewContractError(ce.ErrInput, "invalid epoch: "+payload[:semi])
+	}
+	entries := strings.Split(payload[semi+1:], constants.ValidatorSetEntryDelim)
+	out := make(map[string]string, len(entries))
+	for _, e := range entries {
+		if e == "" {
+			continue
+		}
+		i := strings.Index(e, constants.ValidatorSetKVDelim)
+		if i < 0 {
+			return 0, nil, ce.NewContractError(ce.ErrInput,
+				"validator-set entry missing '=': "+e)
+		}
+		did := e[:i]
+		pk := e[i+1:]
+		if did == "" || pk == "" {
+			return 0, nil, ce.NewContractError(ce.ErrInput,
+				"validator-set entry has empty did or pubkey")
+		}
+		if len(pk) != 96 {
+			return 0, nil, ce.NewContractError(ce.ErrInput,
+				"pubkey must be 48 bytes (96 hex chars), got "+pk)
+		}
+		out[did] = pk
+	}
+	return epoch, out, nil
+}
+
+// minAttestationsRequired reads the admin-configured quorum threshold.
+// Defaults to DefaultMinAttestations when unset.
+func minAttestationsRequired() int {
+	raw := sdk.StateGetObject(constants.MinAttestationsKeyStateKey)
+	if raw == nil || *raw == "" {
+		return constants.DefaultMinAttestations
+	}
+	n, err := strconv.Atoi(*raw)
+	if err != nil || n < 1 {
+		return constants.DefaultMinAttestations
+	}
+	return n
+}
+
+// SaveMinAttestations persists the admin-supplied quorum threshold.
+// Public for use by main.go's setMinAttestations entry.
+func SaveMinAttestations(n int) error {
+	if n < 1 {
+		return ce.NewContractError(ce.ErrInput, "minAttestations must be >= 1")
+	}
+	sdk.StateSetObject(constants.MinAttestationsKeyStateKey, strconv.Itoa(n))
+	return nil
+}
+
+// verifyAttestationsAgainstValidatorSet enforces that every attestation
+// in body.Attestations belongs to the registered validator set at
+// body.Epoch. Returns (count of recognised attesters, nil) on success,
+// or (0, error) if any pubkey isn't in the set, the pubkey doesn't
+// match the registered one for the claimed DID, or the validator set
+// is empty.
+//
+// Epoch falls back to the previous epoch's set if no set exists for
+// the request's epoch — accommodates the validator-set rotation grace
+// window where attestations may be signed during an epoch transition.
+func verifyAttestationsAgainstValidatorSet(
+	attestations []ValidatorAttestation,
+	epoch uint64,
+) (int, error) {
+	set := validatorSetForEpoch(epoch)
+	if len(set) == 0 && epoch > 0 {
+		// Grace window: fall back to previous epoch.
+		set = validatorSetForEpoch(epoch - 1)
+	}
+	if len(set) == 0 {
+		return 0, ce.NewContractError(ce.ErrNoPermission,
+			"no validator set registered for epoch "+strconv.FormatUint(epoch, 10))
+	}
+
+	count := 0
+	seen := make(map[string]struct{}, len(attestations))
+	for _, a := range attestations {
+		if _, dup := seen[a.ValidatorDID]; dup {
+			return 0, ce.NewContractError(ce.ErrInput,
+				"duplicate attestation from "+a.ValidatorDID)
+		}
+		registered, ok := set[a.ValidatorDID]
+		if !ok {
+			return 0, ce.NewContractError(ce.ErrNoPermission,
+				"attestation from non-registered validator: "+a.ValidatorDID)
+		}
+		if registered != a.PubkeyHex {
+			return 0, ce.NewContractError(ce.ErrNoPermission,
+				"attestation pubkey mismatch for "+a.ValidatorDID+
+					": expected "+registered+", got "+a.PubkeyHex)
+		}
+		seen[a.ValidatorDID] = struct{}{}
+		count++
+	}
+	return count, nil
+}
+
+// ----- Allow-list governance timelock -----
+
+// ProposeAllowedTargetAdd schedules an add at the current block height +
+// timelock. Caller (main.go) gates by admin check.
+func ProposeAllowedTargetAdd(targetId string, currentBlock uint64) {
+	unlock := currentBlock + constants.AllowListGovernanceTimelockBlocks
+	sdk.StateSetObject(
+		constants.PendingAllowedTargetAddKeyPrefix+targetId,
+		strconv.FormatUint(unlock, 10),
+	)
+}
+
+// CommitAllowedTarget promotes a pending add to the active allow-list
+// if the timelock has elapsed. Returns (didCommit, unlockBlock, err).
+func CommitAllowedTarget(targetId string, currentBlock uint64) (bool, uint64, error) {
+	raw := sdk.StateGetObject(constants.PendingAllowedTargetAddKeyPrefix + targetId)
+	if raw == nil || *raw == "" {
+		return false, 0, ce.NewContractError(ce.ErrInput,
+			"no pending add for target "+targetId)
+	}
+	unlock, err := strconv.ParseUint(*raw, 10, 64)
+	if err != nil {
+		return false, 0, ce.NewContractError(ce.ErrInput,
+			"pending add unlock corrupted: "+*raw)
+	}
+	if currentBlock < unlock {
+		return false, unlock, nil
+	}
+	sdk.StateSetObject(constants.AllowedTargetsKeyPrefix+targetId, "1")
+	sdk.StateDeleteObject(constants.PendingAllowedTargetAddKeyPrefix + targetId)
+	return true, unlock, nil
+}
+
+// proposeAllowedTargetRemove + commitAllowedTargetRemove mirror the add
+// flow. Symmetric so additions and revocations have the same
+// transparency window — the spec calls this out as a defense-in-depth
+// move so adversaries can't censor a target by getting it removed
+// faster than the community can react.
+// ProposeAllowedTargetRemove schedules a remove at currentBlock + timelock.
+func ProposeAllowedTargetRemove(targetId string, currentBlock uint64) {
+	unlock := currentBlock + constants.AllowListGovernanceTimelockBlocks
+	sdk.StateSetObject(
+		constants.PendingAllowedTargetRemoveKeyPrefix+targetId,
+		strconv.FormatUint(unlock, 10),
+	)
+}
+
+// CommitAllowedTargetRemove finalises a pending removal once timelock elapsed.
+func CommitAllowedTargetRemove(targetId string, currentBlock uint64) (bool, uint64, error) {
+	raw := sdk.StateGetObject(constants.PendingAllowedTargetRemoveKeyPrefix + targetId)
+	if raw == nil || *raw == "" {
+		return false, 0, ce.NewContractError(ce.ErrInput,
+			"no pending remove for target "+targetId)
+	}
+	unlock, err := strconv.ParseUint(*raw, 10, 64)
+	if err != nil {
+		return false, 0, ce.NewContractError(ce.ErrInput,
+			"pending remove unlock corrupted: "+*raw)
+	}
+	if currentBlock < unlock {
+		return false, unlock, nil
+	}
+	sdk.StateDeleteObject(constants.AllowedTargetsKeyPrefix + targetId)
+	sdk.StateDeleteObject(constants.PendingAllowedTargetRemoveKeyPrefix + targetId)
+	return true, unlock, nil
+}
+
+// CancelPendingAllowedTargetAdd / Remove let admin abort a proposal
+// inside the timelock window. Symmetric for both directions.
+func CancelPendingAllowedTargetAdd(targetId string) {
+	sdk.StateDeleteObject(constants.PendingAllowedTargetAddKeyPrefix + targetId)
+}
+
+// CancelPendingAllowedTargetRemove deletes a pending remove proposal.
+func CancelPendingAllowedTargetRemove(targetId string) {
+	sdk.StateDeleteObject(constants.PendingAllowedTargetRemoveKeyPrefix + targetId)
+}

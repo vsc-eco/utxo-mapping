@@ -77,20 +77,34 @@ func (ms *MappingState) HandleMapInstantSendV2(params MapInstantSendV2ParamsFull
 	if len(body.Attestations) == 0 {
 		return ce.NewContractError(ce.ErrInput, "no attestations provided")
 	}
+
+	// Validator-set membership check: every attesting DID must be in
+	// the registered validator set at body.Epoch (with a one-epoch
+	// grace window for rotations — see verifyAttestationsAgainstValidatorSet).
+	// Pubkeys in the attestation MUST match the registered pubkey for
+	// the same DID, defending against an aggregator that provides a
+	// stale-but-valid signature against an unrelated pubkey.
+	recognised, err := verifyAttestationsAgainstValidatorSet(body.Attestations, body.Epoch)
+	if err != nil {
+		return ce.Prepend(err, "validator-set check failed")
+	}
+
+	// N-of-M quorum check. Threshold is admin-configurable via
+	// setMinAttestations. Default 1 (devnet bring-up); production
+	// raises to 2M/3+1 of the active set.
+	threshold := minAttestationsRequired()
+	if recognised < threshold {
+		return ce.NewContractError(ce.ErrNoPermission,
+			"attestation quorum not met: have "+strconv.Itoa(recognised)+
+				", need "+strconv.Itoa(threshold))
+	}
+
 	var pubkeysHexBuilder []byte
 	for _, a := range body.Attestations {
 		if len(a.PubkeyHex) != 96 {
 			return ce.NewContractError(ce.ErrInput,
 				"validator pubkey must be 48 bytes (96 hex chars), got "+a.PubkeyHex)
 		}
-		// TODO: confirm each ValidatorDID is in the validator set at body.Epoch.
-		// Requires either a host function to read elections state, or a
-		// dedicated read-validator-set system call. For now the BLS
-		// signature itself is the sole gate — if a validator's pubkey
-		// isn't in the active set, the aggregate verify still passes
-		// (because the math doesn't know), so a malicious aggregator
-		// could include unknown pubkeys. Workstream 5b will add this
-		// check once the host-function design is settled.
 		pubkeysHexBuilder = append(pubkeysHexBuilder, []byte(a.PubkeyHex)...)
 	}
 	pubkeysHex := string(pubkeysHexBuilder)
@@ -99,10 +113,6 @@ func (ms *MappingState) HandleMapInstantSendV2(params MapInstantSendV2ParamsFull
 		return ce.NewContractError(ce.ErrNoPermission,
 			"BLS attestation aggregate failed to verify against signed message")
 	}
-
-	// TODO: enforce N-of-M quorum requirement (2M/3+1 of active validator set).
-	// Until validator-set lookup is wired, count provided attestations
-	// against a configurable minimum from state.
 
 	// ===== Step 3: resolve sender DashDID =====
 
@@ -289,19 +299,18 @@ func (ms *MappingState) dispatchForward(
 
 	// Deduct RC reimbursement from sender's internal HBD.
 	_ = decInternalBalance(senderDID, "hbd", rcReimbursementHBD)
-	// Credit IS service (the L2 tx submitter). The IS service's address
-	// is the env's caller — which for fast-path mapInstantSendV2
-	// submissions is the submitting account.
-	submitter := sdk.GetEnv().Caller.String()
-	// SendBalance from the mapping contract's own native HBD to submitter.
-	// Mapping contract holds native HBD reserves 1:1-backing the sum of
-	// internal HBD balances. Each RC reimbursement debits user internal
-	// HBD AND sends native HBD out.
+	// Send native HBD from the mapping contract to the L2 tx submitter
+	// (the IS service that paid the RC). Mapping contract holds native
+	// HBD reserves 1:1-backing the sum of internal HBD balances; each
+	// RC reimbursement debits user internal HBD AND sends native HBD
+	// out — keeping the invariant
 	//
-	// TODO: actually call sdk.HiveTransfer when SDK supports targeted
-	// from-contract sends to arbitrary recipients. For now we just track
-	// the obligation in state.
-	_ = submitter
+	//   sum(internal HBD) == contract.native.HBD
+	//
+	// HBD-bearing routes mint internal HBD when native HBD enters the
+	// contract; here we burn internal HBD and send native HBD out.
+	submitter := sdk.GetEnv().Caller
+	sdk.HiveTransfer(submitter, rcReimbursementHBD, sdk.AssetHbd)
 
 	return nil
 }

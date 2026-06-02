@@ -354,9 +354,13 @@ func SetForwarderContractId(payload *string) *string {
 	return mapping.StrPtr("0")
 }
 
-// AddAllowedTarget — admin action to register a contract id on the
-// op=call allow-list. Spec §5.2.7 — v1 list initially contains exactly
-// the magi-dex router id. Real governance with timelock is workstream 5b.
+// AddAllowedTarget — admin schedules a contract id for addition to the
+// op=call allow-list. Spec §5.2.7 — the proposal sits in
+// pendingAdd["pa/<target>"] until AllowListGovernanceTimelockBlocks
+// elapse; then any caller (admin or not) can promote it via
+// CommitAllowedTarget. This forces the timelock to be observable in
+// chain state, defending against an admin-key compromise being able
+// to instantly add an attacker-controlled contract.
 //
 //go:wasmexport addAllowedTarget
 func AddAllowedTarget(payload *string) *string {
@@ -364,12 +368,50 @@ func AddAllowedTarget(payload *string) *string {
 	if payload == nil || *payload == "" {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "target contract id required"))
 	}
-	sdk.StateSetObject(constants.AllowedTargetsKeyPrefix+*payload, "1")
+	currentBlock := sdk.GetEnv().BlockHeight
+	mapping.ProposeAllowedTargetAdd(*payload, currentBlock)
 	return mapping.StrPtr("0")
 }
 
-// RemoveAllowedTarget — admin action to revoke a contract id's allow-list
-// entry. Removals are fast-track (no timelock) per §5.2.7.
+// CommitAllowedTarget — promote a pending add to the active allow-list
+// once its timelock has elapsed. Permissionless: anyone can poke this
+// after the unlock block, so a buggy admin tooling can't silently
+// stall promotions.
+//
+//go:wasmexport commitAllowedTarget
+func CommitAllowedTarget(payload *string) *string {
+	if payload == nil || *payload == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "target contract id required"))
+	}
+	currentBlock := sdk.GetEnv().BlockHeight
+	committed, unlock, err := mapping.CommitAllowedTarget(*payload, currentBlock)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	if !committed {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput,
+			"add still in timelock; unlocks at block "+strconv.FormatUint(unlock, 10)))
+	}
+	return mapping.StrPtr("0")
+}
+
+// CancelAllowedTargetAdd — admin aborts a pending add inside the
+// timelock window.
+//
+//go:wasmexport cancelAllowedTargetAdd
+func CancelAllowedTargetAdd(payload *string) *string {
+	checkAdmin()
+	if payload == nil || *payload == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "target contract id required"))
+	}
+	mapping.CancelPendingAllowedTargetAdd(*payload)
+	return mapping.StrPtr("0")
+}
+
+// RemoveAllowedTarget — admin schedules a target for removal from the
+// allow-list. Spec §5.2.7 makes removals timelocked symmetrically with
+// adds so the community has the same window to react to a hostile
+// admin trying to censor a target.
 //
 //go:wasmexport removeAllowedTarget
 func RemoveAllowedTarget(payload *string) *string {
@@ -377,7 +419,83 @@ func RemoveAllowedTarget(payload *string) *string {
 	if payload == nil || *payload == "" {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "target contract id required"))
 	}
-	sdk.StateDeleteObject(constants.AllowedTargetsKeyPrefix + *payload)
+	currentBlock := sdk.GetEnv().BlockHeight
+	mapping.ProposeAllowedTargetRemove(*payload, currentBlock)
+	return mapping.StrPtr("0")
+}
+
+// CommitAllowedTargetRemove — promote a pending remove to active once
+// the timelock has elapsed. Permissionless.
+//
+//go:wasmexport commitAllowedTargetRemove
+func CommitAllowedTargetRemove(payload *string) *string {
+	if payload == nil || *payload == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "target contract id required"))
+	}
+	currentBlock := sdk.GetEnv().BlockHeight
+	committed, unlock, err := mapping.CommitAllowedTargetRemove(*payload, currentBlock)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	if !committed {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput,
+			"remove still in timelock; unlocks at block "+strconv.FormatUint(unlock, 10)))
+	}
+	return mapping.StrPtr("0")
+}
+
+// CancelAllowedTargetRemove — admin aborts a pending removal inside
+// the timelock window.
+//
+//go:wasmexport cancelAllowedTargetRemove
+func CancelAllowedTargetRemove(payload *string) *string {
+	checkAdmin()
+	if payload == nil || *payload == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "target contract id required"))
+	}
+	mapping.CancelPendingAllowedTargetRemove(*payload)
+	return mapping.StrPtr("0")
+}
+
+// SetValidatorSet — admin action to record the {validator DID →
+// pubkey hex} list for an epoch. Payload format:
+//
+//	<epoch>;<did1>=<pubkey1>|<did2>=<pubkey2>|...
+//
+// HandleMapInstantSendV2 reads this to gate which validator
+// attestations are accepted at body.Epoch. Without an entry, the
+// fast-path is closed for that epoch.
+//
+//go:wasmexport setValidatorSet
+func SetValidatorSet(payload *string) *string {
+	checkAdmin()
+	if payload == nil || *payload == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "validator-set payload required"))
+	}
+	epoch, set, err := mapping.ParseValidatorSetPayload(*payload)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	mapping.SaveValidatorSetForEpoch(epoch, set)
+	return mapping.StrPtr("0")
+}
+
+// SetMinAttestations — admin action to configure the N-of-M quorum
+// threshold the fast-path enforces. Payload is a decimal int >= 1.
+//
+//go:wasmexport setMinAttestations
+func SetMinAttestations(payload *string) *string {
+	checkAdmin()
+	if payload == nil || *payload == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "threshold required"))
+	}
+	n, err := strconv.Atoi(*payload)
+	if err != nil {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "invalid threshold: "+*payload))
+	}
+	if err := mapping.SaveMinAttestations(n); err != nil {
+		ce.CustomAbort(err)
+	}
 	return mapping.StrPtr("0")
 }
 

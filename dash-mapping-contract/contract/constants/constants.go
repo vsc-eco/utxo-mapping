@@ -205,3 +205,47 @@ const (
 // are eligible for pruning. ~3 days at Hive's 3-second block time.
 // PENDING_FORWARD entries are never auto-pruned (in-flight work).
 const ForwardQueuePruneAgeBlocks uint64 = 86_400
+
+// ValidatorSetKeyPrefix: validatorSet["vs/<epoch>"] stores the
+// pipe-delimited list of "<did>=<pubkey_hex>" entries for that epoch.
+// Admin populates these at the start of each epoch via the
+// setValidatorSet action. Per-epoch list is the source of truth for
+// the BLS attestation verifier; aggregates that include non-listed
+// pubkeys are rejected.
+const ValidatorSetKeyPrefix = "vs" + DirPathDelimiter
+
+// MinAttestationsKeyStateKey holds the N-of-M quorum threshold the
+// fast-path requires. Admin sets via setMinAttestations; default 1
+// (single attester is enough on devnet bring-up).
+const MinAttestationsKeyStateKey = "minAttestations"
+
+// DefaultMinAttestations is the fallback threshold when no value is
+// in state. Conservative bring-up default — must be raised to 2/3+1
+// of the active validator set before mainnet.
+const DefaultMinAttestations = 1
+
+// ValidatorSetEntryDelimiter / KVDelimiter for the serialized format.
+const (
+	ValidatorSetEntryDelim = "|"
+	ValidatorSetKVDelim    = "="
+)
+
+// AllowListGovernanceKeyPrefix: pending allow-list adds wait
+// AllowListGovernanceTimelockBlocks blocks before they take effect.
+//
+//	pendingAdd["pa/<target>"] = "<unlockBlock>"
+//	pendingRemove["pr/<target>"] = "<unlockBlock>"
+//
+// Admin adds a pending entry via addAllowedTarget, and a separate
+// commitAllowedTarget action promotes it to the active allowedTargets
+// map once the timelock has elapsed. removeAllowedTarget follows the
+// same timelocked pattern.
+const (
+	PendingAllowedTargetAddKeyPrefix    = "pa" + DirPathDelimiter
+	PendingAllowedTargetRemoveKeyPrefix = "pr" + DirPathDelimiter
+)
+
+// AllowListGovernanceTimelockBlocks: how long an admin-proposed
+// allow-list mutation waits before commit. Hive blocks are ~3s, so
+// 86_400 blocks ≈ 3 days. Spec §5.2.7.
+const AllowListGovernanceTimelockBlocks uint64 = 86_400
