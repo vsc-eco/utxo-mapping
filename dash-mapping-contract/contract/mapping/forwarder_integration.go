@@ -114,6 +114,13 @@ func ParseInstructionV2(instruction string) (ParsedInstruction, error) {
 	if instruction == "" {
 		return out, ce.NewContractError(ce.ErrInput, "instruction empty")
 	}
+	// Round-2 audit D2-DESIGN-08: defense-in-depth against attacker-
+	// injected duplicate keys via a polluted ArgsB64 value. Track
+	// every key encountered and reject second occurrences. The IS
+	// service ALSO rejects ';' / '=' in user-supplied fields before
+	// signing, but the contract is the security boundary and must not
+	// trust upstream sanitization.
+	seen := make(map[string]bool, 6)
 	fields := strings.Split(instruction, constants.InstructionFieldDelimiter)
 	for _, f := range fields {
 		idx := strings.Index(f, constants.InstructionKVDelimiter)
@@ -122,6 +129,10 @@ func ParseInstructionV2(instruction string) (ParsedInstruction, error) {
 		}
 		key := f[:idx]
 		val := f[idx+1:]
+		if seen[key] {
+			return out, ce.NewContractError(ce.ErrInput, "duplicate instruction key: "+key)
+		}
+		seen[key] = true
 		switch key {
 		case constants.InstructionOpKey:
 			out.Op = val

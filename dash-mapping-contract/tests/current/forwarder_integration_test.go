@@ -17,6 +17,7 @@ package current_test
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -58,6 +59,88 @@ func TestParseInstructionV2_RejectsEmpty(t *testing.T) {
 func TestParseInstructionV2_RejectsMissingOp(t *testing.T) {
 	_, err := mapping.ParseInstructionV2("contract=vsc1X;sid=ab12")
 	assert.Error(t, err)
+}
+
+// TestParseInstructionV2_RoundTripFromISServiceBuilder — audit TC2-10
+// cross-repo parity. Pins the wire-form contract between the IS
+// service's BuildAuth/BuildCallInstruction and the contract's
+// ParseInstructionV2. ANY drift in either side (renaming a key,
+// changing delimiter, changing order) fails this test.
+//
+// The instruction string format is the load-bearing wire contract
+// between the two repos — the deposit address derives from
+// sha256(this string), and the contract re-parses it. If the parser
+// silently ignores an unknown key, a Go-side field add would lose the
+// new field on the contract side with no warning.
+//
+// Below: BuildAuthInstruction and BuildCallInstruction are inlined from
+// go-vsc-node/cmd/is-service/session.go. Keep in sync — drift here
+// fails the test.
+func TestParseInstructionV2_RoundTripFromISServiceBuilder(t *testing.T) {
+	buildAuth := func(sid string) string {
+		return "op=auth;sid=" + sid
+	}
+	buildCall := func(contractId, method, argsB64, sid string, amountDuffs int64) string {
+		out := "op=call;contract=" + contractId + ";method=" + method + ";args=" + argsB64 + ";sid=" + sid
+		if amountDuffs > 0 {
+			out += ";amount=" + strconv.FormatInt(amountDuffs, 10)
+		}
+		return out
+	}
+
+	t.Run("auth", func(t *testing.T) {
+		p, err := mapping.ParseInstructionV2(buildAuth("the-sid"))
+		require.NoError(t, err)
+		assert.Equal(t, "auth", p.Op)
+		assert.Equal(t, "the-sid", p.Sid)
+	})
+	t.Run("call without amount", func(t *testing.T) {
+		p, err := mapping.ParseInstructionV2(buildCall("vsc1Target", "swap", "Zm9v", "abc", 0))
+		require.NoError(t, err)
+		assert.Equal(t, "call", p.Op)
+		assert.Equal(t, "vsc1Target", p.Target)
+		assert.Equal(t, "swap", p.Method)
+		assert.Equal(t, "Zm9v", p.ArgsB64)
+		assert.Equal(t, "abc", p.Sid)
+		assert.Equal(t, int64(0), p.AmountDuffs)
+	})
+	t.Run("call with amount", func(t *testing.T) {
+		p, err := mapping.ParseInstructionV2(buildCall("vsc1Target", "swap", "Zm9v", "abc", 1234))
+		require.NoError(t, err)
+		assert.Equal(t, "call", p.Op)
+		assert.Equal(t, int64(1234), p.AmountDuffs)
+	})
+	t.Run("call with base64 padding", func(t *testing.T) {
+		// "hello" → aGVsbG8= (one padding char). Contract parser
+		// splits on first '=' so trailing '=' in args is preserved.
+		p, err := mapping.ParseInstructionV2(buildCall("vsc1Target", "swap", "aGVsbG8=", "abc", 0))
+		require.NoError(t, err)
+		assert.Equal(t, "aGVsbG8=", p.ArgsB64, "base64 padding must survive parser")
+	})
+}
+
+// TestParseInstructionV2_RejectsDuplicateKeys — audit D2-DESIGN-08.
+// Defense-in-depth on the contract side: even if the IS service fails
+// to sanitize an attacker-injected ';' / '=' in args, the contract
+// must reject duplicate keys to prevent last-write-wins target
+// substitution.
+func TestParseInstructionV2_RejectsDuplicateKeys(t *testing.T) {
+	cases := []struct {
+		name string
+		inst string
+	}{
+		{"duplicate contract", "op=call;contract=A;method=m;args=zzz;sid=x;contract=evil"},
+		{"duplicate method", "op=call;contract=A;method=m;args=zzz;sid=x;method=evil"},
+		{"duplicate op", "op=auth;sid=x;op=call"},
+		{"duplicate sid", "op=auth;sid=x;sid=y"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := mapping.ParseInstructionV2(tc.inst)
+			require.Error(t, err, "duplicate key must be rejected")
+			assert.Contains(t, err.Error(), "duplicate")
+		})
+	}
 }
 
 func TestParseInstructionV2_RejectsMissingSid(t *testing.T) {

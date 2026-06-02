@@ -101,3 +101,22 @@ wasm fails with `wasm_init_error: failed to register wasm buffer: unknown import
 
 Production CI uses the stable `replace vsc-node => github.com/vsc-eco/go-vsc-node v0.0.0-...` directive and
 does NOT use `go.work`. Bump the replace target when promoting the upstream changes from develop to main.
+
+## Known test-coverage gaps
+
+Round-2 audit TC2-09 identified that `dispatchForward` (the C4 fix path with 6 sequenced
+state mutations + 2 external calls) has zero functional tests. The pure-Go helpers it
+calls (`incInternalBalance`, `decInternalBalance`, `checkAndBumpRateLimit`,
+`isAlreadyProcessed`) ARE unit-tested, but the orchestrated flow is not.
+
+A full integration test requires:
+
+* A valid `MapInstantSendV2ParamsFull` payload (real rawTx + BLS aggregate)
+* A registered validator set in state (use the `setValidatorSet` admin action)
+* Pre-funded sender HBD balance
+* An allow-listed target contract that supports `call_as`
+
+This work is tracked as a follow-up. Until it lands, the C4 invariant
+(`sum(internal HBD) == native HBD held by contract` after dispatchForward) is
+verified by inspection only — any future refactor of `dispatchForward` must be
+hand-audited against the audit's `post-forward-rc-rollback-drains-target` rubric.
