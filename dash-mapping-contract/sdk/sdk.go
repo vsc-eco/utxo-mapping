@@ -166,6 +166,42 @@ func ContractCall(contractId string, method string, payload string, options *Con
 	return contractCall(&contractId, &method, &payload, &optStr)
 }
 
+// CryptoBlsVerifyAggregate verifies a quorum-aggregated BLS12-381 signature
+// against a list of pubkeys all signing the same message. Wraps the
+// crypto.bls_verify_aggregate host function added to vsc-node in
+// go-vsc-node modules/wasm/sdk/sdk.go (workstream 4a of the Dash
+// IS-login feature).
+//
+// pubkeysConcat: hex-encoded concatenation of N 48-byte compressed G1
+//
+//	pubkeys. Length MUST be a multiple of 96 hex chars,
+//	at least 1 pubkey, at most 256 (the host enforces).
+//
+// msgHex:        arbitrary-length message digest (typically a 32-byte
+//
+//	SHA-256 hash including the dash-is-lock-v1\0 domain
+//	prefix per the spec §5.6 canonical signing message).
+//
+// aggSigHex:     hex-encoded 96-byte compressed G2 aggregate signature.
+//
+// Returns "true" / "false" — distinct from nil which would indicate a
+// host-level error (malformed inputs). Use VerifyBlsAggregate for a
+// bool-returning convenience wrapper.
+func CryptoBlsVerifyAggregate(pubkeysConcat string, msgHex string, aggSigHex string) *string {
+	return cryptoBlsVerifyAggregate(&pubkeysConcat, &msgHex, &aggSigHex)
+}
+
+// VerifyBlsAggregate is the bool-returning convenience wrapper around
+// CryptoBlsVerifyAggregate. Returns false on malformed inputs (so calling
+// contracts can fail-closed on bad data).
+func VerifyBlsAggregate(pubkeysConcat string, msgHex string, aggSigHex string) bool {
+	r := CryptoBlsVerifyAggregate(pubkeysConcat, msgHex, aggSigHex)
+	if r == nil {
+		return false
+	}
+	return *r == "true"
+}
+
 func TssCreateKey(keyId string, algo string, epochs uint64) string {
 	if algo != "ecdsa" && algo != "eddsa" {
 		Abort("algo must be ecdsa or eddsa")

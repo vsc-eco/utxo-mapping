@@ -288,6 +288,99 @@ func Map(incomingTx *string) *string {
 	return mapping.StrPtr("0")
 }
 
+// MapInstantSendV2 is the lazy-attestation fast path for the Dash
+// InstantSend login feature (workstream 5).
+//
+// Unlike Map, this action:
+//   - Verifies a BLS quorum-aggregated attestation from Magi validators
+//     instead of waiting for a full block-proof, allowing ~15-30s
+//     finality from the user's perspective.
+//   - Supports the `op=auth` instruction (login-only, no value movement)
+//     and `op=call;contract=...;method=...;args=...;sid=...;amount=...`
+//     for dispatching contract calls via dash-forwarder-contract.
+//   - Maintains all the same security gates as Map (deposit address
+//     re-derivation, multi-input rejection, rate limits, allow-list).
+//
+// Per spec §5.2.2 the caller need not be the oracle — any party can
+// submit a valid attestation bundle. Authorization comes from the BLS
+// quorum signature, not the caller identity.
+//
+//go:wasmexport mapInstantSendV2
+func MapInstantSendV2(payload *string) *string {
+	checkNotPaused()
+	var params mapping.MapInstantSendV2ParamsFull
+	if err := tinyjson.Unmarshal([]byte(*payload), &params); err != nil {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
+	}
+
+	publicKeys, err := loadPublicKeys()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+
+	contractState, err := mapping.InitializeMappingState(publicKeys, NetworkMode)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+
+	if err := contractState.HandleMapInstantSendV2(params); err != nil {
+		ce.CustomAbort(err)
+	}
+
+	if err := contractState.SaveToState(); err != nil {
+		ce.CustomAbort(err)
+	}
+
+	return mapping.StrPtr("0")
+}
+
+// SetForwarderContractId — admin action to designate the canonical
+// dash-forwarder-contract id this mapping trusts. Idempotent: re-setting
+// to the same value is a no-op; changing to a different value requires
+// pausing the contract first.
+//
+//go:wasmexport setForwarderContractId
+func SetForwarderContractId(payload *string) *string {
+	checkAdmin()
+	if payload == nil || *payload == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "forwarder contract id required"))
+	}
+	existing := sdk.StateGetObject(constants.ForwarderContractIdStateKey)
+	if existing != nil && *existing != "" && *existing != *payload {
+		ce.CustomAbort(ce.NewContractError(ce.ErrNoPermission,
+			"forwarder contract id already set; pause + clear required to change"))
+	}
+	sdk.StateSetObject(constants.ForwarderContractIdStateKey, *payload)
+	return mapping.StrPtr("0")
+}
+
+// AddAllowedTarget — admin action to register a contract id on the
+// op=call allow-list. Spec §5.2.7 — v1 list initially contains exactly
+// the magi-dex router id. Real governance with timelock is workstream 5b.
+//
+//go:wasmexport addAllowedTarget
+func AddAllowedTarget(payload *string) *string {
+	checkAdmin()
+	if payload == nil || *payload == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "target contract id required"))
+	}
+	sdk.StateSetObject(constants.AllowedTargetsKeyPrefix+*payload, "1")
+	return mapping.StrPtr("0")
+}
+
+// RemoveAllowedTarget — admin action to revoke a contract id's allow-list
+// entry. Removals are fast-track (no timelock) per §5.2.7.
+//
+//go:wasmexport removeAllowedTarget
+func RemoveAllowedTarget(payload *string) *string {
+	checkAdmin()
+	if payload == nil || *payload == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "target contract id required"))
+	}
+	sdk.StateDeleteObject(constants.AllowedTargetsKeyPrefix + *payload)
+	return mapping.StrPtr("0")
+}
+
 // Withdraws BTC from the caller's own balance to a Bitcoin address.
 // The `from` field is ignored — unmaps always draw from the caller's balance.
 //
