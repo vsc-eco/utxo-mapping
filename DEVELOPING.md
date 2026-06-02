@@ -172,6 +172,21 @@ Round-5 / round-6 operator-tunable flags on `cmd/is-service`:
 
 The full operator list is also visible via `is-service -help`.
 
+### Monitoring signal: `roster divergence`
+
+Round-5 audit R5-ADV-01 / round-6 R6-OP-01 added a structured
+`slog.Error` named `"validator-set / libp2p roster divergence"`
+that fires when every libp2p attestation responder is rejected by
+the L2 GraphQL validator-set lookup. The log includes
+`validatorSetSource` (the configured `-l2GqlURL` value, sanitised
+to scheme://host so embedded credentials never reach log shippers —
+R7-OP-01-logleak). Treat this signal as **L2 GraphQL endpoint
+returns a wrong or stale validator set**; investigate that
+upstream first.
+
+Do not embed credentials in `-l2GqlURL` — production endpoints
+should be reached via a network-trust boundary, not bearer-in-URL.
+
 ## Known test-coverage gaps
 
 Round-2 audit TC2-09 identified that `dispatchForward` (the C4 fix path with 6 sequenced

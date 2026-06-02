@@ -142,6 +142,63 @@ func TestParseValidatorSetPayload_RejectsAccountCharset(t *testing.T) {
 	}
 }
 
+// Round-7 audit R7-DRIFT-04 — pin every R6-CORR-06 Hive consensus
+// rule so a future refactor of validateHiveAccountSegment can't
+// silently re-relax the grammar.
+func TestValidateHiveAccount(t *testing.T) {
+	cases := []struct {
+		name    string
+		account string
+		ok      bool
+	}{
+		// Happy path — common Hive usernames.
+		{"3-char", "abc", true},
+		{"6-char", "tibfox", true},
+		{"two-segment", "magi.contracts", true},
+		{"16-char", "abcde.fghij.klmn", true},
+		{"hyphen-inside", "magi-prod.bot", true},
+		{"trailing-digit", "alice123", true},
+
+		// Length boundaries.
+		{"too-short-2", "ab", false},
+		{"too-long-17", "abcdefghijklmnopq", false},
+		{"empty", "", false},
+		{"single-segment-2", "az.def", false}, // 'az' segment <3
+
+		// Charset.
+		{"uppercase", "Mallory", false},
+		{"underscore", "alice_bob", false},
+		{"shell-pipe", "alice|smuggle", false},
+		{"shell-equals", "alice=smuggle", false},
+		{"slash", "alice/bob", false},
+		{"space", "al ice", false},
+		{"nul-byte", "alice\x00bob", false},
+		{"newline", "alice\nbob", false},
+		{"tab", "alice\tbob", false},
+		{"multibyte-utf8", "aliceé", false},
+
+		// Segment-shape rules.
+		{"leading-dot", ".alice", false},
+		{"trailing-dot", "alice.", false},
+		{"consecutive-dots", "al..ice", false},
+		{"leading-digit", "1alice", false},
+		{"leading-hyphen", "-alice", false},
+		{"trailing-hyphen", "alice-", false},
+		{"segment-trailing-hyphen", "ali-.bcd", false},
+		{"segment-leading-digit", "alice.1bob", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := mapping.ValidateHiveAccount(c.account)
+			if c.ok {
+				assert.NoError(t, err, "account %q should be accepted", c.account)
+			} else {
+				assert.Error(t, err, "account %q should be rejected", c.account)
+			}
+		})
+	}
+}
+
 func TestSaveMinAttestations_RejectsZero(t *testing.T) {
 	err := mapping.SaveMinAttestations(0)
 	assert.Error(t, err)
