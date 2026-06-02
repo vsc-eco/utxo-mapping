@@ -33,10 +33,12 @@ var NetworkMode string
 // (system entity that bootstraps state) or the contract owner during
 // testnet/regtest.
 func checkOracleOrAdmin() error {
-	env := sdk.GetEnv()
-	caller := env.Caller.String()
-	owner := env.ContractOwner
-	if caller == owner {
+	caller := sdk.GetEnv().Caller.String()
+	owner := ""
+	if o := sdk.GetEnvKey("contract.owner"); o != nil {
+		owner = *o
+	}
+	if caller == owner && owner != "" {
 		return nil
 	}
 	// In a future revision, also accept a configurable governance multisig.

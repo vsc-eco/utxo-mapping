@@ -3,7 +3,7 @@
 package sdk
 
 import (
-	_ "dash-mapping-contract/runtime"
+	_ "dash-forwarder-contract/runtime"
 )
 
 //go:wasmimport sdk console.log
