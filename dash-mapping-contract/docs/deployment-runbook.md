@@ -176,6 +176,24 @@ Adds a contract to the `op=call` allow-list. The spec §5.2.7 mandates a
 v1 mainnet ships with **exactly one** target: the magi-dex router. Any
 later additions go through this two-step flow.
 
+#### 2.5.1 setAllowedTargetImmediate (testnet/regtest only)
+
+```
+action:  setAllowedTargetImmediate   (admin, ~300 RC)
+payload: <target-contract-id>
+```
+
+**Testnet/regtest builds only** — the action wasmexport refuses to
+run when `NetworkMode != testnet/regtest`. The contract used on a
+mainnet deploy does NOT expose this entrypoint at all (it's gated
+at the binary level, not at runtime).
+
+Writes directly into the active `allowedTargets` map, bypassing
+the 7-day timelock. Required so devnet/CI tests can exercise the
+op=call dispatch path without burning 86,400 regtest blocks of
+mining. Mainnet allowlist mutations MUST go through the symmetric
+add+commit pair above.
+
 ---
 
 ## 3. Validator-set rotation cadence
