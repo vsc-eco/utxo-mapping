@@ -19,15 +19,19 @@ import (
 	dashMappingContract "dash-mapping-contract"
 )
 
-// TestSetAllowedTargetImmediate_TestnetOnly verifies that the
-// admin-gated setAllowedTargetImmediate action lets a testnet
+// TestSetAllowedTargetImmediate_RegtestOnly verifies that the
+// admin-gated setAllowedTargetImmediate action lets a regtest
 // build skip the 7-day AllowListGovernanceTimelockBlocks cooldown
 // (required for tests/devnet's op=call coverage to be feasible),
-// AND that mainnet builds reject the same call.
+// AND that mainnet + real testnet builds reject the same call.
+//
+// Per audit SEC-3 (R15) the gate moved from "testnet-or-regtest"
+// to "regtest-only" so real testnet exercises the full add+commit
+// timelock flow alongside mainnet.
 //
 // Wire format: payload is a bare vsc1... contract id (no JSON
 // envelope; matches add/commit AllowedTarget shape).
-func TestSetAllowedTargetImmediate_TestnetOnly(t *testing.T) {
+func TestSetAllowedTargetImmediate_RegtestOnly(t *testing.T) {
 	requireFreshDevWasm(t)
 	ct := test_utils.NewContractTest()
 	t.Cleanup(func() { ct.DataLayer.Stop() })
@@ -54,7 +58,7 @@ func TestSetAllowedTargetImmediate_TestnetOnly(t *testing.T) {
 		Caller:     adminOwner,
 	})
 	require.True(t, r.Success,
-		"setAllowedTargetImmediate must succeed on the testnet build; err=%q msg=%q", r.Err, r.ErrMsg)
+		"setAllowedTargetImmediate must succeed on the regtest build; err=%q msg=%q", r.Err, r.ErrMsg)
 
 	// State must now have at-<targetId> = "1" — the same key the
 	// regular addAllowedTarget+commitAllowedTarget pair writes.

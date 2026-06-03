@@ -39,7 +39,10 @@ func checkOracle() {
 	if caller == constants.OracleAddress {
 		return
 	}
-	if constants.IsTestnet(NetworkMode) && caller == *sdk.GetEnvKey("contract.owner") {
+	// Owner-as-oracle shortcut: applies on real testnet + regtest
+	// (both run by a single trusted operator). Mainnet requires the
+	// dedicated oracle identity.
+	if constants.IsTestnetOrRegtest(NetworkMode) && caller == *sdk.GetEnvKey("contract.owner") {
 		return
 	}
 	ce.CustomAbort(
@@ -84,7 +87,9 @@ func SeedBlocks(blockSeedInput *string) *string {
 		ce.CustomAbort(ce.WrapContractError(ce.ErrJson, err, "error unmarshalling seed blocks input"))
 	}
 
-	newLastHeight, err := blocklist.HandleSeedBlocks(seedParams, constants.IsTestnet(NetworkMode))
+	// Idempotency relaxation: testnet + regtest can re-seed; mainnet
+	// is one-shot. Both operator-modes need the relaxation.
+	newLastHeight, err := blocklist.HandleSeedBlocks(seedParams, constants.IsTestnetOrRegtest(NetworkMode))
 	if err != nil {
 		ce.CustomAbort(err)
 	}
@@ -397,24 +402,26 @@ func CommitAllowedTarget(payload *string) *string {
 	return mapping.StrPtr("0")
 }
 
-// SetAllowedTargetImmediate — TESTNET ONLY: admin promotes a
+// SetAllowedTargetImmediate — REGTEST ONLY: admin promotes a
 // target straight into the active allowlist, bypassing the
 // AllowListGovernanceTimelockBlocks 7-day cooldown. Refuses on
-// mainnet (NetworkMode != testnet). Required for tests/devnet to
-// exercise the op=call → forwarder dispatch path without burning
-// 86400 blocks of regtest mining.
+// mainnet AND on real testnet — only the throwaway regtest harness
+// (devnet/CI runs) exposes this. Audit SEC-3 (R15) called out the
+// old testnet-or-regtest gate as a footgun: a `dev.wasm` accidentally
+// uploaded to mainnet would have admin-bypass intact. Real testnet
+// must exercise the same add+commit timelock as mainnet so the
+// timelock flow itself gets tested.
 //
-// Production allow-list mutations MUST go through the symmetric
-// timelock pair (addAllowedTarget + commitAllowedTarget after
-// the cooldown elapses) — this immediate path doesn't exist on
-// mainnet builds.
+// Production + testnet allow-list mutations MUST go through the
+// symmetric timelock pair (addAllowedTarget + commitAllowedTarget
+// after the cooldown elapses).
 //
 //go:wasmexport setAllowedTargetImmediate
 func SetAllowedTargetImmediate(payload *string) *string {
 	checkAdmin()
-	if !constants.IsTestnet(NetworkMode) {
+	if !constants.IsRegtest(NetworkMode) {
 		ce.CustomAbort(ce.NewContractError(ce.ErrNoPermission,
-			"setAllowedTargetImmediate is testnet-only; use addAllowedTarget+commitAllowedTarget"))
+			"setAllowedTargetImmediate is regtest-only; use addAllowedTarget+commitAllowedTarget"))
 	}
 	if payload == nil || *payload == "" {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "target contract id required"))
@@ -951,7 +958,10 @@ func RegisterPublicKey(keyStr *string) *string {
 			ce.CustomAbort(ce.Prepend(err, "error registering primary public key"))
 		}
 		existingPrimary := sdk.StateGetObject(constants.PrimaryPublicKeyStateKey)
-		if *existingPrimary == "" || constants.IsTestnet(NetworkMode) {
+		// Bridge pubkey overwrite is regtest-only (audit SEC-3 R15).
+		// Real testnet uses the same once-and-immutable model as
+		// mainnet so the rotation flow (TODO: spec) gets exercised.
+		if *existingPrimary == "" || constants.IsRegtest(NetworkMode) {
 			sdk.StateSetObject(constants.PrimaryPublicKeyStateKey, string(key[:]))
 			resultBuilder.WriteString("set primary key to: " + keys.PrimaryPubKey)
 		} else {
@@ -968,7 +978,8 @@ func RegisterPublicKey(keyStr *string) *string {
 			resultBuilder.WriteString(", ")
 		}
 		existingBackup := sdk.StateGetObject(constants.BackupPublicKeyStateKey)
-		if *existingBackup == "" || constants.IsTestnet(NetworkMode) {
+		// Bridge pubkey overwrite is regtest-only (audit SEC-3 R15).
+		if *existingBackup == "" || constants.IsRegtest(NetworkMode) {
 			sdk.StateSetObject(constants.BackupPublicKeyStateKey, string(key[:]))
 			resultBuilder.WriteString("set backup key to: " + keys.BackupPubKey)
 		} else {
@@ -1029,7 +1040,8 @@ func RegisterRouter(input *string) *string {
 
 	if router.ContractId != "" {
 		existingPrimary := sdk.StateGetObject(constants.RouterContractIdKey)
-		if *existingPrimary == "" || constants.IsTestnet(NetworkMode) {
+		// Router overwrite is regtest-only (audit SEC-3 R15).
+		if *existingPrimary == "" || constants.IsRegtest(NetworkMode) {
 			sdk.StateSetObject(constants.RouterContractIdKey, router.ContractId)
 			resultBuilder.WriteString("set router contract ID to: " + router.ContractId)
 		} else {

@@ -117,7 +117,37 @@ const (
 	Regtest string = "regtest"
 )
 
+// IsTestnet is TRUE only when networkName == Testnet. Regtest is NOT
+// a testnet — it's the throwaway harness used by devnet/CI runs +
+// `make dev` builds. Code that branches on IsTestnet alone applies
+// to the real Magi testnet deployment only.
+//
+// Audit SEC-3 (R15): IsTestnet used to collapse both testnet and
+// regtest into one gate. That meant a `dev.wasm` accidentally
+// promoted to mainnet would have admin-bypass behaviour (pubkey
+// overwrite, router overwrite, setAllowedTargetImmediate) intact.
+// The split below keeps the bypasses regtest-only by default;
+// callsites that legitimately need both (owner-as-oracle, seedBlocks
+// idempotency) use IsTestnetOrRegtest explicitly.
 func IsTestnet(networkName string) bool {
+	return networkName == Testnet
+}
+
+// IsRegtest is TRUE only when networkName == Regtest. Used by the
+// test-harness-only hooks (setAllowedTargetImmediate timelock
+// bypass, bridge pubkey overwrite, router overwrite) that must NOT
+// be reachable on testnet — only on the throwaway regtest harness.
+// See audit SEC-3 (R15).
+func IsRegtest(networkName string) bool {
+	return networkName == Regtest
+}
+
+// IsTestnetOrRegtest is the old IsTestnet behaviour — TRUE for both
+// non-mainnet builds. Use when the gated behaviour is admin-trusted
+// in BOTH the real testnet and the regtest harness (e.g. seedBlocks
+// idempotency relaxation, owner-as-oracle shortcut). For test-only
+// bypasses that should NEVER reach real testnet, prefer IsRegtest.
+func IsTestnetOrRegtest(networkName string) bool {
 	return networkName == Testnet || networkName == Regtest
 }
 
