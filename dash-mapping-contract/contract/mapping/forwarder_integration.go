@@ -901,6 +901,22 @@ func CommitAllowedTarget(targetId string, currentBlock uint64) (bool, uint64, er
 	return true, unlock, nil
 }
 
+// SetAllowedTargetImmediate writes targetId directly into the active
+// allowlist, bypassing the AllowListGovernanceTimelockBlocks cooldown.
+// **TESTNET ONLY** — main.go's wasmexport refuses to call this when
+// NetworkMode != "testnet"/"regtest", so mainnet builds reject the
+// shortcut at the entrypoint. Required for tests/devnet to exercise
+// the op=call → forwarder dispatch path without burning 86400 blocks
+// of regtest mining for the timelock to elapse.
+//
+// Also clears any pending add for the same target so the regular
+// add+commit flow stays consistent if the operator later wants to
+// re-test the timelock path.
+func SetAllowedTargetImmediate(targetId string) {
+	sdk.StateSetObject(constants.AllowedTargetsKeyPrefix+targetId, "1")
+	sdk.StateDeleteObject(constants.PendingAllowedTargetAddKeyPrefix + targetId)
+}
+
 // proposeAllowedTargetRemove + commitAllowedTargetRemove mirror the add
 // flow. Symmetric so additions and revocations have the same
 // transparency window — the spec calls this out as a defense-in-depth

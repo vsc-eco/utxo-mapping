@@ -397,6 +397,32 @@ func CommitAllowedTarget(payload *string) *string {
 	return mapping.StrPtr("0")
 }
 
+// SetAllowedTargetImmediate — TESTNET ONLY: admin promotes a
+// target straight into the active allowlist, bypassing the
+// AllowListGovernanceTimelockBlocks 7-day cooldown. Refuses on
+// mainnet (NetworkMode != testnet). Required for tests/devnet to
+// exercise the op=call → forwarder dispatch path without burning
+// 86400 blocks of regtest mining.
+//
+// Production allow-list mutations MUST go through the symmetric
+// timelock pair (addAllowedTarget + commitAllowedTarget after
+// the cooldown elapses) — this immediate path doesn't exist on
+// mainnet builds.
+//
+//go:wasmexport setAllowedTargetImmediate
+func SetAllowedTargetImmediate(payload *string) *string {
+	checkAdmin()
+	if !constants.IsTestnet(NetworkMode) {
+		ce.CustomAbort(ce.NewContractError(ce.ErrNoPermission,
+			"setAllowedTargetImmediate is testnet-only; use addAllowedTarget+commitAllowedTarget"))
+	}
+	if payload == nil || *payload == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "target contract id required"))
+	}
+	mapping.SetAllowedTargetImmediate(*payload)
+	return mapping.StrPtr("0")
+}
+
 // CancelAllowedTargetAdd — admin aborts a pending add inside the
 // timelock window.
 //
