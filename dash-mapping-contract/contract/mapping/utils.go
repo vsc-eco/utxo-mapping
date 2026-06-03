@@ -4,7 +4,6 @@ import (
 	"dash-mapping-contract/contract/constants"
 	ce "dash-mapping-contract/contract/contracterrors"
 	"dash-mapping-contract/sdk"
-	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -64,13 +63,20 @@ func createP2WSHAddressWithBackup(
 		return "", nil, err
 	}
 
-	witnessProgram := sha256.Sum256(script)
-	addressWitnessScriptHash, err := btcutil.NewAddressWitnessScriptHash(witnessProgram[:], network)
+	// Pay-to-script-hash (P2SH). Dash never activated SegWit, so
+	// `btcutil.NewAddressWitnessScriptHash` would produce bech32
+	// `tdash1...`/`dash1...` addresses that dashd v23 rejects at
+	// `validateaddress` time with "Invalid address format" — they
+	// are unspendable in practice. P2SH is the pre-SegWit primitive
+	// Dash DOES support (mainnet `7...`, testnet `8`/`9` prefix).
+	// The redeem-script bytes are unchanged; only the on-chain
+	// commitment shifts from 32-byte sha256 (P2WSH) to 20-byte
+	// HASH160 (P2SH).
+	addr, err := btcutil.NewAddressScriptHash(script, network)
 	if err != nil {
 		return "", nil, err
 	}
-
-	return addressWitnessScriptHash.EncodeAddress(), script, nil
+	return addr.EncodeAddress(), script, nil
 }
 
 func createP2WSHAddress(pubKeyHex string, tag []byte, network *chaincfg.Params) (string, []byte, error) {
@@ -98,12 +104,13 @@ func createSimpleP2WSHAddress(pubKeyBytes []byte, tag []byte, network *chaincfg.
 		return "", nil, err
 	}
 
-	witnessProgram := sha256.Sum256(script)
-	addressWitnessScriptHash, err := btcutil.NewAddressWitnessScriptHash(witnessProgram[:], network)
+	// P2SH (Dash-compatible) — see createP2WSHAddressWithBackup
+	// comment for the bech32-vs-base58 rationale.
+	addr, err := btcutil.NewAddressScriptHash(script, network)
 	if err != nil {
 		return "", nil, err
 	}
-	return addressWitnessScriptHash.EncodeAddress(), script, nil
+	return addr.EncodeAddress(), script, nil
 }
 
 func checkAuth(env sdk.Env) error {
