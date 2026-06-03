@@ -8,7 +8,7 @@ go 1.25.7
 // go 1.25.6
 // use .
 // replace vsc-node => path-to-local-node
-replace vsc-node => github.com/vsc-eco/go-vsc-node v0.0.0-20260602002529-75c384f4f95f
+replace vsc-node => github.com/vsc-eco/go-vsc-node v0.0.0-20260603022058-1627d0ab31e6
 
 replace github.com/agl/ed25519 => github.com/binance-chain/edwards25519 v0.0.0-20200305024217-f36fc4b53d43
 
@@ -147,7 +147,7 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.64.0 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
-	github.com/protolambda/bls12-381-util v0.1.0 // indirect
+	github.com/protolambda/bls12-381-util v0.1.0
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.59.0 // indirect
 	github.com/quic-go/webtransport-go v0.10.0 // indirect

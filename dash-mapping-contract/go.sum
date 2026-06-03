@@ -526,8 +526,8 @@ github.com/valyala/bytebufferpool v1.0.0 h1:GqA5TC/0021Y/b9FG4Oi9Mr3q7XYx6Kllzaw
 github.com/valyala/bytebufferpool v1.0.0/go.mod h1:6bBcMArwyJ5K/AmCkWv1jt77kVWyCJ6HpOuEn7z0Csc=
 github.com/valyala/fasthttp v1.57.0 h1:Xw8SjWGEP/+wAAgyy5XTvgrWlOD1+TxbbvNADYCm1Tg=
 github.com/valyala/fasthttp v1.57.0/go.mod h1:h6ZBaPRlzpZ6O3H5t2gEk1Qi33+TmLvfwgLLp0t9CpE=
-github.com/vsc-eco/go-vsc-node v0.0.0-20260602002529-75c384f4f95f h1:xdIz4U9leuUsDLl4Hog5taT8PAIKDA1ozWptEIWJPdM=
-github.com/vsc-eco/go-vsc-node v0.0.0-20260602002529-75c384f4f95f/go.mod h1:29pRsp3pebFZXvJ8+40zX8MxOFOLqHUupctF7w/1RfM=
+github.com/vsc-eco/go-vsc-node v0.0.0-20260603022058-1627d0ab31e6 h1:NzFM3uS3KKl7jiRXtGGVGGp/M9vYO5n73KAWTnkBkDw=
+github.com/vsc-eco/go-vsc-node v0.0.0-20260603022058-1627d0ab31e6/go.mod h1:29pRsp3pebFZXvJ8+40zX8MxOFOLqHUupctF7w/1RfM=
 github.com/vsc-eco/hivego v0.0.0-20260224180332-508b8c394435 h1:ecSftlzwXr/JmFicV67CiPAtQRyx6mk91lhGXmRG1aY=
 github.com/vsc-eco/hivego v0.0.0-20260224180332-508b8c394435/go.mod h1:YTtRIiFkjGYkThkqWE4zf+mKZIJkNXrjJDiRW5D2Py8=
 github.com/warpfork/go-testmark v0.12.1 h1:rMgCpJfwy1sJ50x0M0NgyphxYYPMOODIJHhsXyEHU0s=
