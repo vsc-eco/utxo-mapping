@@ -104,13 +104,27 @@ does NOT use `go.work`. Bump the replace target when promoting the upstream chan
 
 ### Cross-repo parity tests
 
-Tests that import `vsc-node/modules/islock-attestation` or
-`vsc-node/lib/islock-instruction` (currently only
-`parity_cross_repo_test.go`) require a `go.work` pointing at a local
-go-vsc-node-develop checkout that includes those modules — the upstream
-`replace` target may predate them. These tests are behind the
-`cross_repo` build tag so the default suite compiles without
-go.work. Run them as:
+Tests that import `vsc-node/modules/islock-attestation`,
+`vsc-node/lib/islock-instruction`, `vsc-node/lib/dids` (BLS PoP
+generation), or `vsc-node/lib/test_utils` (WASM-execution harness
+with real `crypto.bls_verify` host fn) require a `go.work` pointing
+at a local go-vsc-node-develop checkout that includes those modules —
+the upstream `replace` target may predate them. The current
+`cross_repo`-tagged tests are (R14-DRIFT-CROSS-REPO-TEST-NOT-IN-
+DEVELOPING-MD closed the stale "currently only" list):
+
+  - `tests/current/parity_cross_repo_test.go` — round-trip parity
+    between the contract's ParseValidatorSetPayload and the
+    announcer-side gen-validator-set-payload CLI.
+  - `tests/current/setvalidator_e2e_test.go` — WASM-execution E2E
+    that pushes a real `dids.GenerateBlsPoP` through the contract's
+    SetValidatorSet entrypoint via the real `crypto.bls_verify` host
+    fn. Requires `bin/dev.wasm` built locally first (gitignored —
+    run `USE_DOCKER=1 make dev`). The test fails fast with a
+    build-hint if the wasm is missing.
+
+These tests are behind the `cross_repo` build tag so the default
+suite compiles without go.work. Run them as:
 
 ```bash
 go test -tags cross_repo ./tests/current/...

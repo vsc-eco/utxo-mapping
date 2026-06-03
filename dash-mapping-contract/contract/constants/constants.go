@@ -230,6 +230,26 @@ const MinAttestationsKeyStateKey = "minAttestations"
 // of the active validator set before mainnet.
 const DefaultMinAttestations = 1
 
+// Round-14 audit R14-BLS-ERROR-STRING-BRITTLE: stable error-message
+// prefixes that the cross-repo E2E suite (and any downstream caller)
+// can use as a discrimination key for the validator-set parse/verify
+// pipeline. The shared ce.ErrNoPermission / ce.ErrInput categories
+// are not enough on their own — they're reused across 15+ sites.
+// Tests assert against these prefixes (not the free-form message
+// tail) so a reword that keeps the contract behaviour intact stays
+// green.
+const (
+	// ErrPrefixBlsPoPVerifyFailed is the head of the message emitted
+	// when SaveValidatorSetForEpoch's per-DID PoP verify returns
+	// false. Wrapped under ce.ErrNoPermission. R4-CSM-01 critical
+	// fix coverage relies on tests matching this exact prefix.
+	ErrPrefixBlsPoPVerifyFailed = "BLS PoP failed to verify"
+	// ErrPrefixInvalidHiveAccount is the head of the message emitted
+	// when ParseValidatorSetPayload's per-entry validateHiveAccount
+	// rejects the 4th field. Wrapped under ce.ErrInput. R6-CORR-06.
+	ErrPrefixInvalidHiveAccount = "invalid Hive account"
+)
+
 // ValidatorSetEntryDelimiter / KVDelimiter for the serialized format.
 const (
 	ValidatorSetEntryDelim = "|"

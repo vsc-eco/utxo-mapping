@@ -51,6 +51,25 @@ import (
 // Use the same wasm constant the sibling tests use.
 var contractWasmE2E = dashMappingContract.DevWasm
 
+// Round-14 audit R14-WASM-NOT-COMMITTED-NONDETERMINISTIC: bin/dev.wasm
+// is gitignored (.gitignore: '*.wasm') and contract_bytes.go's loader
+// silently sets DevWasm=nil when the file isn't present. Without a
+// nil-check the cross_repo E2E suite would fail with an opaque
+// RegisterContract panic on a fresh clone where `make dev` hasn't
+// been run. This helper fails the test loudly with the exact build
+// hint so the operator knows to run `USE_DOCKER=1 make dev`.
+func requireFreshDevWasm(t *testing.T) {
+	t.Helper()
+	if len(contractWasmE2E) == 0 {
+		t.Fatalf("dash-mapping-contract DevWasm is empty/missing.\n" +
+			"Build it first:\n" +
+			"  cd dash-mapping-contract && USE_DOCKER=1 make dev\n" +
+			"bin/dev.wasm is gitignored so a fresh checkout needs to " +
+			"rebuild before this cross_repo suite can run. See " +
+			"DEVELOPING.md §'Cross-repo parity tests'.")
+	}
+}
+
 // validatorKeypair holds everything we need to build a wire-form
 // payload entry: BLS DID string, hex pubkey, hex PoP signed over
 // (domain || pkBytes || accountBytes).
@@ -91,7 +110,13 @@ func makeValidatorKey(t *testing.T, seedByte byte, account string) (*validatorKe
 }
 
 // adminOwner is the hive account that owns the contract in every
-// test — matches the existing mapping_test.go convention.
+// test. Diverges intentionally from sibling tests
+// (mapping_test.go / blocklist_test.go / confirm_spend_test.go /
+// edge_cases_test.go all use 'hive:milo-hpr') — the IS-login
+// validator-set surface ships against the testnet/mainnet deployer
+// identity 'hive:magi.contracts' (see MEMORY/vsc_contract_deployment).
+// R14-DRIFT-ADMIN-OWNER-CONVENTION-WRONG-COMMENT closed the prior
+// "matches the existing mapping_test.go convention" misleading comment.
 const adminOwner = "hive:magi.contracts"
 
 // epochE2E is the validator-set epoch under test; chosen to avoid
@@ -103,6 +128,8 @@ const epochE2E = uint64(7)
 // adminOwner as the caller.
 func makeContractTest(t *testing.T) (test_utils.ContractTest, string) {
 	t.Helper()
+	// R14-WASM-NOT-COMMITTED-NONDETERMINISTIC fail-fast.
+	requireFreshDevWasm(t)
 	ct := test_utils.NewContractTest()
 	t.Cleanup(func() { ct.DataLayer.Stop() })
 	contractID := "valset_e2e_contract"
@@ -177,8 +204,13 @@ func TestSetValidatorSet_RealPoP_RejectsForgedPubkey(t *testing.T) {
 	// Reject reason MUST be the BLS-verify failure path — not a
 	// parse error. Confirms the contract reached SaveValidatorSetForEpoch
 	// and the host crypto.bls_verify host fn returned false.
-	assert.Contains(t, strings.ToLower(r.ErrMsg), "bls pop failed to verify",
-		"reject must come from BLS verify, not parse; got %q", r.ErrMsg)
+	// Round-14 audit R14-BLS-ERROR-STRING-BRITTLE: assert against the
+	// exported prefix constant so a future reword that keeps the
+	// security property intact stays green.
+	assert.True(t,
+		strings.HasPrefix(r.ErrMsg, constants.ErrPrefixBlsPoPVerifyFailed),
+		"reject must come from BLS verify (prefix %q), not parse; got %q",
+		constants.ErrPrefixBlsPoPVerifyFailed, r.ErrMsg)
 }
 
 func TestSetValidatorSet_RealPoP_RejectsForgedAccount(t *testing.T) {
@@ -199,21 +231,35 @@ func TestSetValidatorSet_RealPoP_RejectsForgedAccount(t *testing.T) {
 	// Account is part of the BLS-signed message (R4-CSM-01 critical
 	// fix); the contract MUST reject at the bls_verify step, not at
 	// some earlier parse/length gate. This is the strongest
-	// regression-pin for the round-4 critical bug.
-	assert.Contains(t, strings.ToLower(r.ErrMsg), "bls pop failed to verify",
-		"reject must come from BLS verify, not parse; got %q", r.ErrMsg)
+	// regression-pin for the round-4 critical bug. Round-14 audit
+	// R14-BLS-ERROR-STRING-BRITTLE: assert via the exported prefix.
+	assert.True(t,
+		strings.HasPrefix(r.ErrMsg, constants.ErrPrefixBlsPoPVerifyFailed),
+		"reject must come from BLS verify (prefix %q), not parse; got %q",
+		constants.ErrPrefixBlsPoPVerifyFailed, r.ErrMsg)
 }
 
 func TestSetValidatorSet_RejectsBadHiveAccountShape(t *testing.T) {
-	// R6-CORR-06 ValidateHiveAccount runs BEFORE the PoP check, so
-	// these reject at the cheap charset/shape gate (we don't even
-	// need to compute a real PoP — the placeholder hex below is
-	// length-correct but never gets verified).
+	// R6-CORR-06 ValidateHiveAccount runs at parse time, after the
+	// pop-length gate. Round-14 audit R14-TEST-FAKEPOP-WRONG-LENGTH:
+	// the previous constant was 160 hex chars (64+64+32), not 192,
+	// so the parser short-circuited at the pop-length gate
+	// BEFORE reaching validateHiveAccount — a regression that
+	// deleted validateHiveAccount entirely would still pass this
+	// test. The constant below is now a real 192 hex chars
+	// (64+64+64) so the parser advances to the account check, and
+	// we also tighten the assertion to require the
+	// invalid-Hive-account prefix.
 	ct, contractID := makeContractTest(t)
 	const fakePop192 = "" +
 		"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2" +
 		"c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6" +
-		"e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"
+		"e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8"
+	// Defence in depth — also catches the case where someone shortens
+	// the constant in a future refactor.
+	require.Equal(t, 192, len(fakePop192),
+		"fakePop192 must be exactly 192 hex chars or the parser "+
+			"rejects at the pop-length gate before validateHiveAccount runs")
 	vk, _ := makeValidatorKey(t, 0x55, "placeholder")
 
 	badAccounts := []string{
@@ -231,8 +277,17 @@ func TestSetValidatorSet_RejectsBadHiveAccountShape(t *testing.T) {
 		t.Run("acct="+acct, func(t *testing.T) {
 			payload := buildEntry(epochE2E, vk.did.String(), vk.pkHex, fakePop192, acct)
 			r := callSetValidatorSet(t, &ct, contractID, adminOwner, payload)
-			assert.False(t, r.Success,
+			require.False(t, r.Success,
 				"account %q must be rejected by ValidateHiveAccount; got success", acct)
+			// Round-14 audit R14-BLS-ERROR-STRING-BRITTLE +
+			// R14-TEST-FAKEPOP-WRONG-LENGTH: assert reject came
+			// from the validateHiveAccount gate (not the earlier
+			// pop-length gate or some other parse error). Pinned
+			// to the exported prefix constant.
+			assert.True(t,
+				strings.HasPrefix(r.ErrMsg, constants.ErrPrefixInvalidHiveAccount),
+				"account %q must hit validateHiveAccount (prefix %q); got %q",
+				acct, constants.ErrPrefixInvalidHiveAccount, r.ErrMsg)
 		})
 	}
 }

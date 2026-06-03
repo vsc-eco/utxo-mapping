@@ -665,8 +665,12 @@ func SaveValidatorSetForEpoch(epoch uint64, didToPubkey, didToPoP, didToAccount 
 		msgBuf.WriteString(account)
 		msgHex := hex.EncodeToString(msgBuf.Bytes())
 		if !sdk.VerifyBls(pk, msgHex, pop) {
+			// Round-14 audit R14-BLS-ERROR-STRING-BRITTLE: prefix is
+			// pinned to constants.ErrPrefixBlsPoPVerifyFailed so the
+			// cross-repo E2E suite can assert against a stable
+			// discriminator instead of the free-form tail.
 			return ce.NewContractError(ce.ErrNoPermission,
-				"BLS PoP failed to verify for validator "+did+" (account="+account+")")
+				constants.ErrPrefixBlsPoPVerifyFailed+" for validator "+did+" (account="+account+")")
 		}
 	}
 	registeredAt := sdk.GetEnv().BlockHeight
@@ -748,8 +752,11 @@ func ParseValidatorSetPayload(payload string) (uint64, map[string]string, map[st
 		// The earlier R5-ADV-02 fix only enforced length + charset,
 		// which accepted '.aa', 'al..ce', '1alice', 'alice-', etc.
 		if err := validateHiveAccount(account); err != nil {
+			// Round-14 audit R14-BLS-ERROR-STRING-BRITTLE: prefix
+			// pinned to constants.ErrPrefixInvalidHiveAccount so the
+			// E2E suite can assert against a stable discriminator.
 			return 0, nil, nil, nil, ce.NewContractError(ce.ErrInput,
-				"invalid Hive account "+account+": "+err.Error())
+				constants.ErrPrefixInvalidHiveAccount+" "+account+": "+err.Error())
 		}
 		pubkeys[did] = pk
 		pops[did] = pop
