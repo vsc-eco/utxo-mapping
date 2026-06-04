@@ -15,10 +15,12 @@
 package forwarder
 
 import (
+	"encoding/base64"
+	"strings"
+
 	"dash-forwarder-contract/contract/constants"
 	ce "dash-forwarder-contract/contract/contracterrors"
 	"dash-forwarder-contract/sdk"
-	"strings"
 )
 
 // ForwardQueueEntry is the state shape dash-mapping-contract writes to
@@ -100,7 +102,22 @@ func Execute(txid string) error {
 	// target makes its own contract calls downstream, the grandchild
 	// sees the target as both caller and effectiveCaller. User
 	// identity propagates downstream only via explicit args.
-	result := sdk.ContractCallAs(parsed.Target, parsed.Method, parsed.ArgsB64, entry.Sender, &sdk.ContractCallOptions{})
+	//
+	// Decode ArgsB64 → raw bytes before invoking the target. Per spec
+	// §5.2.1 the on-wire args field is base64-encoded so the instruction
+	// grammar (`;`-separated KVs, `=`-separated field/value) stays
+	// unambiguous regardless of payload content. The target contract
+	// expects the DECODED payload — JSON for swap-like surfaces,
+	// "key,value" for the call-tss test fixture. Without this decode
+	// the target's input is the raw base64 string and any parse step
+	// silently fails (returns "invalid input" but with result!=nil,
+	// so the forwarder reports a false-positive success).
+	decodedArgs, b64err := DecodeArgs(parsed.ArgsB64)
+	if b64err != nil {
+		return ce.NewError(ce.ErrInput,
+			"args= field not valid base64: "+b64err.Error())
+	}
+	result := sdk.ContractCallAs(parsed.Target, parsed.Method, decodedArgs, entry.Sender, &sdk.ContractCallOptions{})
 	if result == nil {
 		return ce.NewError(ce.ErrTransaction,
 			"target call returned nil — assumed failed")
@@ -248,4 +265,19 @@ func intToString(n int) string {
 		buf[pos] = '-'
 	}
 	return string(buf[pos:])
+}
+
+// DecodeArgs base64-decodes the args= field from a parsed op=call
+// instruction. Empty input returns ("", nil) — value-less calls with
+// no payload (e.g. nft-mint with no parameters) are legitimate and
+// just pass an empty string to the target. Exported for unit tests.
+func DecodeArgs(argsB64 string) (string, error) {
+	if argsB64 == "" {
+		return "", nil
+	}
+	raw, err := base64.StdEncoding.DecodeString(argsB64)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
 }

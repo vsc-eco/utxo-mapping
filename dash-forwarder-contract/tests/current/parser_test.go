@@ -112,6 +112,57 @@ func TestForwardQueueEntry_RoundTrip(t *testing.T) {
 	assert.Contains(t, serialized, constants.StatusPendingForward)
 }
 
+// ----- DecodeArgs -----
+
+func TestDecodeArgs_HappyPathJSON(t *testing.T) {
+	// Spec §5.2.1: args is base64-encoded so the instruction grammar
+	// (`;` field separator, `=` field/value separator) stays unambiguous
+	// regardless of payload content. The forwarder MUST decode it
+	// before invoking the target.
+	const payload = `{"in":"DASH","out":"HBD"}`
+	// Same b64-encoded form used in TestParseInstruction_OpCallHappyPath.
+	got, err := forwarder.DecodeArgs("eyJpbiI6IkRBU0giLCJvdXQiOiJIQkQifQ==")
+	require.NoError(t, err)
+	assert.Equal(t, payload, got)
+}
+
+func TestDecodeArgs_HappyPathCommaSeparated(t *testing.T) {
+	// call-tss test target uses a "key,value" raw form. Spec §5.2.1
+	// requires b64-encoding for ANY shape (the b64 wrapper exists to
+	// dodge `;`/`=` collisions in the instruction grammar, not because
+	// the payload must be JSON).
+	got, err := forwarder.DecodeArgs("b3Boayxvc3B2YWw=")
+	require.NoError(t, err)
+	assert.Equal(t, "ophk,ospval", got)
+}
+
+func TestDecodeArgs_EmptyIsLegitimate(t *testing.T) {
+	// Value-less calls with no parameters (e.g. nft-mint with no
+	// extra args) are legitimate; empty input must decode to empty
+	// output without error.
+	got, err := forwarder.DecodeArgs("")
+	require.NoError(t, err)
+	assert.Equal(t, "", got)
+}
+
+func TestDecodeArgs_RejectsMalformedBase64(t *testing.T) {
+	// Garbage at the field boundary surfaces as ErrInput from
+	// Execute(); the target is never invoked. Pre-fix the forwarder
+	// passed `parsed.ArgsB64` verbatim to the target, which then
+	// silently failed any parse step (e.g. setString's
+	// strings.SplitN(",") returned 1 part, function returned
+	// "invalid input", but the forwarder saw result!=nil and reported
+	// a false-positive success — no state was written).
+	for _, in := range []string{
+		"not!valid base64",
+		"abc",  // length not multiple of 4
+		"abc==", // length-4 padding but invalid chars
+	} {
+		_, err := forwarder.DecodeArgs(in)
+		assert.Error(t, err, "input %q should fail base64 decode", in)
+	}
+}
+
 // ===== integration test scaffold (BUILD IT NEXT) =====
 //
 // The above tests cover the pure-Go parser. The integration test we want

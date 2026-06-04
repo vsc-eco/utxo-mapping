@@ -13,7 +13,7 @@ go 1.25.7
 //
 // This is required to consume the new contracts.call_as host function from
 // modules/wasm/sdk/sdk.go that this contract depends on.
-replace vsc-node => github.com/vsc-eco/go-vsc-node v0.0.0-20260602002529-75c384f4f95f
+replace vsc-node => github.com/vsc-eco/go-vsc-node v0.0.0-20260603163117-d1bcb4112419
 
 replace github.com/agl/ed25519 => github.com/binance-chain/edwards25519 v0.0.0-20200305024217-f36fc4b53d43
 
