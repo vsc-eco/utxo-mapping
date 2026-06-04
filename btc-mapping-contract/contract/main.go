@@ -401,7 +401,9 @@ func Approve(input *string) *string {
 	if params.Spender == env.Caller.String() {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "cannot approve self as spender"))
 	}
-	mapping.HandleApprove(env.Caller.String(), params.Spender, amount)
+	if err := mapping.HandleApprove(env.Caller.String(), params.Spender, amount); err != nil {
+		ce.CustomAbort(err)
+	}
 	return mapping.StrPtr("0")
 }
 
