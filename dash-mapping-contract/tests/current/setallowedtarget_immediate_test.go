@@ -22,12 +22,22 @@ import (
 // TestSetAllowedTargetImmediate_RegtestOnly verifies that the
 // admin-gated setAllowedTargetImmediate action lets a regtest
 // build skip the 7-day AllowListGovernanceTimelockBlocks cooldown
-// (required for tests/devnet's op=call coverage to be feasible),
-// AND that mainnet + real testnet builds reject the same call.
+// (required for tests/devnet's op=call coverage to be feasible).
 //
 // Per audit SEC-3 (R15) the gate moved from "testnet-or-regtest"
 // to "regtest-only" so real testnet exercises the full add+commit
 // timelock flow alongside mainnet.
+//
+// Coverage scope (audit R16-CONS-regtest-only-test-docstring-
+// overpromises): this test uses dashMappingContract.DevWasm (a
+// regtest build) so the happy-path branch is what's verified.
+// The mainnet + real-testnet refusal branch is unit-tested at the
+// constants.go layer (TestSpecPinning_* in the constants pkg)
+// rather than against a per-network wasm artifact — building a
+// separate mainnet.wasm just to assert a refusal would more than
+// double the test-fixture build cost. The wasmexport runtime gate
+// (main.go: !IsRegtest(NetworkMode) → abort) is straight-line
+// code that the constants tests cover.
 //
 // Wire format: payload is a bare vsc1... contract id (no JSON
 // envelope; matches add/commit AllowedTarget shape).

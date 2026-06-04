@@ -1,7 +1,10 @@
-// Pure-Go tests for workstream 5b validator-set lookup + governance
-// timelock helpers. These test the payload parser only — the state
+// Pure-Go tests for the validator-set lookup + governance timelock
+// helpers. These test the payload parser only — the state
 // reads/writes (including PoP verify) are exercised in the WASM-level
-// integration suite when it lands (workstream 6 follow-up).
+// integration suite. Audit R16-CONS-workstream5b-followup-leftover:
+// dropped the "workstream 5b" / "workstream 6 follow-up" framing
+// because all of that shipped in the R15-fix run; the comment now
+// describes the current code-organisation reality.
 //
 // Round-3 audit R3-001: payload format now requires PoP per entry.
 // Round-4 audit R4-CSM-01: payload format now ALSO carries the
