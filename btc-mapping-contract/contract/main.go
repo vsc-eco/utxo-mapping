@@ -39,7 +39,10 @@ func checkOracle() {
 	if caller == constants.OracleAddress {
 		return
 	}
-	if constants.IsTestnet(NetworkMode) && caller == *sdk.GetEnvKey("contract.owner") {
+	// Audit R16-SEC-sec3-sibling-utxo-contracts-unfixed: owner-as-
+	// oracle shortcut applies on both real testnet AND regtest
+	// (single trusted operator runs both).
+	if constants.IsTestnetOrRegtest(NetworkMode) && caller == *sdk.GetEnvKey("contract.owner") {
 		return
 	}
 	ce.CustomAbort(
@@ -84,7 +87,10 @@ func SeedBlocks(blockSeedInput *string) *string {
 		ce.CustomAbort(ce.WrapContractError(ce.ErrJson, err, "error unmarshalling seed blocks input"))
 	}
 
-	newLastHeight, err := blocklist.HandleSeedBlocks(seedParams, constants.IsTestnet(NetworkMode))
+	// Idempotency relaxation: testnet + regtest can re-seed; mainnet
+	// is one-shot. Both operator modes need the relaxation. Audit
+	// R16-SEC-sec3-sibling-utxo-contracts-unfixed.
+	newLastHeight, err := blocklist.HandleSeedBlocks(seedParams, constants.IsTestnetOrRegtest(NetworkMode))
 	if err != nil {
 		ce.CustomAbort(err)
 	}
@@ -691,7 +697,10 @@ func RegisterPublicKey(keyStr *string) *string {
 			ce.CustomAbort(ce.Prepend(err, "error registering primary public key"))
 		}
 		existingPrimary := sdk.StateGetObject(constants.PrimaryPublicKeyStateKey)
-		if *existingPrimary == "" || constants.IsTestnet(NetworkMode) {
+		// Bridge pubkey overwrite is regtest-only (audit
+		// R16-SEC-sec3-sibling-utxo-contracts-unfixed). Real testnet
+		// uses the same once-and-immutable model as mainnet.
+		if *existingPrimary == "" || constants.IsRegtest(NetworkMode) {
 			sdk.StateSetObject(constants.PrimaryPublicKeyStateKey, string(key[:]))
 			resultBuilder.WriteString("set primary key to: " + keys.PrimaryPubKey)
 		} else {
@@ -708,7 +717,8 @@ func RegisterPublicKey(keyStr *string) *string {
 			resultBuilder.WriteString(", ")
 		}
 		existingBackup := sdk.StateGetObject(constants.BackupPublicKeyStateKey)
-		if *existingBackup == "" || constants.IsTestnet(NetworkMode) {
+		// Bridge backup-pubkey overwrite is regtest-only too.
+		if *existingBackup == "" || constants.IsRegtest(NetworkMode) {
 			sdk.StateSetObject(constants.BackupPublicKeyStateKey, string(key[:]))
 			resultBuilder.WriteString("set backup key to: " + keys.BackupPubKey)
 		} else {
@@ -769,7 +779,9 @@ func RegisterRouter(input *string) *string {
 
 	if router.ContractId != "" {
 		existingPrimary := sdk.StateGetObject(constants.RouterContractIdKey)
-		if *existingPrimary == "" || constants.IsTestnet(NetworkMode) {
+		// Router overwrite is regtest-only (audit
+		// R16-SEC-sec3-sibling-utxo-contracts-unfixed).
+		if *existingPrimary == "" || constants.IsRegtest(NetworkMode) {
 			sdk.StateSetObject(constants.RouterContractIdKey, router.ContractId)
 			resultBuilder.WriteString("set router contract ID to: " + router.ContractId)
 		} else {

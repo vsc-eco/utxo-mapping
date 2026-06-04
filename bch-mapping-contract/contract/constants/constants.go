@@ -119,6 +119,22 @@ const (
 	Regtest string = "regtest"
 )
 
+// IsTestnet is TRUE only for real-testnet builds. Regtest is NOT a
+// testnet — it's the throwaway harness used by devnet runs +
+// `make dev` builds. Audit R16-SEC-sec3-sibling-utxo-contracts-
+// unfixed (mirror of dash-mapping-contract SEC-3 R15 fix).
 func IsTestnet(networkName string) bool {
+	return networkName == Testnet
+}
+
+// IsRegtest is TRUE only for the regtest harness.
+func IsRegtest(networkName string) bool {
+	return networkName == Regtest
+}
+
+// IsTestnetOrRegtest is TRUE for any non-mainnet build (old
+// IsTestnet behaviour). Use when the gated behaviour is admin-
+// trusted in BOTH real testnet and the regtest harness.
+func IsTestnetOrRegtest(networkName string) bool {
 	return networkName == Testnet || networkName == Regtest
 }
