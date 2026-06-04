@@ -106,3 +106,65 @@ func TestEstimateP2SHTxBytes_RegressionVsOldSegwitFormula(t *testing.T) {
 		})
 	}
 }
+
+// TestCalculateP2SHFee_EndToEnd covers audit R17-OPS-p2sh-fee-test-
+// only-pins-formula-not-callsite (LOW). The byte-count helper is
+// already pinned via TestEstimateP2SHTxBytes_* but those don't catch
+// regressions in the fee math at calculateP2SHFee + estimateFee
+// callsites (e.g. someone swaps the multiply order, drops the
+// per-input loop, or pre-multiplies somewhere wrong). End-to-end
+// pinning: construct a representative redeemScripts map, call
+// calculateP2SHFee with a known baseSize + known fee rate, and
+// assert the fee value matches a hand-computed expected number.
+func TestCalculateP2SHFee_EndToEnd(t *testing.T) {
+	// Two inputs, deposit-shape (112-byte redeem script).
+	redeemScripts := map[int][]byte{
+		0: make([]byte, 112),
+		1: make([]byte, 112),
+	}
+	// Per-input scriptSig content: 72-byte sig + 1-byte branch +
+	// 112-byte redeem script + 5 bytes framing = 190 bytes.
+	// Two inputs → scriptDataSize = 380.
+	// nonScriptSize = baseSize from caller; pin at 200 (representative
+	// of a 2-in 1-out skeleton).
+	const nonScriptSize int64 = 200
+	const wantScriptData int64 = 2 * (72 + 112 + 5) // = 380
+	const wantTotalBytes int64 = nonScriptSize + wantScriptData // 580
+
+	// ContractState with feeRate=10 sats/byte → expected fee 5800.
+	cs := &ContractState{
+		Supply: SystemSupply{BaseFeeRate: 10},
+	}
+	fee, err := cs.calculateP2SHFee(nonScriptSize, redeemScripts)
+	if err != nil {
+		t.Fatalf("calculateP2SHFee: %v", err)
+	}
+	if fee != wantTotalBytes*10 {
+		t.Errorf("calculateP2SHFee = %d, want %d (= %d bytes × 10 sat/byte)",
+			fee, wantTotalBytes*10, wantTotalBytes)
+	}
+
+	// Sanity: zero inputs / empty map → just base × feeRate. Caller
+	// must not get tripped by an empty redeemScripts map.
+	feeEmpty, err := cs.calculateP2SHFee(nonScriptSize, map[int][]byte{})
+	if err != nil {
+		t.Fatalf("calculateP2SHFee empty: %v", err)
+	}
+	if feeEmpty != nonScriptSize*10 {
+		t.Errorf("calculateP2SHFee with empty redeemScripts = %d, want %d",
+			feeEmpty, nonScriptSize*10)
+	}
+
+	// clampedFeeRate guard: BaseFeeRate=0 should clamp UP to 1 (the
+	// floor), not produce zero fee. Otherwise a misconfigured oracle
+	// could publish 0 fee → miners reject the tx as zero-fee.
+	cs.Supply.BaseFeeRate = 0
+	feeClamped, err := cs.calculateP2SHFee(nonScriptSize, redeemScripts)
+	if err != nil {
+		t.Fatalf("calculateP2SHFee clamped: %v", err)
+	}
+	if feeClamped != wantTotalBytes*1 {
+		t.Errorf("clampedFeeRate floor: expected %d × 1, got %d",
+			wantTotalBytes, feeClamped)
+	}
+}
