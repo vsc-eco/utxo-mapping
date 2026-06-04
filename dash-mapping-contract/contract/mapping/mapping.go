@@ -22,7 +22,8 @@ func isForVscAcc(
 	if err != nil {
 		return "", false, ce.WrapContractError(ce.ErrInput, err, "could not extract pkscript address")
 	}
-	// should always being exactly length 1 for P2SH an P2WSH addresses
+	// should always be exactly length 1 for P2SH addresses (Dash never
+	// activated SegWit, so the deposit-address commitment is always P2SH)
 	for _, addr := range addrs {
 		addressString := addr.EncodeAddress()
 		if _, ok := addresses[addressString]; ok {

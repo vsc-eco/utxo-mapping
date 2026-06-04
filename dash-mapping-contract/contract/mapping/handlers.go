@@ -122,7 +122,7 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		return ce.Prepend(err, "error getting input utxos")
 	}
 
-	changeAddress, _, err := createP2WSHAddressWithBackup(
+	changeAddress, _, err := createP2SHAddressWithBackup(
 		cs.PublicKeys.Primary,
 		cs.PublicKeys.Backup,
 		nil,

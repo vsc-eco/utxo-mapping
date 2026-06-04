@@ -12,9 +12,13 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 )
 
-// Dash-specific network params for address validation. Dash uses different
-// address version bytes than Bitcoin. Bech32HRPSegwit is set for internal
-// P2WSH tracking only (Dash has no native segwit).
+// Dash-specific network params for address validation. Dash uses
+// different address version bytes than Bitcoin and never activated
+// SegWit, so the bech32 HRP is set defensively for any leftover
+// bech32 utilities — it is NOT used for deposit-address derivation
+// (which uses base58 P2SH; see createP2SHAddressWithBackup).
+// Audit R15-CONS-03: the prior "internal P2WSH tracking only" wording
+// was internally contradictory after the P2SH switch.
 func dashTestNetParams() *chaincfg.Params {
 	p := chaincfg.TestNet3Params
 	p.PubKeyHashAddrID = 0x8c // 'y' prefix
@@ -178,7 +182,7 @@ func (cs *ContractState) parseInstructions(
 			hasher := sha256.New()
 			hasher.Write([]byte(instr))
 			hashBytes := hasher.Sum(nil)
-			address, _, err := createP2WSHAddressWithBackup(
+			address, _, err := createP2SHAddressWithBackup(
 				publicKeys.Primary,
 				publicKeys.Backup,
 				hashBytes,

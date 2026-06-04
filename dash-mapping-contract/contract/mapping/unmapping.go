@@ -81,14 +81,18 @@ func (cs *ContractState) estimateFee(numInputs int64, amount, inputAmount int64)
 	baseSize := int64(10)
 	// Input size: outpoint (36) + script sig length (1) + sequence (4)
 	inputSize := numInputs * 41
-	// Output size: value (8) + script length (1) + P2WSH script (34)
+	// Output size: value (8) + script length (1) + P2SH/P2WSH script (~34)
 	outputSize := int64(43) // 1 destination output
 
-	// Witness stack per input: <sig> <branch_selector> <witness_script>
-	// Serialized: item_count(1) + sig_len(1) + sig(72) + branch_len(1) + branch(1) + script_len(1) + script(N)
-	// Witness script is ~79 bytes for change UTXOs (no tag) or ~112 bytes for
-	// deposit UTXOs (with 32-byte tag). Use 112 as conservative upper bound
-	// to ensure fee estimate >= actual fee from calculateSegwitFee.
+	// Per-input script data: <sig> <branch_selector> <redeem_script>.
+	// Serialized: item_count(1) + sig_len(1) + sig(72) + branch_len(1) +
+	// branch(1) + script_len(1) + script(N). Script is ~79 bytes for
+	// change UTXOs (no tag) or ~112 bytes for deposit UTXOs (with 32-
+	// byte tag). Use 112 as conservative upper bound. Naming kept as
+	// `witnessDataSize` to match calculateSegwitFee's parameter name
+	// (the vsize math underneath still uses the segwit-discount formula
+	// — see TODO on calculateSegwitFee below for the underlying P2SH
+	// fee-math correctness question, out of scope for this CONS rename).
 	witnessDataSize := numInputs * (72 + 112 + 5)
 
 	// Compute base fee (no change outputs) first
@@ -210,16 +214,30 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint16, int64, error) 
 	return nil, 0, ce.NewContractError(ce.ErrBalance, "total available balance insufficient to complete transaction")
 }
 
+// calculateSegwitFee computes the unmap-tx fee using a segwit-discount
+// vsize formula. NAME KEPT for now: see audit R15-CONS-04. The
+// underlying math applies the segwit 1/4 weight discount to the
+// "witness data" (signature + branch selector + redeem script), but
+// Dash uses P2SH (no segwit discount in reality), so the actual
+// on-chain bytes are charged at full rate. As a result this returns
+// a fee that is materially LOW for P2SH spends; the unmap tx may
+// chronically under-pay miners on mainnet. This is a CORRECTNESS gap
+// flagged separately from the P2WSH→P2SH naming sweep — TODO: rename
+// to calculateP2SHFee + drop the /4 discount in a dedicated
+// fee-correctness change with a fixture/diff that quantifies the
+// before/after fee. Out of scope of audit R15-CONS-01 which is a
+// pure docstring/naming rename.
 func (cs *ContractState) calculateSegwitFee(baseSize int64, witnessScripts map[int][]byte) (int64, error) {
 	feeRate := clampedFeeRate(cs.Supply.BaseFeeRate)
-	// Witness stack per input: <sig> <branch_selector> <witness_script>
-	// Serialized: item_count(1) + sig_len(1) + sig(72) + branch_len(1) + branch(1) + script_len(1) + script(N)
+	// Per-input script data shape (see comment on the estimator
+	// variant in estimateFee above for the full layout).
 	witnessDataSize := int64(0)
 	for _, witnessScript := range witnessScripts {
 		witnessDataSize += 72 + int64(len(witnessScript)) + 5
 	}
 	totalSize := baseSize + witnessDataSize
-	// +3 to round up, + 2 for has witness data flag
+	// +3 to round up, + 2 for has-witness-data flag. The /4 discount
+	// is segwit-style — see TODO above.
 	vSize := (baseSize*3+totalSize+3)/4 + 2
 	fee, err := safeMultiply64(vSize, feeRate)
 	if err != nil {
@@ -252,7 +270,7 @@ func (cs *ContractState) buildSpendTransaction(
 		txIn := wire.NewTxIn(outPoint, nil, nil)
 		tx.AddTxIn(txIn)
 
-		_, witnessScript, err := createP2WSHAddressWithBackup(
+		_, witnessScript, err := createP2SHAddressWithBackup(
 			cs.PublicKeys.Primary,
 			cs.PublicKeys.Backup,
 			utxo.Tag, // already []byte
@@ -421,7 +439,7 @@ func indexUnconfimedOutputs(tx *wire.MsgTx, changeAddress string, network *chain
 		if err != nil {
 			return nil, err
 		}
-		// must be 1 because it's P2WSH
+		// must be 1 because it's a standard P2SH output (one script-hash address)
 		if len(addrs) != 1 {
 			return nil, ce.NewContractError(ce.ErrTransaction, "incorrect number of addresses for transaction output")
 		}
