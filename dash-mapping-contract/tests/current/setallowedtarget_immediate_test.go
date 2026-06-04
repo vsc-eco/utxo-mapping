@@ -29,15 +29,21 @@ import (
 // timelock flow alongside mainnet.
 //
 // Coverage scope (audit R16-CONS-regtest-only-test-docstring-
-// overpromises): this test uses dashMappingContract.DevWasm (a
-// regtest build) so the happy-path branch is what's verified.
-// The mainnet + real-testnet refusal branch is unit-tested at the
-// constants.go layer (TestSpecPinning_* in the constants pkg)
-// rather than against a per-network wasm artifact — building a
-// separate mainnet.wasm just to assert a refusal would more than
-// double the test-fixture build cost. The wasmexport runtime gate
-// (main.go: !IsRegtest(NetworkMode) → abort) is straight-line
-// code that the constants tests cover.
+// overpromises + R17-CONS-regtest-only-test-claims-constants-cover-
+// runtime-gate): this test uses dashMappingContract.DevWasm (a
+// regtest build) so only the happy-path branch is verified here.
+// The mainnet + real-testnet refusal branch (main.go:392 —
+// `!constants.IsRegtest(NetworkMode) → CustomAbort`) is NOT
+// exercised by this file — that gate runs at the wasmexport
+// entrypoint and a real assertion would require building a
+// separate mainnet.wasm / testnet.wasm artifact and calling
+// setAllowedTargetImmediate against it.
+//
+// The R16 docstring incorrectly claimed "the constants tests cover
+// the wasmexport runtime gate" — they don't; they only pin the
+// IsTestnet/IsRegtest predicate values. A dedicated multi-wasm
+// refusal test is a separate ticket; for now the gate is one line
+// of straight-line code whose review burden is borne at PR time.
 //
 // Wire format: payload is a bare vsc1... contract id (no JSON
 // envelope; matches add/commit AllowedTarget shape).

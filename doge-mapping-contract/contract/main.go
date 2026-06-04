@@ -688,7 +688,9 @@ func RegisterPublicKey(keyStr *string) *string {
 			ce.CustomAbort(ce.Prepend(err, "error registering primary public key"))
 		}
 		existingPrimary := sdk.StateGetObject(constants.PrimaryPublicKeyStateKey)
-		// Bridge pubkey / router overwrite is regtest-only.
+		// Bridge primary-pubkey overwrite is regtest-only (audit
+		// R16-SEC-sec3-sibling-utxo-contracts-unfixed). Backup-pubkey
+		// + router each have their own per-branch gate below.
 		if *existingPrimary == "" || constants.IsRegtest(NetworkMode) {
 			sdk.StateSetObject(constants.PrimaryPublicKeyStateKey, string(key[:]))
 			resultBuilder.WriteString("set primary key to: " + keys.PrimaryPubKey)
@@ -768,7 +770,8 @@ func RegisterRouter(input *string) *string {
 
 	if router.ContractId != "" {
 		existingPrimary := sdk.StateGetObject(constants.RouterContractIdKey)
-		// Bridge pubkey / router overwrite is regtest-only.
+		// Router contract-id overwrite is regtest-only (audit
+		// R16-SEC-sec3-sibling-utxo-contracts-unfixed).
 		if *existingPrimary == "" || constants.IsRegtest(NetworkMode) {
 			sdk.StateSetObject(constants.RouterContractIdKey, router.ContractId)
 			resultBuilder.WriteString("set router contract ID to: " + router.ContractId)

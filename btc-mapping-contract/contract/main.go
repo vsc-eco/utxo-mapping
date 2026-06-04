@@ -31,7 +31,14 @@ import (
 	"github.com/CosmWasm/tinyjson"
 )
 
-// passed via ldflags, will compile for testnet when set to "testnet"
+// NetworkMode is set at compile time via ldflags
+// (-X main.NetworkMode=<value>). Accepted values are
+// "mainnet" (default), "testnet3", "testnet4", and "regtest".
+// Each value selects different branches via the
+// constants.IsTestnet / IsRegtest / IsTestnetOrRegtest predicates
+// — see audit R16-SEC-sec3-sibling-utxo-contracts-unfixed for the
+// three-way split rationale (regtest dev wasm vs real testnet vs
+// mainnet have different admin-bypass surfaces).
 var NetworkMode string
 
 func checkOracle() {

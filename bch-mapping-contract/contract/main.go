@@ -690,8 +690,11 @@ func RegisterPublicKey(keyStr *string) *string {
 			ce.CustomAbort(ce.Prepend(err, "error registering primary public key"))
 		}
 		existingPrimary := sdk.StateGetObject(constants.PrimaryPublicKeyStateKey)
-		// Bridge pubkey / router overwrite is regtest-only (audit
-		// R16-SEC-sec3-sibling-utxo-contracts-unfixed).
+		// Bridge primary-pubkey overwrite is regtest-only (audit
+		// R16-SEC-sec3-sibling-utxo-contracts-unfixed). Same gate on
+		// backup-pubkey below + on router below — but each branch
+		// applies to the ONE state key it guards, not all three at
+		// once. Comment per branch describes only that branch.
 		if *existingPrimary == "" || constants.IsRegtest(NetworkMode) {
 			sdk.StateSetObject(constants.PrimaryPublicKeyStateKey, string(key[:]))
 			resultBuilder.WriteString("set primary key to: " + keys.PrimaryPubKey)
@@ -771,7 +774,7 @@ func RegisterRouter(input *string) *string {
 
 	if router.ContractId != "" {
 		existingPrimary := sdk.StateGetObject(constants.RouterContractIdKey)
-		// Bridge pubkey / router overwrite is regtest-only (audit
+		// Router contract-id overwrite is regtest-only (audit
 		// R16-SEC-sec3-sibling-utxo-contracts-unfixed).
 		if *existingPrimary == "" || constants.IsRegtest(NetworkMode) {
 			sdk.StateSetObject(constants.RouterContractIdKey, router.ContractId)

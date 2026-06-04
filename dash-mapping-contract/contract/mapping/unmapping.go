@@ -265,6 +265,15 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint16, int64, error) 
 //	                 redeem script + push-opcode framing)
 //
 // No /4 discount; no +2 witness-flag overhead.
+// Audit R17-CONS-calculate-p2sh-fee-redeemscripts-param-name-drift:
+// callers pass a `witnessScripts` map[int][]byte (variable name kept
+// because the same map is threaded into btcd's PrevOut.WitnessScript
+// field downstream, where the name is fixed by the btcd API). Within
+// THIS function the values are the P2SH redeem scripts that will be
+// embedded in each input's scriptSig, so the parameter name reads
+// `redeemScripts`. The two names describe the same bytes from
+// different vantage points; the parameter rename was a deliberate
+// audit R15-CONS-01 alignment.
 func (cs *ContractState) calculateP2SHFee(nonScriptSize int64, redeemScripts map[int][]byte) (int64, error) {
 	feeRate := clampedFeeRate(cs.Supply.BaseFeeRate)
 	// Per-input scriptSig content; matches the per-input estimate in

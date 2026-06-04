@@ -22,8 +22,9 @@ rollback.
 
 ```bash
 cd dash-mapping-contract
-USE_DOCKER=1 make testnet      # for testnet wasm
+USE_DOCKER=1 make testnet      # for the real-testnet wasm
 USE_DOCKER=1 make mainnet      # for mainnet wasm
+USE_DOCKER=1 make dev          # for the regtest / devnet wasm (admin-bypass paths enabled — NEVER deploy to a public network)
 ```
 
 Then deploy the resulting `bin/<network>.wasm` via the
@@ -35,9 +36,12 @@ contract ID (`vsc1...`) — every subsequent admin action targets it.
 > `bin/dev.wasm` being present locally (see DEVELOPING.md).
 
 The contract code expects the network mode to be compiled into the binary
-via `-X main.NetworkMode=<testnet|mainnet>` (the Makefile does this). Mixing
-a `testnet` binary with a mainnet deploy is rejected by `init()` — the
-contract panics on start.
+via `-X main.NetworkMode=<mainnet|testnet|regtest>` (the Makefile does
+this — `make dev` and `make regtest` both produce a regtest build). Per
+audit SEC-3, regtest and testnet are now distinct: regtest re-enables
+admin-bypass paths (bridge pubkey overwrite, `setAllowedTargetImmediate`)
+that are forbidden on real testnet AND mainnet. Mixing wasm + network is
+caught at startup by the `init()` check.
 
 ---
 
