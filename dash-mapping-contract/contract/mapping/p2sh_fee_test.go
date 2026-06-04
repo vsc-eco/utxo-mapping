@@ -122,16 +122,20 @@ func TestCalculateP2SHFee_EndToEnd(t *testing.T) {
 		0: make([]byte, 112),
 		1: make([]byte, 112),
 	}
-	// Per-input scriptSig content: 72-byte sig + 1-byte branch +
-	// 112-byte redeem script + 5 bytes framing = 190 bytes.
-	// Two inputs → scriptDataSize = 380.
-	// nonScriptSize = baseSize from caller; pin at 200 (representative
-	// of a 2-in 1-out skeleton).
+	// Per-input scriptSig content under calculateP2SHFee's
+	// formula (72 + len(redeemScript) + 5): 72-byte sig + 112-byte
+	// redeem script + 5 bytes of push-opcode + branch-selector
+	// framing = 189 bytes per input. Two inputs → scriptDataSize =
+	// 378. (Audit R18-OPS-p2sh-fee-test-comment-arithmetic-off-by-2-
+	// bytes-per-input + R18-CONS-p2sh-fee-test-arithmetic-comment-
+	// 378-vs-380 corrected the off-by-one from the prior "190/380"
+	// comment.) nonScriptSize = baseSize from caller; pin at 200
+	// (representative of a 2-in 1-out skeleton).
 	const nonScriptSize int64 = 200
-	const wantScriptData int64 = 2 * (72 + 112 + 5) // = 380
-	const wantTotalBytes int64 = nonScriptSize + wantScriptData // 580
+	const wantScriptData int64 = 2 * (72 + 112 + 5) // = 378
+	const wantTotalBytes int64 = nonScriptSize + wantScriptData // = 578
 
-	// ContractState with feeRate=10 sats/byte → expected fee 5800.
+	// ContractState with feeRate=10 sats/byte → expected fee 5780.
 	cs := &ContractState{
 		Supply: SystemSupply{BaseFeeRate: 10},
 	}
