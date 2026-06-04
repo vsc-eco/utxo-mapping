@@ -324,11 +324,20 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 	}
 	txId := msgTx.TxID()
 
+	// Reject an empty index set up front. A confirmSpend with no indices can
+	// never promote a UTXO, so without this guard it would fall through to the
+	// signing-data cleanup below and wipe a pending withdrawal's signing context
+	// without confirming anything (permissionless griefing of an in-flight spend).
+	if len(indices) == 0 {
+		return ce.NewContractError(ce.ErrInput, "indices must be non-empty")
+	}
+
 	indexSet := make(map[uint32]struct{}, len(indices))
 	for _, idx := range indices {
 		indexSet[idx] = struct{}{}
 	}
 
+	promoted := 0
 	for i, entry := range cs.UtxoList {
 		if entry.Id >= constants.UtxoConfirmedPoolStart {
 			continue
@@ -350,6 +359,16 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 		saveUtxo(newId, utxo)
 		sdk.StateDeleteObject(getUtxoKey(cs.UtxoList[i].Id))
 		cs.UtxoList[i].Id = newId
+		promoted++
+	}
+
+	// Only delete the pending spend's signing data once at least one of its
+	// unconfirmed outputs has actually been promoted to the confirmed pool. If
+	// nothing matched (empty/non-matching indices, or the outputs are no longer
+	// present), leave the signing data intact so the withdrawal stays recoverable
+	// rather than being silently stranded.
+	if promoted == 0 {
+		return ce.NewContractError(ce.ErrInput, "no unconfirmed outputs matched the provided indices")
 	}
 
 	// Clean up signing data for this tx if present.
