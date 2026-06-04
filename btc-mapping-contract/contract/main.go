@@ -200,7 +200,11 @@ func AddBlocks(addBlocksInput *string) *string {
 		ce.CustomAbort(err)
 	}
 	latestFee := addBlocksObj.LatestFee
-	if latestFee == 0 {
+	// LatestFee is a signed int64. Clamp any non-positive oracle value to 1 so a
+	// zero (or negative, e.g. an oracle integer-underflow bug) fee rate is never
+	// persisted as a corrupt BaseFeeRate. The `<= 0` guard subsumes the old `== 0`
+	// case and matches the consumption-side clampedFeeRate lower bound of 1.
+	if latestFee <= 0 {
 		latestFee = 1
 	}
 	systemSupply.BaseFeeRate = latestFee

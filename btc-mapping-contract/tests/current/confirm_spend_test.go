@@ -128,12 +128,22 @@ func TestConfirmSpend(t *testing.T) {
 	}
 }
 
-// TestConfirmSpendUnknownTxId verifies that calling confirmSpend with a valid
-// proof for a tx not in the pending list is a successful no-op.
+// TestConfirmSpendUnknownTxId verifies that confirmSpend with a valid proof for
+// the pending spend, proven against a different block height, still succeeds and
+// promotes the matching change UTXO.
+//
+// NOTE on the BTC-L-CONFIRMSPEND fix: buildConfirmSpendFixture is deterministic
+// — the spend tx (and therefore its txid) is identical regardless of the block
+// height argument; only the wrapping block differs. So this "unknown" fixture
+// shares fixture.TxId with the pending spend, and Indices=[0] matches the
+// unconfirmed change output at vout 0. One UTXO is promoted, so the call still
+// succeeds after the fix (the fix only reverts when NOTHING is promoted — that
+// genuinely-no-match path is covered by TestC7_ConfirmSpendNonMatchingIndicesReverts
+// and TestC7_ConfirmSpendEmptyIndicesGriefReverts).
 func TestConfirmSpendUnknownTxId(t *testing.T) {
 	ct, contractId, _ := setupConfirmSpendContract(t)
 
-	// Build a different tx (not in the pending list) with its own block proof.
+	// Build the same spend tx wrapped in a different block height + proof.
 	unknownFixture := buildConfirmSpendFixture(t, 102)
 	ct.StateSet(contractId, constants.BlockPrefix+"102", unknownFixture.BlockHeaderRaw)
 
@@ -147,7 +157,7 @@ func TestConfirmSpendUnknownTxId(t *testing.T) {
 		Indices: []uint32{0},
 	}
 	r := callConfirmSpend(t, ct, contractId, "hive:milo-hpr", params)
-	assert.True(t, r.Success, "confirmSpend with unknown txId should succeed (no-op)")
+	assert.True(t, r.Success, "confirmSpend promoting the matching change UTXO should succeed")
 }
 
 // TestConfirmSpendAnyCallerCanConfirm verifies that any caller can call confirmSpend
