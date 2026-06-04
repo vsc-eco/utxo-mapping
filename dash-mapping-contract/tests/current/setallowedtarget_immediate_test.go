@@ -96,3 +96,60 @@ func TestSetAllowedTargetImmediate_NonAdminRejected(t *testing.T) {
 	assert.False(t, r.Success,
 		"non-admin caller must be rejected; got success")
 }
+
+// TestSetAllowedTargetImmediate_ClearsPendingRemove covers audit
+// R15-CORR-setallowedtargetimmediate-pending-remove-stranded. The
+// immediate-set helper must clear BOTH the pending-add AND the
+// pending-remove for the same target. Without the pending-remove
+// clear, a fixture that armed a remove first and then re-set via the
+// immediate path would leave the timelocked remove counting; the
+// later commitRemoveAllowedTarget would silently revoke the entry
+// mid-test. ProposeAllowedTargetAdd checks for this conflict; the
+// immediate path now does too.
+func TestSetAllowedTargetImmediate_ClearsPendingRemove(t *testing.T) {
+	requireFreshDevWasm(t)
+	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
+	contractID := "set_allowed_target_immediate_clears_pending_remove"
+	ct.RegisterContract(contractID, adminOwner, dashMappingContract.DevWasm)
+
+	const targetId = "vsc1AbcDefGhiJklMnoPqrStuVwxYz0123456789"
+
+	// Pre-arm a pending-remove for the target. Encoding mirrors what
+	// proposeAllowedTargetRemove writes: an 8-byte BE uint64
+	// unlock-block. Concrete value doesn't matter for the test —
+	// we only care that the entry exists before + is gone after.
+	pendingRemoveKey := constants.PendingAllowedTargetRemoveKeyPrefix + targetId
+	pendingValue := string([]byte{0, 0, 0, 0, 0, 0x01, 0, 0}) // arbitrary unlock height
+	ct.StateSet(contractID, pendingRemoveKey, pendingValue)
+	require.Equal(t, pendingValue, ct.StateGet(contractID, pendingRemoveKey),
+		"pending-remove must be armed before the immediate-set runs")
+
+	r := ct.Call(stateEngine.TxVscCallContract{
+		Self: stateEngine.TxSelf{
+			TxId:                 "tx-set-immed-clears",
+			BlockId:              "block:clears",
+			Index:                3,
+			OpIndex:              0,
+			Timestamp:            "2026-06-04T00:00:00",
+			RequiredAuths:        []string{adminOwner},
+			RequiredPostingAuths: []string{},
+		},
+		ContractId: contractID,
+		Action:     "setAllowedTargetImmediate",
+		Payload:    json.RawMessage([]byte(targetId)),
+		RcLimit:    10000,
+		Intents:    []contracts.Intent{},
+		Caller:     adminOwner,
+	})
+	require.True(t, r.Success,
+		"setAllowedTargetImmediate must succeed; err=%q msg=%q", r.Err, r.ErrMsg)
+
+	// Active entry exists.
+	assert.Equal(t, "1", ct.StateGet(contractID, constants.AllowedTargetsKeyPrefix+targetId),
+		"active allowlist entry must be set")
+	// Pending-remove must be gone — this is the R15 audit assertion.
+	assert.Empty(t, ct.StateGet(contractID, pendingRemoveKey),
+		"pending-remove must be cleared so a later commitRemoveAllowedTarget "+
+			"cannot silently revoke the just-set entry")
+}

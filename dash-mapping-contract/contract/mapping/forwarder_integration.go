@@ -903,18 +903,27 @@ func CommitAllowedTarget(targetId string, currentBlock uint64) (bool, uint64, er
 
 // SetAllowedTargetImmediate writes targetId directly into the active
 // allowlist, bypassing the AllowListGovernanceTimelockBlocks cooldown.
-// **TESTNET ONLY** — main.go's wasmexport refuses to call this when
-// NetworkMode != "testnet"/"regtest", so mainnet builds reject the
-// shortcut at the entrypoint. Required for tests/devnet to exercise
-// the op=call → forwarder dispatch path without burning 86400 blocks
-// of regtest mining for the timelock to elapse.
+// **REGTEST ONLY** — main.go's wasmexport refuses to call this when
+// NetworkMode != "regtest", so mainnet AND real testnet builds reject
+// the shortcut at the entrypoint (audit SEC-3). Required for the
+// regtest-only tests/devnet harness to exercise the op=call →
+// forwarder dispatch path without burning 86400 blocks of mining for
+// the timelock to elapse.
 //
-// Also clears any pending add for the same target so the regular
-// add+commit flow stays consistent if the operator later wants to
-// re-test the timelock path.
+// Clears BOTH pending-add AND pending-remove for the same target so
+// the target's governance state is "active, no pending mutations".
+// Audit R15-CORR-setallowedtargetimmediate-pending-remove-stranded:
+// without the pending-remove clear, a fixture that ran the remove
+// flow first and then reused the contract state for an immediate-set
+// sanity check would leave the pending-remove counting; a later
+// CommitAllowedTargetRemove would silently revoke the entry mid-test.
+// ProposeAllowedTargetAdd at line 871 already checks for this
+// conflict on the regular add path — the immediate path needs the
+// same defense.
 func SetAllowedTargetImmediate(targetId string) {
 	sdk.StateSetObject(constants.AllowedTargetsKeyPrefix+targetId, "1")
 	sdk.StateDeleteObject(constants.PendingAllowedTargetAddKeyPrefix + targetId)
+	sdk.StateDeleteObject(constants.PendingAllowedTargetRemoveKeyPrefix + targetId)
 }
 
 // proposeAllowedTargetRemove + commitAllowedTargetRemove mirror the add
