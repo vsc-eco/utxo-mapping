@@ -268,8 +268,11 @@ accept user `mapInstantSendV2` traffic.
 
 ## 6. Open items for mainnet flip
 
-- [ ] Replace dev `addressSignerSecret` (HMAC) with HSM/KMS asymmetric
-      signer at the IS service layer (spec §5.7).
+- [x] Replace dev `addressSignerSecret` (HMAC) with HSM/KMS asymmetric
+      signer at the IS service layer (spec §5.7). Two production-shape
+      backends shipped: file-based Ed25519 (`-signerEd25519KeyFile`)
+      and HashiCorp Vault Transit (`-signerVaultAddr`, recipe in the
+      IS-service RUNBOOK §1.3).
 - [ ] `setMinAttestations(floor(2M/3)+1)` after the production validator
       set is registered.
 - [ ] Validator-set rotation cron / runbook ownership assigned.

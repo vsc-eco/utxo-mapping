@@ -38,8 +38,10 @@ Spec §5.2.7 — v1 initial list is exactly the magi-dex router.
 Key:   `at/<contract-id>`
 Value: `"1"` if allowed; missing/empty otherwise.
 
-Adding requires 7-day timelock + governance signer quorum (workstream 5b).
-Removing is fast-track (governance can act immediately).
+Adding requires the 7-day `AllowListGovernanceTimelockBlocks` cooldown
+via `addAllowedTarget` + `commitAllowedTarget` (both shipped; see
+`deployment-runbook.md §2.5`). Removal follows the symmetric
+`removeAllowedTarget` + `commitRemoveAllowedTarget` pair.
 
 ### Per-DashDID rate-limit counter (key prefix `rl/`)
 
@@ -87,9 +89,12 @@ The mapping contract calls these from inside `HandleMapInstantSendV2`:
 3. `hive.send_balance` to send RC reimbursement HBD to the L2 tx
    submitter — existing host function.
 
-4. Some form of "read validator set at epoch" — TODO investigate. May
-   need a new host function or a Magi contract that exposes elections
-   state. See workstream 5 follow-up.
+4. "Read validator set at epoch" — currently solved via the
+   contract's own `validator_set` action: admin calls
+   `setValidatorSet(epoch, payload)` to populate the at-epoch set;
+   `verifyAttestationsAgainstValidatorSet` reads it back. The
+   "elections-state host function" alternative remains spec'd for a
+   future host change that would eliminate the admin-driven push.
 
 ## The HandleMapInstantSendV2 sequence
 
@@ -156,9 +161,11 @@ HandleMapInstantSendV2(rawTxHex, instruction, epoch, attestations):
   "login-only credit, no value movement" path to save gas. Deferred until
   measurement shows it matters.
 
-- **Allow-list governance contract**: spec §5.2.7 describes a 7-day
-  timelock procedure. v1 implementation can stub this with the admin
-  account (single-signer). Real timelock + multisig is workstream 5b.
+- **Allow-list governance contract**: spec §5.2.7 7-day timelock now
+  shipped (addAllowedTarget + commitAllowedTarget; symmetric
+  remove pair). v1 mainnet ships with a single admin signer; an
+  on-chain multisig governance contract sitting in front of the
+  admin gate is a future change tracked separately.
 
 - **forwardQueue pruning**: terminal entries should be auto-pruned after
   ~3 days (constants.ForwardQueuePruneAgeBlocks). Add a maintenance call
