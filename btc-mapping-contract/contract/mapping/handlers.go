@@ -251,12 +251,25 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 }
 
 // HandleApprove sets the spending allowance for spender to spend owner's tokens.
-func HandleApprove(owner, spender string, amount int64) {
+//
+// review7 MED-1 (D13): granting an allowance hands spend authority over the
+// owner's tokens to the spender, so it requires ACTIVE auth — the same gate as
+// transfer/unmap. Without it a posting-key-only call could approve a spender
+// and then drain the balance via transferFrom.
+func HandleApprove(owner, spender string, amount int64) error {
+	if err := checkAuth(sdk.GetEnv()); err != nil {
+		return err
+	}
 	setAllowance(owner, spender, amount)
+	return nil
 }
 
 // HandleIncreaseAllowance increases spender's allowance by amount.
 func HandleIncreaseAllowance(owner, spender string, amount int64) error {
+	// review7 MED-1: allowance changes require active auth (see HandleApprove).
+	if err := checkAuth(sdk.GetEnv()); err != nil {
+		return err
+	}
 	current := getAllowance(owner, spender)
 	newAmount, err := safeAdd64(current, amount)
 	if err != nil {
@@ -268,6 +281,10 @@ func HandleIncreaseAllowance(owner, spender string, amount int64) error {
 
 // HandleDecreaseAllowance decreases spender's allowance by amount; reverts if it would go below zero.
 func HandleDecreaseAllowance(owner, spender string, amount int64) error {
+	// review7 MED-1: allowance changes require active auth (see HandleApprove).
+	if err := checkAuth(sdk.GetEnv()); err != nil {
+		return err
+	}
 	current := getAllowance(owner, spender)
 	newAmount, err := safeSubtract64(current, amount)
 	if err != nil || newAmount < 0 {
