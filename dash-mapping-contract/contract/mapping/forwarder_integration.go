@@ -463,11 +463,28 @@ func checkAndBumpRateLimit(did string, now uint64) bool {
 // getInternalBalance returns the internal balance of `dashDID` in `asset`.
 // asset="dash" uses the original BalancePrefix scheme (existing semantics);
 // asset="hbd" uses the new internal-HBD scheme. See spec §5.2.6.
+//
+// Key format: "a-<asset>-<dashDID>" (e.g. "a-hbd-did:pkh:..."). The
+// previous "a-<asset>/<dashDID>" form hit a datalayer bug: DataBin's
+// resolveWrkDir (lib/datalayer/dir.go:249) only checks the in-memory
+// `leaves` map when resolving `/`-separated paths. When a later block
+// loads the contract state via NewDataBinFromCid, the `leaves` map is
+// empty (only db.Leaf.Dir has the on-disk directory data) so
+// `resolveWrkDir("a-hbd")` fails with "path does not exist" — even
+// though the underlying directory IS persisted. Writes from the
+// current block were visible in-memory; reads from prior blocks
+// silently returned os.ErrNotExist → balance always 0 →
+// dispatchForward always fired StatusForwardFailedInsufficientRC.
+//
+// Fix: switch to the flat key shape with `-` (DirPathDelimiter, the
+// same separator used by EVERY other balance/state key in this
+// contract — see BalancePrefix, AllowancePrefix, ForwardQueueKeyPrefix,
+// etc.). This sidesteps the DataBin nested-path resolver entirely.
 func getInternalBalance(dashDID, asset string) int64 {
 	if asset == "dash" {
 		return getAccBal(dashDID)
 	}
-	raw := sdk.StateGetObject(constants.BalancePrefix + asset + "/" + dashDID)
+	raw := sdk.StateGetObject(constants.BalancePrefix + asset + constants.DirPathDelimiter + dashDID)
 	if raw == nil || *raw == "" {
 		return 0
 	}
@@ -481,7 +498,7 @@ func setInternalBalance(dashDID, asset string, newBal int64) {
 		setAccBal(dashDID, newBal)
 		return
 	}
-	key := constants.BalancePrefix + asset + "/" + dashDID
+	key := constants.BalancePrefix + asset + constants.DirPathDelimiter + dashDID
 	if newBal == 0 {
 		sdk.StateDeleteObject(key)
 		return

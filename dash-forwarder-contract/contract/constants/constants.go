@@ -10,18 +10,25 @@ package constants
 const DashMappingContractIdStateKey = "mapping"
 
 // ForwardQueueKeyPrefix is the prefix the dash-mapping-contract uses for
-// its forward-queue entries: "fq/<txid>" → ForwardQueueEntry serialised.
+// its forward-queue entries: "fq-<txid>" → ForwardQueueEntry serialised.
 // We read directly from the mapping contract's state via contracts.read,
 // so the prefix MUST match dash-mapping-contract's constant.
 //
 // In sync with: dash-mapping-contract/contract/constants/constants.go
-// (workstream 5 will add this constant there too).
-const ForwardQueueKeyPrefix = "fq/"
+// (ForwardQueueKeyPrefix = "fq" + DirPathDelimiter, where DirPathDelimiter
+// is "-"). The "-" delimiter dodges a datalayer bug — DataBin's
+// resolveWrkDir only checks the in-memory `leaves` map, which is empty
+// when state is loaded from a CID in a later block, causing nested-path
+// keys with "/" to silently return os.ErrNotExist. See dash-mapping-
+// contract/contract/mapping/forwarder_integration.go's
+// getInternalBalance comment for the full root-cause analysis.
+const ForwardQueueKeyPrefix = "fq-"
 
 // AllowedTargetsKeyPrefix is the prefix for the mapping contract's
-// allowed-targets list. Lookup pattern: "at/<contract-id>" → "1" if
-// allowed, empty otherwise.
-const AllowedTargetsKeyPrefix = "at/"
+// allowed-targets list. Lookup pattern: "at-<contract-id>" → "1" if
+// allowed, empty otherwise. Same flat "-" delimiter as
+// ForwardQueueKeyPrefix; same DataBin nested-path-bug reason.
+const AllowedTargetsKeyPrefix = "at-"
 
 // Instruction grammar tokens. Must match dash-mapping-contract's parser
 // (workstream 5 — the parser must produce ForwardQueueEntry values whose

@@ -480,17 +480,16 @@ func SeedInternalHbd(payload *string) *string {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "seed amount must be positive"))
 	}
 	// Inline state write. Mirrors RegisterPublicKey + setForwarderContractId's
-	// pattern of calling sdk.StateSetObject directly from the wasmexport
-	// (proven to persist + be queryable via GQL getStateByKeys). The earlier
-	// indirection through mapping.SeedInternalHbd → incInternalBalance →
-	// setInternalBalance produced ok=true ret="0" on the contract output
-	// but no observable state for the resulting "a-hbd/<did>" key — root
-	// cause TBD but the direct-write equivalent below sidesteps it.
+	// pattern of calling sdk.StateSetObject directly from the wasmexport.
 	//
-	// Key shape MUST match mapping/forwarder_integration.go:484's
-	// setInternalBalance("hbd", ...) write: "a-hbd/<did>", value is
-	// big-endian uint64 with leading zero bytes trimmed.
-	key := constants.BalancePrefix + "hbd" + "/" + did
+	// Key shape MUST match mapping/forwarder_integration.go:setInternalBalance
+	// for asset="hbd": "a-hbd-<did>" (BalancePrefix + asset + DirPathDelimiter
+	// + did). The earlier "a-hbd/<did>" form (with "/" delimiter) hit a
+	// datalayer bug — DataBin's resolveWrkDir only checks the in-memory
+	// `leaves` map, which is empty when the contract state is loaded from
+	// a CID in a later block. See forwarder_integration.go's
+	// getInternalBalance comment for the full root-cause analysis.
+	key := constants.BalancePrefix + "hbd" + constants.DirPathDelimiter + did
 	// Read existing balance + add.
 	existingRaw := sdk.StateGetObject(key)
 	existing := int64(0)
