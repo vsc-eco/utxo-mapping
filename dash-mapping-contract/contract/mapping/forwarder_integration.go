@@ -523,6 +523,31 @@ func decInternalBalance(dashDID, asset string, amount int64) error {
 	return nil
 }
 
+// SeedInternalHbd directly credits the given DashDID's contract-internal
+// HBD balance by amountMilliHbd. REGTEST-ONLY admin enabler — caller
+// gating is the wasmexport's responsibility (main.go:seedInternalHbd
+// checks IsRegtest + admin). Used by the op=call devnet test to pre-
+// fund the user's DashDID with enough HBD to satisfy the dispatchForward
+// pre-check (spec §5.2.6, ~500 milli-HBD reimbursement) without
+// requiring a setup-step DASH→HBD swap. Mirrors the shape of
+// SetAllowedTargetImmediate (timelock-bypass enabler, regtest-only).
+//
+// In production the same balance shift happens via legitimate swap
+// deposits or transfer flows; this helper exists solely so devnet
+// integration tests can exercise the op=call dispatch path
+// deterministically.
+func SeedInternalHbd(dashDID string, amountMilliHbd int64) error {
+	if dashDID == "" {
+		return ce.NewContractError(ce.ErrInput, "seed dashDID empty")
+	}
+	if amountMilliHbd <= 0 {
+		return ce.NewContractError(ce.ErrInput,
+			"seed amount must be positive, got "+strconv.FormatInt(amountMilliHbd, 10))
+	}
+	return incInternalBalance(dashDID, "hbd", amountMilliHbd)
+}
+
+
 // ----- Aliases shared with utils.go -----
 
 func atoi64(s string) (int64, error) {

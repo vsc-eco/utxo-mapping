@@ -430,6 +430,54 @@ func SetAllowedTargetImmediate(payload *string) *string {
 	return mapping.StrPtr("0")
 }
 
+// SeedInternalHbd — REGTEST-ONLY admin enabler that directly credits a
+// DashDID's contract-internal HBD balance. Used by devnet integration
+// tests to pre-fund the op=call sender so dispatchForward's spec §5.2.6
+// HBD pre-check (~500 milli-HBD RC reimbursement) doesn't gate the
+// forwarder invocation. Without this, the first-time-user case has zero
+// internal HBD on the mapping contract and the dispatch returns early
+// with StatusForwardFailedInsufficientRC.
+//
+// Production NEVER hits this path — the production flow funds the
+// sender's internal HBD via legitimate DASH→HBD swap deposits or
+// transfer flows. The same `constants.IsRegtest(NetworkMode)` gate
+// used by SetAllowedTargetImmediate ensures mainnet/testnet builds
+// reject the call outright.
+//
+// Payload format: "<dashDID>,<amountMilliHbd>" — e.g.
+// "did:pkh:bip122:00000bafbc94add76cb75e2ec9289483:yExampleAddr,1000".
+// Amount is in milli-HBD (1000 milli = 1 HBD). Positive integers only.
+//
+//go:wasmexport seedInternalHbd
+func SeedInternalHbd(payload *string) *string {
+	checkAdmin()
+	if !constants.IsRegtest(NetworkMode) {
+		ce.CustomAbort(ce.NewContractError(ce.ErrNoPermission,
+			"seedInternalHbd is regtest-only; production uses legitimate swap/transfer flows"))
+	}
+	if payload == nil || *payload == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "seed payload required (format: <dashDID>,<amountMilliHbd>)"))
+	}
+	// Parse "<did>,<amount>" — comma is safe because did:pkh:bip122 has
+	// no commas in its grammar.
+	idx := strings.Index(*payload, ",")
+	if idx < 0 {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput,
+			"seed payload must be \"<dashDID>,<amountMilliHbd>\""))
+	}
+	did := (*payload)[:idx]
+	amountStr := (*payload)[idx+1:]
+	amount, perr := strconv.ParseInt(amountStr, 10, 64)
+	if perr != nil {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput,
+			"seed amount not a valid int64: "+perr.Error()))
+	}
+	if err := mapping.SeedInternalHbd(did, amount); err != nil {
+		ce.CustomAbort(err)
+	}
+	return mapping.StrPtr("0")
+}
+
 // CancelAllowedTargetAdd — admin aborts a pending add inside the
 // timelock window.
 //
