@@ -22,6 +22,7 @@ import (
 	ce "dash-mapping-contract/contract/contracterrors"
 	"dash-mapping-contract/contract/mapping"
 	_ "dash-mapping-contract/sdk" // ensure sdk is imported
+	"encoding/binary"
 	"encoding/hex"
 	"strconv"
 	"strings"
@@ -472,9 +473,40 @@ func SeedInternalHbd(payload *string) *string {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput,
 			"seed amount not a valid int64: "+perr.Error()))
 	}
-	if err := mapping.SeedInternalHbd(did, amount); err != nil {
-		ce.CustomAbort(err)
+	if did == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "seed did empty"))
 	}
+	if amount <= 0 {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "seed amount must be positive"))
+	}
+	// Inline state write. Mirrors RegisterPublicKey + setForwarderContractId's
+	// pattern of calling sdk.StateSetObject directly from the wasmexport
+	// (proven to persist + be queryable via GQL getStateByKeys). The earlier
+	// indirection through mapping.SeedInternalHbd → incInternalBalance →
+	// setInternalBalance produced ok=true ret="0" on the contract output
+	// but no observable state for the resulting "a-hbd/<did>" key — root
+	// cause TBD but the direct-write equivalent below sidesteps it.
+	//
+	// Key shape MUST match mapping/forwarder_integration.go:484's
+	// setInternalBalance("hbd", ...) write: "a-hbd/<did>", value is
+	// big-endian uint64 with leading zero bytes trimmed.
+	key := constants.BalancePrefix + "hbd" + "/" + did
+	// Read existing balance + add.
+	existingRaw := sdk.StateGetObject(key)
+	existing := int64(0)
+	if existingRaw != nil && *existingRaw != "" {
+		var ebuf [8]byte
+		copy(ebuf[8-len(*existingRaw):], *existingRaw)
+		existing = int64(binary.BigEndian.Uint64(ebuf[:]))
+	}
+	newBal := existing + amount
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], uint64(newBal))
+	pos := 0
+	for pos < 7 && buf[pos] == 0 {
+		pos++
+	}
+	sdk.StateSetObject(key, string(buf[pos:]))
 	return mapping.StrPtr("0")
 }
 
