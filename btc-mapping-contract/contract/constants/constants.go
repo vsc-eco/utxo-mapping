@@ -58,6 +58,10 @@ const (
 	SwapAssetOut        = "swap_asset_out"
 	SwapToKey           = "swap_to"
 	DestinationChainKey = "destination_chain"
+	// MinAmountOutKey lets a deposit-swap instruction carry a slippage bound
+	// (DX-H5). It is baked into the deposit address (part of the hashed
+	// instruction), so the depositor commits to a minimum output up front.
+	MinAmountOutKey = "min_amount_out"
 )
 
 // Address Creation

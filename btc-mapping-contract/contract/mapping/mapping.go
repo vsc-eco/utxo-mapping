@@ -2,6 +2,7 @@ package mapping
 
 import (
 	"btc-mapping-contract/sdk"
+	"net/url"
 	"strconv"
 
 	"github.com/CosmWasm/tinyjson"
@@ -12,6 +13,30 @@ import (
 	"btc-mapping-contract/contract/constants"
 	ce "btc-mapping-contract/contract/contracterrors"
 )
+
+// buildSwapInstruction builds the DEX swap instruction for a BTC deposit-swap.
+// DX-H5: it forwards the depositor's min_amount_out param so the ingress swap
+// honours their slippage bound. The instruction was previously built WITHOUT
+// MinAmountOut, so no bound ever reached the router and the swap executed at any
+// price (a sandwich could take the whole amount). The router/dex already enforce
+// MinAmountOut downstream; the bug was purely that the mapping contract never
+// passed it on.
+func buildSwapInstruction(params *url.Values, recipient, assetOut string, amount int64) DexInstruction {
+	instruction := DexInstruction{
+		Type:             "swap",
+		Version:          "1.0.0",
+		AssetIn:          BtcAssetValue,
+		AmountIn:         strconv.FormatInt(amount, 10),
+		AssetOut:         assetOut,
+		Recipient:        recipient,
+		DestinationChain: params.Get(constants.DestinationChainKey),
+	}
+	if params.Has(constants.MinAmountOutKey) {
+		minOut := params.Get(constants.MinAmountOutKey)
+		instruction.MinAmountOut = &minOut
+	}
+	return instruction
+}
 
 func isForVscAcc(
 	txOut *wire.TxOut,
@@ -193,15 +218,7 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 				}
 				assetOut := metadata.Params.Get(constants.SwapAssetOut)
 
-				instruction := DexInstruction{
-					Type:             "swap",
-					Version:          "1.0.0",
-					AssetIn:          BtcAssetValue,
-					AmountIn:         strconv.FormatInt(utxo.Amount, 10),
-					AssetOut:         assetOut,
-					Recipient:        metadata.Recipient,
-					DestinationChain: metadata.Params.Get(constants.DestinationChainKey),
-				}
+				instruction := buildSwapInstruction(metadata.Params, metadata.Recipient, assetOut, utxo.Amount)
 				instrJson, err := tinyjson.Marshal(instruction)
 				if err != nil {
 					return ce.NewContractError(ce.ErrJson, "error marshalling swap instruction: "+err.Error())
