@@ -252,14 +252,10 @@ func HandleReplaceBlock(rawHeader BlockHeaderBytes, networkMode string) (uint32,
 		string(rawHeader[:]),
 	)
 
-	// Pentest finding BTC-C2: drop the observed-tx list for the
-	// replaced block. A reorg invalidates whichever deposits the
-	// oracle previously recorded against the orphan; the canonical
-	// chain may not contain those txids, so leaving the list in
-	// place lets stale deposit credit survive across the reorg.
-	sdk.StateDeleteObject(
-		constants.ObservedBlockPrefix + strconv.FormatUint(uint64(lastHeight), 10),
-	)
+	// The observed TX list remains populated during a replacement, to protect against double mint where
+	// transactions are re-included in the replacement block. An incorrect mint from a replaced block can
+	// technically persist after replacement, but the oracle waits for 2 confirmations and a 3+ block
+	// reorg is unprecendented on BTC mainnet, so very low likelihood of encountering this guard at all
 
 	return lastHeight, nil
 }
@@ -345,11 +341,10 @@ func HandleReplaceBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uin
 			constants.BlockPrefix+strconv.FormatUint(uint64(height), 10),
 			string(headerBytes[:]),
 		)
-		// Pentest finding BTC-C2: drop the observed-tx list for each
-		// replaced height; see HandleReplaceBlock for rationale.
-		sdk.StateDeleteObject(
-			constants.ObservedBlockPrefix + strconv.FormatUint(uint64(height), 10),
-		)
+		// The observed TX list remains populated during a replacement, to protect against double mint where
+		// transactions are re-included in the replacement block. An incorrect mint from a replaced block can
+		// technically persist after replacement, but the oracle waits for 2 confirmations and a 3+ block
+		// reorg is unprecendented on BTC mainnet, so very low likelihood of encountering this guard at all
 		prevHash = hdr.BlockHash()
 	}
 
