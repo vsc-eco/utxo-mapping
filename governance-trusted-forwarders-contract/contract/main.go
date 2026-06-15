@@ -86,8 +86,20 @@ func store() *governance.Store {
 
 func strPtr(s string) *string { return &s }
 
+// abort triggers a real wasm trap via sdk.Abort, which the magi state
+// engine maps to ok=false on the contract output. Using just `return
+// strPtr("ABORT:...")` from a wasmexport does NOT trap — magi treats
+// the return value as a successful call's ret string, so the
+// "disabled by governance" check ends up reading as ok=true at the
+// caller. Only contract-to-contract callers can opt into the soft-
+// abort convention (mapinstantsend_v2.go's isAbortResult helper);
+// every wasmexport reachable from L1 needs the real trap.
+//
+// Returns *string only so the caller-site signature stays the same;
+// sdk.Abort panics so the return is unreachable.
 func abort(err error) *string {
-	return strPtr("ABORT:" + err.Error())
+	sdk.Abort(err.Error())
+	return strPtr("ABORT:" + err.Error()) // unreachable
 }
 
 // ===== wasmexport entry points =====
