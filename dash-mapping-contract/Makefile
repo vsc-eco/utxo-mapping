@@ -54,8 +54,14 @@ netflags = \
 
 all: dev
 
-# Dash uses a local replace directive (see go.mod). update-vsc-node is a no-op
-# here; bump the replace target in go.mod manually when upgrading.
+# Round-14 audit R14-OPS-MAKEFILE-AUTO-BUMP-DIRTY-DIFF +
+# R14-GOMOD-AUTO-BUMP-AHEAD-OF-AUDIT-TIP: update-vsc-node is NO
+# LONGER an order-only prerequisite of `test` / `dev` / etc. The
+# old wiring auto-mutated go.mod + go.sum on every build, so two
+# developers running `make test` an hour apart produced divergent
+# tracked files and the audited go.mod tip drifted away from the
+# branch tip whenever upstream main advanced. Bump intentionally
+# via `make update-vsc-node` instead.
 update-vsc-node:
 	@NEWVER=$$(go list -m github.com/vsc-eco/go-vsc-node@main | awk '{print $$2}') && \
 	CURVER=$$(awk '!/^[[:space:]]*\/\// && /replace vsc-node =>/ {print $$NF}' go.mod) && \
@@ -66,9 +72,6 @@ update-vsc-node:
 	fi
 
 .PHONY: update-vsc-node
-
-# Run update-vsc-node before any build or test target.
-all dev testnet mainnet regtest test: | update-vsc-node
 
 pull-tinygo:
 	docker pull $(TINYGO_IMAGE)

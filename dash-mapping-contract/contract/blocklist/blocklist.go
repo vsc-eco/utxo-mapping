@@ -247,8 +247,10 @@ func HandleReplaceBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uin
 		return HandleReplaceBlock(rawHeaders[0], networkMode)
 	}
 
-	// On mainnet, cap replacement depth to 2 blocks.
-	if !constants.IsTestnet(networkMode) && len(rawHeaders) > 2 {
+	// On mainnet, cap replacement depth to 2 blocks. Testnet + regtest
+	// allow deeper replacements for header backfill flows (audit SEC-3
+	// R15: explicit OrRegtest gate so the relaxation is intentional).
+	if !constants.IsTestnetOrRegtest(networkMode) && len(rawHeaders) > 2 {
 		return 0, ce.NewContractError(ce.ErrInput, "mainnet replacement limited to 2 blocks")
 	}
 

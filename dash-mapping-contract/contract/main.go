@@ -22,6 +22,7 @@ import (
 	ce "dash-mapping-contract/contract/contracterrors"
 	"dash-mapping-contract/contract/mapping"
 	_ "dash-mapping-contract/sdk" // ensure sdk is imported
+	"encoding/binary"
 	"encoding/hex"
 	"strconv"
 	"strings"
@@ -39,7 +40,10 @@ func checkOracle() {
 	if caller == constants.OracleAddress {
 		return
 	}
-	if constants.IsTestnet(NetworkMode) && caller == *sdk.GetEnvKey("contract.owner") {
+	// Owner-as-oracle shortcut: applies on real testnet + regtest
+	// (both run by a single trusted operator). Mainnet requires the
+	// dedicated oracle identity.
+	if constants.IsTestnetOrRegtest(NetworkMode) && caller == *sdk.GetEnvKey("contract.owner") {
 		return
 	}
 	ce.CustomAbort(
@@ -84,7 +88,9 @@ func SeedBlocks(blockSeedInput *string) *string {
 		ce.CustomAbort(ce.WrapContractError(ce.ErrJson, err, "error unmarshalling seed blocks input"))
 	}
 
-	newLastHeight, err := blocklist.HandleSeedBlocks(seedParams, constants.IsTestnet(NetworkMode))
+	// Idempotency relaxation: testnet + regtest can re-seed; mainnet
+	// is one-shot. Both operator-modes need the relaxation.
+	newLastHeight, err := blocklist.HandleSeedBlocks(seedParams, constants.IsTestnetOrRegtest(NetworkMode))
 	if err != nil {
 		ce.CustomAbort(err)
 	}
@@ -285,6 +291,354 @@ func Map(incomingTx *string) *string {
 		ce.CustomAbort(err)
 	}
 
+	return mapping.StrPtr("0")
+}
+
+// MapInstantSendV2 is the lazy-attestation fast path for the Dash
+// InstantSend login feature (workstream 5).
+//
+// Unlike Map, this action:
+//   - Verifies a BLS quorum-aggregated attestation from Magi validators
+//     instead of waiting for a full block-proof, allowing ~15-30s
+//     finality from the user's perspective.
+//   - Supports the `op=auth` instruction (login-only, no value movement)
+//     and `op=call;contract=...;method=...;args=...;sid=...;amount=...`
+//     for dispatching contract calls via dash-forwarder-contract.
+//   - Maintains all the same security gates as Map (deposit address
+//     re-derivation, multi-input rejection, rate limits, allow-list).
+//
+// Per spec §5.2.2 the caller need not be the oracle — any party can
+// submit a valid attestation bundle. Authorization comes from the BLS
+// quorum signature, not the caller identity.
+//
+//go:wasmexport mapInstantSendV2
+func MapInstantSendV2(payload *string) *string {
+	checkNotPaused()
+	var params mapping.MapInstantSendV2ParamsFull
+	if err := tinyjson.Unmarshal([]byte(*payload), &params); err != nil {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
+	}
+
+	publicKeys, err := loadPublicKeys()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+
+	contractState, err := mapping.InitializeMappingState(publicKeys, NetworkMode)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+
+	if err := contractState.HandleMapInstantSendV2(params); err != nil {
+		ce.CustomAbort(err)
+	}
+
+	if err := contractState.SaveToState(); err != nil {
+		ce.CustomAbort(err)
+	}
+
+	return mapping.StrPtr("0")
+}
+
+// SetForwarderContractId — admin action to designate the canonical
+// dash-forwarder-contract id this mapping trusts. Idempotent: re-setting
+// to the same value is a no-op; changing to a different value requires
+// pausing the contract first.
+//
+//go:wasmexport setForwarderContractId
+func SetForwarderContractId(payload *string) *string {
+	checkAdmin()
+	if payload == nil || *payload == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "forwarder contract id required"))
+	}
+	existing := sdk.StateGetObject(constants.ForwarderContractIdStateKey)
+	if existing != nil && *existing != "" && *existing != *payload {
+		ce.CustomAbort(ce.NewContractError(ce.ErrNoPermission,
+			"forwarder contract id already set; pause + clear required to change"))
+	}
+	sdk.StateSetObject(constants.ForwarderContractIdStateKey, *payload)
+	return mapping.StrPtr("0")
+}
+
+// AddAllowedTarget — admin schedules a contract id for addition to the
+// op=call allow-list. Spec §5.2.7 — the proposal sits in
+// pendingAdd["pa/<target>"] until AllowListGovernanceTimelockBlocks
+// elapse; then any caller (admin or not) can promote it via
+// CommitAllowedTarget. This forces the timelock to be observable in
+// chain state, defending against an admin-key compromise being able
+// to instantly add an attacker-controlled contract.
+//
+//go:wasmexport addAllowedTarget
+func AddAllowedTarget(payload *string) *string {
+	checkAdmin()
+	if payload == nil || *payload == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "target contract id required"))
+	}
+	currentBlock := sdk.GetEnv().BlockHeight
+	if err := mapping.ProposeAllowedTargetAdd(*payload, currentBlock); err != nil {
+		ce.CustomAbort(err)
+	}
+	return mapping.StrPtr("0")
+}
+
+// CommitAllowedTarget — promote a pending add to the active allow-list
+// once its timelock has elapsed. Permissionless: anyone can poke this
+// after the unlock block, so a buggy admin tooling can't silently
+// stall promotions.
+//
+//go:wasmexport commitAllowedTarget
+func CommitAllowedTarget(payload *string) *string {
+	if payload == nil || *payload == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "target contract id required"))
+	}
+	currentBlock := sdk.GetEnv().BlockHeight
+	committed, unlock, err := mapping.CommitAllowedTarget(*payload, currentBlock)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	if !committed {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput,
+			"add still in timelock; unlocks at block "+strconv.FormatUint(unlock, 10)))
+	}
+	return mapping.StrPtr("0")
+}
+
+// SetAllowedTargetImmediate — REGTEST ONLY: admin promotes a
+// target straight into the active allowlist, bypassing the
+// AllowListGovernanceTimelockBlocks 7-day cooldown. Refuses on
+// mainnet AND on real testnet — only the throwaway regtest harness
+// (devnet/CI runs) exposes this. Audit SEC-3 (R15) called out the
+// old testnet-or-regtest gate as a footgun: a `dev.wasm` accidentally
+// uploaded to mainnet would have admin-bypass intact. Real testnet
+// must exercise the same add+commit timelock as mainnet so the
+// timelock flow itself gets tested.
+//
+// Production + testnet allow-list mutations MUST go through the
+// symmetric timelock pair (addAllowedTarget + commitAllowedTarget
+// after the cooldown elapses).
+//
+//go:wasmexport setAllowedTargetImmediate
+func SetAllowedTargetImmediate(payload *string) *string {
+	checkAdmin()
+	if !constants.IsRegtest(NetworkMode) {
+		ce.CustomAbort(ce.NewContractError(ce.ErrNoPermission,
+			"setAllowedTargetImmediate is regtest-only; use addAllowedTarget+commitAllowedTarget"))
+	}
+	if payload == nil || *payload == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "target contract id required"))
+	}
+	mapping.SetAllowedTargetImmediate(*payload)
+	return mapping.StrPtr("0")
+}
+
+// SeedInternalHbd — REGTEST-ONLY admin enabler that directly credits a
+// DashDID's contract-internal HBD balance. Used by devnet integration
+// tests to pre-fund the op=call sender so dispatchForward's spec §5.2.6
+// HBD pre-check (~500 milli-HBD RC reimbursement) doesn't gate the
+// forwarder invocation. Without this, the first-time-user case has zero
+// internal HBD on the mapping contract and the dispatch returns early
+// with StatusForwardFailedInsufficientRC.
+//
+// Production NEVER hits this path — the production flow funds the
+// sender's internal HBD via legitimate DASH→HBD swap deposits or
+// transfer flows. The same `constants.IsRegtest(NetworkMode)` gate
+// used by SetAllowedTargetImmediate ensures mainnet/testnet builds
+// reject the call outright.
+//
+// Payload format: "<dashDID>,<amountMilliHbd>" — e.g.
+// "did:pkh:bip122:00000bafbc94add76cb75e2ec9289483:yExampleAddr,1000".
+// Amount is in milli-HBD (1000 milli = 1 HBD). Positive integers only.
+//
+//go:wasmexport seedInternalHbd
+func SeedInternalHbd(payload *string) *string {
+	checkAdmin()
+	if !constants.IsRegtest(NetworkMode) {
+		ce.CustomAbort(ce.NewContractError(ce.ErrNoPermission,
+			"seedInternalHbd is regtest-only; production uses legitimate swap/transfer flows"))
+	}
+	if payload == nil || *payload == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "seed payload required (format: <dashDID>,<amountMilliHbd>)"))
+	}
+	// Parse "<did>,<amount>" — comma is safe because did:pkh:bip122 has
+	// no commas in its grammar.
+	idx := strings.Index(*payload, ",")
+	if idx < 0 {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput,
+			"seed payload must be \"<dashDID>,<amountMilliHbd>\""))
+	}
+	did := (*payload)[:idx]
+	amountStr := (*payload)[idx+1:]
+	amount, perr := strconv.ParseInt(amountStr, 10, 64)
+	if perr != nil {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput,
+			"seed amount not a valid int64: "+perr.Error()))
+	}
+	if did == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "seed did empty"))
+	}
+	if amount <= 0 {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "seed amount must be positive"))
+	}
+	// Inline state write. Mirrors RegisterPublicKey + setForwarderContractId's
+	// pattern of calling sdk.StateSetObject directly from the wasmexport.
+	//
+	// Key shape MUST match mapping/forwarder_integration.go:setInternalBalance
+	// for asset="hbd": "a-hbd-<did>" (BalancePrefix + asset + DirPathDelimiter
+	// + did). The earlier "a-hbd/<did>" form (with "/" delimiter) hit a
+	// datalayer bug — DataBin's resolveWrkDir only checks the in-memory
+	// `leaves` map, which is empty when the contract state is loaded from
+	// a CID in a later block. See forwarder_integration.go's
+	// getInternalBalance comment for the full root-cause analysis.
+	key := constants.BalancePrefix + "hbd" + constants.DirPathDelimiter + did
+	// Read existing balance + add.
+	existingRaw := sdk.StateGetObject(key)
+	existing := int64(0)
+	if existingRaw != nil && *existingRaw != "" {
+		var ebuf [8]byte
+		copy(ebuf[8-len(*existingRaw):], *existingRaw)
+		existing = int64(binary.BigEndian.Uint64(ebuf[:]))
+	}
+	newBal := existing + amount
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], uint64(newBal))
+	pos := 0
+	for pos < 7 && buf[pos] == 0 {
+		pos++
+	}
+	sdk.StateSetObject(key, string(buf[pos:]))
+	return mapping.StrPtr("0")
+}
+
+// CancelAllowedTargetAdd — admin aborts a pending add inside the
+// timelock window.
+//
+//go:wasmexport cancelAllowedTargetAdd
+func CancelAllowedTargetAdd(payload *string) *string {
+	checkAdmin()
+	if payload == nil || *payload == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "target contract id required"))
+	}
+	mapping.CancelPendingAllowedTargetAdd(*payload)
+	return mapping.StrPtr("0")
+}
+
+// RemoveAllowedTarget — admin schedules a target for removal from the
+// allow-list. Spec §5.2.7 makes removals timelocked symmetrically with
+// adds so the community has the same window to react to a hostile
+// admin trying to censor a target.
+//
+//go:wasmexport removeAllowedTarget
+func RemoveAllowedTarget(payload *string) *string {
+	checkAdmin()
+	if payload == nil || *payload == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "target contract id required"))
+	}
+	currentBlock := sdk.GetEnv().BlockHeight
+	if err := mapping.ProposeAllowedTargetRemove(*payload, currentBlock); err != nil {
+		ce.CustomAbort(err)
+	}
+	return mapping.StrPtr("0")
+}
+
+// CommitAllowedTargetRemove — promote a pending remove to active once
+// the timelock has elapsed. Permissionless.
+//
+//go:wasmexport commitAllowedTargetRemove
+func CommitAllowedTargetRemove(payload *string) *string {
+	if payload == nil || *payload == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "target contract id required"))
+	}
+	currentBlock := sdk.GetEnv().BlockHeight
+	committed, unlock, err := mapping.CommitAllowedTargetRemove(*payload, currentBlock)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	if !committed {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput,
+			"remove still in timelock; unlocks at block "+strconv.FormatUint(unlock, 10)))
+	}
+	return mapping.StrPtr("0")
+}
+
+// CancelAllowedTargetRemove — admin aborts a pending removal inside
+// the timelock window.
+//
+//go:wasmexport cancelAllowedTargetRemove
+func CancelAllowedTargetRemove(payload *string) *string {
+	checkAdmin()
+	if payload == nil || *payload == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "target contract id required"))
+	}
+	mapping.CancelPendingAllowedTargetRemove(*payload)
+	return mapping.StrPtr("0")
+}
+
+// SetValidatorSet — admin action to record the {validator DID →
+// pubkey hex} list for an epoch. Payload format:
+//
+//	<epoch>;<did1>=<pubkey1>=<pop1>=<account1>|<did2>=<pubkey2>=<pop2>=<account2>|...
+//
+// pubkey is hex-encoded 48-byte compressed G1 (96 chars). PoP is a
+// 96-byte BLS signature hex-encoded (192 chars). account is the
+// validator's Hive account name — the value that lib/dids/bls.go's
+// GenerateBlsPoP was called with on the announcer side.
+//
+// Per-validator PoP (proof-of-possession) is mandatory (audit R3-001) —
+// the contract verifies each (pubkey, pop) pair via sdk.VerifyBls
+// against the canonical BLS-PoP message:
+//
+//	"VSC-BLS-POP-v1" || pubkey_bytes || account_bytes
+//
+// matching lib/dids/bls.go's GenerateBlsPoP / VerifyBlsPoP. Without
+// PoP, the aggregate verifier is exposed to a rogue-key attack once
+// QuorumThreshold rises above 1. Round-4 audit R4-CSM-01 fixed a
+// prior account-vs-DID mismatch that bricked the gate.
+//
+// To produce a payload entry from announcer-format outputs, use the
+// utxo-mapping/dash-mapping-contract/cmd/gen-validator-set-payload
+// helper. The PoP encoding
+// pipeline is:
+//
+//	popB64, _ := dids.GenerateBlsPoP(privKey, account) // base64 raw-url
+//	raw, _   := base64.RawURLEncoding.DecodeString(popB64)
+//	popHex   := hex.EncodeToString(raw)                // 192 chars
+//
+// HandleMapInstantSendV2 reads the persisted set to gate which
+// validator attestations are accepted at body.Epoch. Without an
+// entry, the fast-path is closed for that epoch.
+//
+//go:wasmexport setValidatorSet
+func SetValidatorSet(payload *string) *string {
+	checkAdmin()
+	if payload == nil || *payload == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "validator-set payload required"))
+	}
+	epoch, set, pops, accounts, err := mapping.ParseValidatorSetPayload(*payload)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	if err := mapping.SaveValidatorSetForEpoch(epoch, set, pops, accounts); err != nil {
+		ce.CustomAbort(err)
+	}
+	return mapping.StrPtr("0")
+}
+
+// SetMinAttestations — admin action to configure the N-of-M quorum
+// threshold the fast-path enforces. Payload is a decimal int >= 1.
+//
+//go:wasmexport setMinAttestations
+func SetMinAttestations(payload *string) *string {
+	checkAdmin()
+	if payload == nil || *payload == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "threshold required"))
+	}
+	n, err := strconv.Atoi(*payload)
+	if err != nil {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "invalid threshold: "+*payload))
+	}
+	if err := mapping.SaveMinAttestations(n); err != nil {
+		ce.CustomAbort(err)
+	}
 	return mapping.StrPtr("0")
 }
 
@@ -683,7 +1037,10 @@ func RegisterPublicKey(keyStr *string) *string {
 			ce.CustomAbort(ce.Prepend(err, "error registering primary public key"))
 		}
 		existingPrimary := sdk.StateGetObject(constants.PrimaryPublicKeyStateKey)
-		if *existingPrimary == "" || constants.IsTestnet(NetworkMode) {
+		// Bridge pubkey overwrite is regtest-only (audit SEC-3 R15).
+		// Real testnet uses the same once-and-immutable model as
+		// mainnet so the rotation flow (TODO: spec) gets exercised.
+		if *existingPrimary == "" || constants.IsRegtest(NetworkMode) {
 			sdk.StateSetObject(constants.PrimaryPublicKeyStateKey, string(key[:]))
 			resultBuilder.WriteString("set primary key to: " + keys.PrimaryPubKey)
 		} else {
@@ -700,7 +1057,8 @@ func RegisterPublicKey(keyStr *string) *string {
 			resultBuilder.WriteString(", ")
 		}
 		existingBackup := sdk.StateGetObject(constants.BackupPublicKeyStateKey)
-		if *existingBackup == "" || constants.IsTestnet(NetworkMode) {
+		// Bridge pubkey overwrite is regtest-only (audit SEC-3 R15).
+		if *existingBackup == "" || constants.IsRegtest(NetworkMode) {
 			sdk.StateSetObject(constants.BackupPublicKeyStateKey, string(key[:]))
 			resultBuilder.WriteString("set backup key to: " + keys.BackupPubKey)
 		} else {
@@ -761,7 +1119,8 @@ func RegisterRouter(input *string) *string {
 
 	if router.ContractId != "" {
 		existingPrimary := sdk.StateGetObject(constants.RouterContractIdKey)
-		if *existingPrimary == "" || constants.IsTestnet(NetworkMode) {
+		// Router overwrite is regtest-only (audit SEC-3 R15).
+		if *existingPrimary == "" || constants.IsRegtest(NetworkMode) {
 			sdk.StateSetObject(constants.RouterContractIdKey, router.ContractId)
 			resultBuilder.WriteString("set router contract ID to: " + router.ContractId)
 		} else {

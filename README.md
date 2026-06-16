@@ -14,6 +14,11 @@ TinyGo WASM smart contracts that bridge UTXO-based blockchains to the VSC/Magi n
 
 All CSV timelocks target ~30 days. BTC is the reference implementation; others are kept in sync via `sync-tests.sh`.
 
+For development workflow (go.work setup, cross_repo build tag), the
+dash-mapping-contract gen-validator-set-payload helper, and
+IS-service operator flags (e.g. -validatorSetCacheTTLSeconds), see
+[DEVELOPING.md](DEVELOPING.md).
+
 ## How It Works
 
 Each contract verifies on-chain deposit proofs (SPV via merkle inclusion) and credits the depositor's VSC account with a wrapped token balance. Withdrawals (unmapping) construct and sign Bitcoin-style transactions via TSS, returning funds to the user's native chain address.

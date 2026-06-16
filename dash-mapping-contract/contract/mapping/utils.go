@@ -4,7 +4,6 @@ import (
 	"dash-mapping-contract/contract/constants"
 	ce "dash-mapping-contract/contract/contracterrors"
 	"dash-mapping-contract/sdk"
-	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -20,9 +19,26 @@ import (
 	"github.com/btcsuite/btcd/wire"
 )
 
-func createP2WSHAddressWithBackup(
+// createP2SHAddressWithBackup derives the Dash P2SH deposit address
+// committing to a primary + backup spending tree:
+//
+//	OP_IF
+//	  <primaryPubKey> OP_CHECKSIGVERIFY <tag>     (or OP_CHECKSIG with no tag)
+//	OP_ELSE
+//	  <csvBlocks> OP_CHECKSEQUENCEVERIFY OP_DROP
+//	  <backupPubKey> OP_CHECKSIG
+//	OP_ENDIF
+//
+// Returns (base58 P2SH address, redeem-script bytes, err). Dash never
+// activated SegWit so we MUST use P2SH — see the inline comment on
+// NewAddressScriptHash below for the full rationale. The second
+// return value used to be called "witnessScript" before commit acfb268
+// switched the on-chain commitment from P2WSH to P2SH; it's now the
+// P2SH redeem script. Renamed to redeemScript for accuracy per audit
+// R15-CONS-01.
+func createP2SHAddressWithBackup(
 	primaryPubKey CompressedPubKey, backupPubKey CompressedPubKey, tag []byte, network *chaincfg.Params,
-) (string, []byte, error) {
+) (address string, redeemScript []byte, err error) {
 	csvBlocks := constants.BackupCSVBlocks
 
 	if network.Net != chaincfg.MainNetParams.Net {
@@ -64,25 +80,37 @@ func createP2WSHAddressWithBackup(
 		return "", nil, err
 	}
 
-	witnessProgram := sha256.Sum256(script)
-	addressWitnessScriptHash, err := btcutil.NewAddressWitnessScriptHash(witnessProgram[:], network)
+	// Pay-to-script-hash (P2SH). Dash never activated SegWit, so
+	// `btcutil.NewAddressWitnessScriptHash` would produce bech32
+	// `tdash1...`/`dash1...` addresses that dashd v23 rejects at
+	// `validateaddress` time with "Invalid address format" — they
+	// are unspendable in practice. P2SH is the pre-SegWit primitive
+	// Dash DOES support (mainnet `7...`, testnet `8`/`9` prefix).
+	// The redeem-script bytes are unchanged across the switch; only
+	// the on-chain commitment shifted from 32-byte sha256 (P2WSH) to
+	// 20-byte HASH160 (P2SH).
+	addr, err := btcutil.NewAddressScriptHash(script, network)
 	if err != nil {
 		return "", nil, err
 	}
-
-	return addressWitnessScriptHash.EncodeAddress(), script, nil
+	return addr.EncodeAddress(), script, nil
 }
 
-func createP2WSHAddress(pubKeyHex string, tag []byte, network *chaincfg.Params) (string, []byte, error) {
+// createP2SHAddress is the hex-pubkey-input variant of
+// createSimpleP2SHAddress (single primary pubkey, no backup CSV branch).
+func createP2SHAddress(pubKeyHex string, tag []byte, network *chaincfg.Params) (string, []byte, error) {
 	pubKeyBytes, err := hex.DecodeString(pubKeyHex)
 	if err != nil {
 		return "", nil, err
 	}
 
-	return createSimpleP2WSHAddress(pubKeyBytes, tag, network)
+	return createSimpleP2SHAddress(pubKeyBytes, tag, network)
 }
 
-func createSimpleP2WSHAddress(pubKeyBytes []byte, tag []byte, network *chaincfg.Params) (string, []byte, error) {
+// createSimpleP2SHAddress derives a tag-bound single-pubkey Dash P2SH
+// address (no backup branch). Used for the bridge primary-only commit.
+// Same renaming rationale as createP2SHAddressWithBackup.
+func createSimpleP2SHAddress(pubKeyBytes []byte, tag []byte, network *chaincfg.Params) (string, []byte, error) {
 	scriptBuilder := txscript.NewScriptBuilder()
 	if len(tag) > 0 {
 		scriptBuilder.AddData(pubKeyBytes)
@@ -98,12 +126,13 @@ func createSimpleP2WSHAddress(pubKeyBytes []byte, tag []byte, network *chaincfg.
 		return "", nil, err
 	}
 
-	witnessProgram := sha256.Sum256(script)
-	addressWitnessScriptHash, err := btcutil.NewAddressWitnessScriptHash(witnessProgram[:], network)
+	// P2SH (Dash-compatible) — see createP2SHAddressWithBackup
+	// comment for the bech32-vs-base58 rationale.
+	addr, err := btcutil.NewAddressScriptHash(script, network)
 	if err != nil {
 		return "", nil, err
 	}
-	return addressWitnessScriptHash.EncodeAddress(), script, nil
+	return addr.EncodeAddress(), script, nil
 }
 
 func checkAuth(env sdk.Env) error {

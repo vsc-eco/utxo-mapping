@@ -61,6 +61,12 @@ func contractRead(contractId *string, key *string) *string
 //go:wasmimport sdk contracts.call
 func contractCall(contractId *string, method *string, payload *string, options *string) *string
 
+//go:wasmimport sdk crypto.bls_verify_aggregate
+func cryptoBlsVerifyAggregate(pubkeysConcat *string, msgHex *string, aggSigHex *string) *string
+
+//go:wasmimport sdk crypto.bls_verify
+func cryptoBlsVerify(pubkeyHex *string, msgHex *string, sigHex *string) *string
+
 //go:wasmimport sdk tss_v2.create_key
 func tssCreateKey(keyId *string, algo *string, epochs *string) *string
 

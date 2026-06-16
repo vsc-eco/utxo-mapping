@@ -22,7 +22,8 @@ func isForVscAcc(
 	if err != nil {
 		return "", false, ce.WrapContractError(ce.ErrInput, err, "could not extract pkscript address")
 	}
-	// should always being exactly length 1 for P2SH an P2WSH addresses
+	// should always be exactly length 1 for P2SH addresses (Dash never
+	// activated SegWit, so the deposit-address commitment is always P2SH)
 	for _, addr := range addrs {
 		addressString := addr.EncodeAddress()
 		if _, ok := addresses[addressString]; ok {
@@ -219,22 +220,46 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 				routerAddr := "contract:" + routerId
 				setAllowance(selfAddr, routerAddr, utxo.Amount)
 
-				swapResultStr := sdk.ContractCall(routerId, "execute", string(instrJson), &sdk.ContractCallOptions{})
+				// DX-H6 (propagated from btc-mapping): run the ingress swap
+				// in try/catch mode. If the router reverts (slippage, no
+				// pool, zero output, abort), the router+DEX state/ledger
+				// effects are rolled back to a savepoint and the caller is
+				// NOT trapped — so instead of the whole deposit reverting
+				// and STRANDING the user's already-irreversible Dash, the
+				// refund branch below credits them wrapped DASH and they
+				// can withdraw or retry later. The router/DEX keep
+				// aborting normally; the mapping contract decides to
+				// absorb the failure.
+				//
+				// Requires consensus version >= 0.2.0. Below it, Try is
+				// ignored and a reverting swap traps as before — the
+				// legacy strand-on-permanent-failure behaviour, until
+				// the network activates the feature.
+				res := sdk.TryContractCall(routerId, "execute", string(instrJson), nil)
 				// Clean up any remaining allowance after swap to prevent lingering authorization
 				setAllowance(selfAddr, routerAddr, 0)
 
-				// Pentest finding BTC-C4 (propagated from btc-mapping): when
-				// the router fails or returns a useless result, previously
-				// this branch reverted the entire map → user's Dash sat in
-				// the contract vault with no L2 credit until the backup CSV
-				// timelock let them reclaim. Now: if the router didn't
-				// successfully pull the allowance, transfer the contract's
-				// self-credit to the depositor instead.
+				// Pentest finding BTC-C4 / DX-H6 (propagated from btc-
+				// mapping): when the router fails or returns a useless
+				// result, previously this branch reverted the entire map →
+				// user's Dash sat in the contract vault with no L2 credit
+				// until the backup CSV timelock let them reclaim. Now: if
+				// the router didn't successfully pull the allowance, the
+				// contract's self-credit is transferred to the depositor as
+				// wrapped DASH instead.
+				//
+				// With sdk.TryContractCall the router's effects are rolled
+				// back even on success-shaped-but-useless replies (e.g.
+				// AmountOut=0), so the post-revert refund is safe — the
+				// allowance is back to its pre-call value and only the
+				// contract's pre-call incAccBalance remains to settle.
 				routerFailed := false
 				var swapResult SwapResult
-				if swapResultStr == nil || *swapResultStr == "" {
+				if !res.Ok {
 					routerFailed = true
-				} else if uerr := tinyjson.Unmarshal([]byte(*swapResultStr), &swapResult); uerr != nil {
+				} else if res.Result == "" {
+					routerFailed = true
+				} else if uerr := tinyjson.Unmarshal([]byte(res.Result), &swapResult); uerr != nil {
 					routerFailed = true
 				} else if swapResult.AmountOut == "" || swapResult.AmountOut == "0" {
 					routerFailed = true
@@ -248,9 +273,13 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 					}
 					setAccBal(selfAddr, selfBal-utxo.Amount)
 					if err := incAccBalance(metadata.Recipient, utxo.Amount); err != nil {
-						return ce.Prepend(err, "btc-c4 refund: error crediting depositor")
+						return ce.Prepend(err, "dx-h6 refund: error crediting depositor")
 					}
-					sdk.Log("btc-c4 refund: swap failed; credited " + metadata.Recipient + " " +
+					reason := res.Error
+					if res.Ok {
+						reason = "router returned zero / unparseable result"
+					}
+					sdk.Log("dx-h6 refund: swap failed (" + reason + "); credited " + metadata.Recipient + " " +
 						strconv.FormatInt(utxo.Amount, 10) + " duffs")
 				}
 			default:
