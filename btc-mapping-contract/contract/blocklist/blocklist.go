@@ -51,30 +51,30 @@ func LastHeightToState(lastHeight uint32) {
 }
 
 // seedHeightFromState returns the original seed height, or 0 if not set.
-func seedHeightFromState() uint32 {
+func seedHeightFromState() int64 {
 	s := sdk.StateGetObject(constants.SeedHeightKey)
 	if s == nil || *s == "" {
 		return 0
 	}
-	h, err := strconv.ParseUint(*s, 10, 32)
+	h, err := strconv.ParseInt(*s, 10, 32)
 	if err != nil {
 		return 0
 	}
-	return uint32(h)
+	return h
 }
 
 // pruneFloorFromState returns the lowest height that hasn't been pruned yet.
 // This cursor avoids re-scanning already-pruned regions on each call.
-func pruneFloorFromState() uint32 {
+func pruneFloorFromState() int64 {
 	s := sdk.StateGetObject(constants.PruneFloorKey)
 	if s == nil || *s == "" {
 		return 0
 	}
-	h, err := strconv.ParseUint(*s, 10, 32)
+	h, err := strconv.ParseInt(*s, 10, 32)
 	if err != nil {
 		return 0
 	}
-	return uint32(h)
+	return h
 }
 
 func DivideHeaderList(blocksHex *string) ([]BlockHeaderBytes, error) {
@@ -183,17 +183,20 @@ func PruneOldHeaders(lastHeight uint32) int {
 		return 0
 	}
 	pruned := 0
-	h := int64(pruneFloor)
-	for ; h < retainFrom && pruned < constants.MaxPrunePerCall; h++ {
+	h := pruneFloor
+	// limit size of search to prevent blow-up in case of gap after re-seed
+	for ; h < retainFrom && h-pruneFloor < constants.MaxPrunePerCall; h++ {
 		key := constants.BlockPrefix + strconv.FormatInt(h, 10)
 		existing := sdk.StateGetObject(key)
 		if existing != nil && *existing != "" {
 			sdk.StateDeleteObject(key)
+			// Also prune the observed tx list for this block height
+			// Safe to do here because saveObservedList is only ever
+			// called on a proven height
+			observedKey := constants.ObservedBlockPrefix + strconv.FormatInt(h, 10)
+			sdk.StateDeleteObject(observedKey)
 			pruned++
 		}
-		// Also prune the observed tx list for this block height
-		observedKey := constants.ObservedBlockPrefix + strconv.FormatInt(h, 10)
-		sdk.StateDeleteObject(observedKey)
 	}
 	sdk.StateSetObject(constants.PruneFloorKey, strconv.FormatInt(h, 10))
 	return pruned
