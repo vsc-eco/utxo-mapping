@@ -38,6 +38,7 @@ const btcc3Instruction = "deposit_to=hive:milo-hpr"
 func btcc3SetupContract(t *testing.T, ct *test_utils.ContractTest, contractId string, balance int64, utxoSlots ...int64) {
 	t.Helper()
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
+	activateTssKey(ct, contractId)
 	ct.StateSet(contractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, balance))
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))

@@ -183,8 +183,17 @@ func TssGetKey(keyId string) string {
 	return *tssGetKey(&keyId)
 }
 
-func TssSignKey(keyId string, bytes []byte) {
+// TssSignKey requests a TSS signature over bytes using the named key and
+// returns the runtime's status: "ok" when the request was queued for signing,
+// or "fail" when the key is missing or not active (e.g. deprecated/expired).
+// The result MUST be checked — on "fail" the host records nothing, so a caller
+// that ignores it would commit a withdrawal that can never be signed.
+func TssSignKey(keyId string, bytes []byte) string {
 	byteStr := hex.EncodeToString(bytes)
 
-	tssSignKey(&keyId, &byteStr)
+	res := tssSignKey(&keyId, &byteStr)
+	if res == nil {
+		return ""
+	}
+	return *res
 }

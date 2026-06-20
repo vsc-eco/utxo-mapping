@@ -397,6 +397,7 @@ func TestUnmapExactBalance(t *testing.T) {
 	t.Cleanup(func() { ct.DataLayer.Stop() })
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
+	activateTssKey(&ct, contractId)
 
 	// Set a large balance so we can unmap a moderate amount and verify
 	// the balance decreases correctly (amount + vscFee + btcFee).
@@ -628,6 +629,7 @@ func TestUnmapSupplyUpdates(t *testing.T) {
 	t.Cleanup(func() { ct.DataLayer.Stop() })
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
+	activateTssKey(&ct, contractId)
 
 	const balance = int64(100000)
 	const unmapAmount = int64(20000)
@@ -699,6 +701,7 @@ func TestMapThenUnmapFullCycle(t *testing.T) {
 	t.Cleanup(func() { ct.DataLayer.Stop() })
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
+	activateTssKey(&ct, contractId)
 	// Top up the caller's HBD balance so RCs cover both map and unmap in one
 	// test (the 10k free tier alone is borderline for a single op).
 	ct.Deposit("hive:milo-hpr", 10000, ledgerDb.AssetHbd)

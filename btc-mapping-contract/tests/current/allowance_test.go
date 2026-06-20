@@ -368,6 +368,7 @@ func TestUnmapFromWithAllowance(t *testing.T) {
 	const ownerBalance = int64(10000)
 
 	ct, contractId := setupAllowanceContract(t, ownerBalance)
+	activateTssKey(ct, contractId)
 
 	// Seed UTXO state (same as TestUnmap)
 	ct.StateSet(contractId, constants.ObservedBlockPrefix+"100", buildObservedList(t,

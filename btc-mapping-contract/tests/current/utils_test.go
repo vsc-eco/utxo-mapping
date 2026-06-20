@@ -1,6 +1,7 @@
 package current_test
 
 import (
+	"btc-mapping-contract/contract/constants"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -9,10 +10,32 @@ import (
 	"time"
 	"vsc-node/lib/test_utils"
 	contract_session "vsc-node/modules/contract/session"
+	tss_db "vsc-node/modules/db/vsc/tss"
 	state_engine "vsc-node/modules/state-processing"
 )
 
 var txId int64 = 0
+
+// activateTssKey seeds the contract's TSS signing key as active in the mock
+// keys DB. The runtime's tss.sign_key host call returns "fail" when the key is
+// absent or not active, which now reverts an unmap (mirroring a deprecated key
+// on testnet). Any test that expects an unmap to reach signing and succeed must
+// call this after RegisterContract.
+func activateTssKey(ct *test_utils.ContractTest, contractId string) {
+	ct.Tss.Keys.SetKey(tss_db.TssKey{
+		Id:     contractId + "-" + constants.TssKeyName,
+		Status: tss_db.TssKeyActive,
+	})
+}
+
+// deprecateTssKey seeds the contract's TSS signing key in the deprecated state,
+// reproducing the on-testnet condition where tss.sign_key returns "fail".
+func deprecateTssKey(ct *test_utils.ContractTest, contractId string) {
+	ct.Tss.Keys.SetKey(tss_db.TssKey{
+		Id:     contractId + "-" + constants.TssKeyName,
+		Status: tss_db.TssKeyDeprecated,
+	})
+}
 
 func dumpLogs(t *testing.T, logs map[string]contract_session.LogOutput) {
 	t.Helper()

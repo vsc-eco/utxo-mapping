@@ -390,7 +390,18 @@ func signSpendTransaction(tx *wire.MsgTx, inputs []*Utxo, witnessScripts map[int
 			return nil, err
 		}
 
-		sdk.TssSignKey(constants.TssKeyName, sigHash)
+		// TssSignKey is best-effort at the host boundary: the runtime returns
+		// "fail" — recording no signing request — when the key is missing or
+		// not active (e.g. deprecated/expired). Revert loudly instead of
+		// falling through to the unmap log and committing a withdrawal that
+		// consumes the inputs and debits the caller while no signature is ever
+		// produced (which would strand the funds).
+		if status := sdk.TssSignKey(constants.TssKeyName, sigHash); status != "ok" {
+			return nil, ce.NewContractError(
+				ce.ErrTransaction,
+				"TSS signing rejected for key \""+constants.TssKeyName+"\" (missing or not active): \""+status+"\"",
+			)
+		}
 
 		unsignedSigHashes[i] = UnsignedSigHash{
 			Index:         uint32(i),

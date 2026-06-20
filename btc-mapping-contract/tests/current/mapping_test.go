@@ -91,6 +91,7 @@ func TestUnmap(t *testing.T) {
 	t.Cleanup(func() { ct.DataLayer.Stop() })
 	contractId := "mapping_contract"
 	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
+	activateTssKey(&ct, contractId)
 	ct.StateSet(contractId, constants.BalancePrefix+"hive:milo-hpr", encodeBalance(t, 10000))
 	ct.StateSet(contractId, constants.ObservedBlockPrefix+"100", buildObservedList(t,
 		observedParam{fakeTxId0, 0}, observedParam{fakeTxId1, 0},
@@ -152,6 +153,77 @@ func TestUnmap(t *testing.T) {
 
 	dumpStateDiff(t, r.StateDiff)
 	fmt.Println("Return value:", r.Ret)
+}
+
+// TestUnmapRevertsWhenKeyDeprecated proves the fix for the silent TSS signing
+// miss observed on testnet: when the runtime rejects tss.sign_key (the key is
+// deprecated / not active), HandleUnmap must revert loudly instead of emitting
+// the unmap log and committing a withdrawal that can never be signed. The
+// caller's balance and the input UTXOs must be left untouched.
+func TestUnmapRevertsWhenKeyDeprecated(t *testing.T) {
+	const instruction = "deposit_to=hive:milo-hpr"
+	const fakeTxId0 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const fakeTxId1 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
+	contractId := "mapping_contract"
+	ct.RegisterContract(contractId, "hive:milo-hpr", ContractWasm)
+	// Key exists but is deprecated — the runtime returns "fail" for sign_key.
+	deprecateTssKey(&ct, contractId)
+
+	const startBalance = int64(10000)
+	balanceKey := constants.BalancePrefix + "hive:milo-hpr"
+	ct.StateSet(contractId, balanceKey, encodeBalance(t, startBalance))
+	ct.StateSet(contractId, constants.ObservedBlockPrefix+"100", buildObservedList(t,
+		observedParam{fakeTxId0, 0}, observedParam{fakeTxId1, 0},
+	))
+	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(mapping.UtxoRegistry{
+		{Id: 1024, Amount: 5000},
+		{Id: 1025, Amount: 5000},
+	})))
+	ct.StateSet(contractId, constants.UtxoPrefix+"400", depositUtxoBinary(t, fakeTxId0, 0, 5000, instruction))
+	ct.StateSet(contractId, constants.UtxoPrefix+"401", changeUtxoBinary(t, fakeTxId1, 0, 5000))
+	ct.StateSet(contractId, constants.UtxoLastIdKey, encodeUtxoCounters(1026, 0))
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
+		ActiveSupply: startBalance,
+		UserSupply:   startBalance,
+		FeeSupply:    0,
+		BaseFeeRate:  1,
+	})))
+	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.BlockPrefix+"100", buildSeedHeaderRaw(t, time.Unix(0, 0)))
+	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
+	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
+
+	payload, err := tinyjson.Marshal(mapping.TransferParams{
+		Amount: "7500",
+		To:     regtestDestAddress(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := ct.Call(stateEngine.TxVscCallContract{
+		Self:       *basicSelf(t, "hive:milo-hpr"),
+		ContractId: contractId,
+		Action:     "unmap",
+		Payload:    payload,
+		RcLimit:    10000,
+		Intents:    []contracts.Intent{},
+	})
+
+	// Must revert loudly rather than silently succeed.
+	assert.False(t, r.Success, "unmap must revert when the TSS key is not active")
+	// transaction_error == ce.ErrTransaction; confirms a structured revert, not a trap.
+	assert.Equal(t, "transaction_error", r.Err, "expected transaction_error symbol, got %q (%s)", r.Err, r.ErrMsg)
+	assert.Contains(t, r.ErrMsg, "not active", "error should explain the signing rejection: %s", r.ErrMsg)
+
+	// Funds untouched: the whole tx reverted, so balance and inputs are intact.
+	assert.Equal(t, encodeBalance(t, startBalance), ct.StateGet(contractId, balanceKey),
+		"caller balance must be unchanged after a reverted unmap")
+	assert.NotEqual(t, "", ct.StateGet(contractId, constants.UtxoPrefix+"400"),
+		"input UTXO must not be consumed by a reverted unmap")
 }
 
 func TestTransfer(t *testing.T) {
