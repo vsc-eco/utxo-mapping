@@ -60,18 +60,43 @@ func (cs *ContractState) getMigrationInputs(gen uint32) (inputIds []uint16, tota
 	return inputIds, total, moreRemain, nil
 }
 
-// generationHasUtxos reports whether ANY registry UTXO (confirmed OR unconfirmed) is
-// tagged `gen` — used to detect a fully-drained generation. Registry-based (THORChain
-// HasFunds style); S5 hardens the drained check with an SPV zero-L1 proof (a corrupted
-// registry must not be able to falsely report "empty"). Deterministic slice scan.
-func (cs *ContractState) generationHasUtxos(gen uint32) (bool, error) {
-	for i := range cs.UtxoList {
-		utxo, err := loadUtxo(cs.UtxoList[i].Id)
-		if err != nil {
-			return false, err
+// AnyFundedSupersededGen reports whether any RETIRING or DRAINING generation still holds
+// a registry UTXO — the NN#3 gate ("no rotation N+1 while gen N is funded", S2-close
+// completeness F-1). Loads the vault list + the UTXO registry and scans. Genesis / a
+// clean rotation (no superseded gens, or all drained) → false. Registry-based (S5 hardens
+// the emptiness check with an SPV zero-L1 proof). Deterministic: slice scans + keyed
+// loads, no map ranging.
+func AnyFundedSupersededGen() (bool, error) {
+	vaults, _, _, err := LoadVaultState()
+	if err != nil {
+		return false, err
+	}
+	var superseded []uint32
+	for i := range vaults {
+		if vaults[i].Status == VaultStatusRetiring || vaults[i].Status == VaultStatusDraining {
+			superseded = append(superseded, vaults[i].Generation)
 		}
-		if utxo.Generation == gen {
-			return true, nil
+	}
+	if len(superseded) == 0 {
+		return false, nil
+	}
+	utxoState := sdk.StateGetObject(constants.UtxoRegistryKey)
+	if len(*utxoState) == 0 {
+		return false, nil
+	}
+	utxos, err := UnmarshalUtxoRegistry([]byte(*utxoState))
+	if err != nil {
+		return false, ce.NewContractError(ce.ErrStateAccess, "error decoding utxo registry: "+err.Error())
+	}
+	for i := range utxos {
+		utxo, lerr := loadUtxo(utxos[i].Id)
+		if lerr != nil {
+			return false, lerr
+		}
+		for _, g := range superseded {
+			if utxo.Generation == g {
+				return true, nil
+			}
 		}
 	}
 	return false, nil
@@ -181,22 +206,16 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 		return "", err
 	}
 	if len(inputIds) == 0 {
-		// No confirmed UTXOs to sweep. If the gen is registry-empty (no confirmed OR
-		// unconfirmed UTXO tagged it) AND no sweeps are in flight, it is drained →
-		// (retiring/draining) → INACTIVE (S2.3). Registry-based (THORChain HasFunds
-		// style); S5 hardens this with an SPV zero-L1 proof + grace≥reorg before the
-		// fund-gated purge, and S2.4 adds reorg-reversal (un-empty) + per-gen pending
-		// tracking (the TxSpendsList-empty gate here is a conservative stand-in that
-		// waits for every in-flight spend to confirm). INACTIVE only marks "drained" —
-		// NO shares are destroyed (that is S5); the gen keeps its keys.
-		hasUtxos, herr := cs.generationHasUtxos(targetGen)
-		if herr != nil {
-			return "", herr
-		}
-		if !hasUtxos && len(cs.TxSpendsList) == 0 {
-			cs.Vaults[targetIdx].Status = VaultStatusInactive
-			return "generation " + strconv.FormatUint(uint64(targetGen), 10) + " drained (inactive)", nil
-		}
+		// No confirmed UTXOs to sweep for this gen. It STAYS retiring/draining — still
+		// fund-holding, so its address stays matchable for late deposits and its key keeps
+		// renewing (never-brick). The draining→inactive→purged finalization is S5's job:
+		// it needs the SPV zero-L1 proof + grace≥reorg AND the match-until-purged /
+		// revert-on-late-deposit handling (S1-DESIGN §5a). Producing INACTIVE here (in S2,
+		// before that consumer exists) would drop the gen out of isFundHoldingStatus and
+		// reopen the C-2/NR-4 late-deposit loss — the S2-close council F-1 (fail-safe +
+		// state-machine + trust-boundary). NN#3 (enforced in createKey) gates the next
+		// rotation on every superseded gen being drained, so an empty draining gen never
+		// blocks progress even though it is not marked inactive here.
 		return "nothing to migrate for generation " + strconv.FormatUint(uint64(targetGen), 10), nil
 	}
 
@@ -257,7 +276,14 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 	// there; a reorg-reversal of this internal transfer is U-10 (S2.4).
 	newActive, err := safeSubtract64(cs.Supply.ActiveSupply, btcFee)
 	if err != nil {
-		return "", ce.WrapContractError(ce.ErrArithmetic, err, "migration fee exceeds active supply")
+		return "", ce.WrapContractError(ce.ErrArithmetic, err, "migration fee arithmetic")
+	}
+	// safeSubtract64 only catches int64 wraparound, NOT below-zero (S2-close money-math
+	// F-2) — guard explicitly so a fee > ActiveSupply aborts rather than silently going
+	// negative. (The tighter ActiveSupply≥UserSupply coverage guard is the X-2 fix,
+	// deferred with the migration-fee funding model.)
+	if newActive < 0 {
+		return "", ce.NewContractError(ce.ErrBalance, "migration fee exceeds active supply")
 	}
 	cs.Supply.ActiveSupply = newActive
 

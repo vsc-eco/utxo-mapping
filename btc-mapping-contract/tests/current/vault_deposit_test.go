@@ -73,6 +73,15 @@ func TestMigrateVaultSweepsRetiringGen(t *testing.T) {
 	regBefore, _ := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
 	require.Len(t, regBefore, 1, "one confirmed gen-0 deposit UTXO before migration")
 
+	// NN#3 (S2-close): a new rotation is refused while the superseded gen-0 still holds funds.
+	require.NotEmpty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err,
+		"createKey must be refused while gen-0 holds funds (NN#3)")
+	// migrateVault is pause-gated (S2-close F-2): refused while paused, works after unpause.
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "pause", []byte("")).Err)
+	require.NotEmpty(t, callKeyAction(t, &ct, contractId, owner, "migrateVault", []byte("")).Err,
+		"migrateVault must be refused while paused (F-2)")
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "unpause", []byte("")).Err)
+
 	// Migrate: sweep the retiring gen-0 UTXO to the gen-1 successor.
 	r := callKeyAction(t, &ct, contractId, owner, "migrateVault", []byte(""))
 	require.Empty(t, r.Err, r.ErrMsg)
@@ -104,10 +113,11 @@ func TestMigrateVaultSweepsRetiringGen(t *testing.T) {
 	require.Equal(t, mapping.VaultStatusDraining, drainingVaults[0].Status, "gen-0 stays draining while its sweep is pending")
 }
 
-// TestMigrateVaultEmptyGenGoesInactive — S2.3: a superseded generation with no funds
-// (registry-empty, no pending sweeps) finalizes retiring/draining → INACTIVE on
-// migrateVault. Registry-based; INACTIVE marks "drained" but destroys nothing (S5).
-func TestMigrateVaultEmptyGenGoesInactive(t *testing.T) {
+// TestMigrateVaultEmptyGenStaysRetiring — S2-close F-1 fix: a superseded generation with
+// no funds is NOT flipped to Inactive by S2 (that would drop it out of deposit-matching +
+// renewal, reopening the C-2/NR-4 late-deposit loss). It stays retiring/draining (still
+// fund-holding) until S5's fund-gated + match-until-purged finalization.
+func TestMigrateVaultEmptyGenStaysRetiring(t *testing.T) {
 	ct := test_utils.NewContractTest()
 	t.Cleanup(func() { ct.DataLayer.Stop() })
 	contractId, owner := "mapping_contract", "hive:milo-hpr"
@@ -121,10 +131,10 @@ func TestMigrateVaultEmptyGenGoesInactive(t *testing.T) {
 
 	r := callKeyAction(t, &ct, contractId, owner, "migrateVault", []byte(""))
 	require.Empty(t, r.Err, r.ErrMsg)
-	require.Contains(t, r.Ret, "drained")
+	require.Contains(t, r.Ret, "nothing to migrate")
 	vaults, _, activeGen := loadVaults(t, &ct, contractId)
 	require.Equal(t, uint32(1), activeGen)
-	require.Equal(t, mapping.VaultStatusInactive, vaults[0].Status, "empty retiring gen-0 finalizes to inactive")
+	require.Equal(t, mapping.VaultStatusRetiring, vaults[0].Status, "empty superseded gen stays retiring (NOT inactive in S2)")
 	require.Equal(t, mapping.VaultStatusActive, vaults[1].Status)
 }
 

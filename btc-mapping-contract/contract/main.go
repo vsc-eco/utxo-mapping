@@ -766,6 +766,20 @@ func CreateKey(_ *string) *string {
 		)
 	}
 
+	// NN#3 (S2-close completeness F-1): refuse a new key generation while any superseded
+	// (retiring/draining) generation still holds funds — else multiple funded old keys
+	// pile up, defeating rotation's purpose (each live key is a reconstruction target).
+	// Drain the prior generation (migrateVault) first. Genesis / a clean rotation passes
+	// trivially (no funded superseded gen). Registry-based (S5 hardens with SPV).
+	funded, nn3err := mapping.AnyFundedSupersededGen()
+	if nn3err != nil {
+		ce.CustomAbort(nn3err)
+	}
+	if funded {
+		ce.CustomAbort(ce.NewContractError(ce.ErrTransaction,
+			"cannot create a new key while a superseded generation still holds funds — drain it (migrateVault) first (NN#3)"))
+	}
+
 	// S1.3: mint the NEXT generation as a pending vault (genesis mints gen-0),
 	// bound to the active generation as predecessor, then request its TSS key. The
 	// live vault is untouched — it keeps receiving deposits and signing until an
@@ -866,10 +880,13 @@ func MigrateVault(_ *string) *string {
 	}
 
 	// S2: sweep one tranche of a retiring/draining generation's confirmed UTXOs to the
-	// successor (active) vault. Deliberately NOT pause-gated — like the key ceremony,
-	// migration is part of rotation/recovery and must be able to complete while token ops
-	// are paused; NN#1 constrains the sweep to pay ONLY the consensus-derived successor,
-	// so a paused (or compromised-owner) migration cannot redirect funds.
+	// successor (active) vault. PAUSE-GATED (S2-close completeness F-2 / V-8): confirmSpend
+	// — the only path that promotes a sweep's output — is itself pause-gated, so sweeping
+	// during a pause would strand the unconfirmed output (worse if the pause outlasts
+	// header retention → the confirm proof is pruned). Keep migration consistent with
+	// confirm. True evacuation-during-pause (exempt BOTH sides for a whitelisted evac key)
+	// is the deferred V-8 design (S3). NN#1 still constrains the destination regardless.
+	checkNotPaused()
 	publicKeys, err := loadPublicKeys()
 	if err != nil {
 		ce.CustomAbort(err)
