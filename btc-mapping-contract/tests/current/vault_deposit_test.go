@@ -94,6 +94,38 @@ func TestMigrateVaultSweepsRetiringGen(t *testing.T) {
 
 	// A pending sweep tx is recorded so confirmSpend can promote its output.
 	require.NotEmpty(t, ct.StateGet(contractId, constants.TxSpendsRegistryKey), "sweep recorded as a pending spend")
+
+	// S2.3 guard: a second migrate BEFORE the sweep confirms must NOT finalize gen-0 to
+	// inactive — the pending sweep is still in flight (conservative reorg guard).
+	r2 := callKeyAction(t, &ct, contractId, owner, "migrateVault", []byte(""))
+	require.Empty(t, r2.Err)
+	require.Contains(t, r2.Ret, "nothing to migrate")
+	drainingVaults, _, _ := loadVaults(t, &ct, contractId)
+	require.Equal(t, mapping.VaultStatusDraining, drainingVaults[0].Status, "gen-0 stays draining while its sweep is pending")
+}
+
+// TestMigrateVaultEmptyGenGoesInactive — S2.3: a superseded generation with no funds
+// (registry-empty, no pending sweeps) finalizes retiring/draining → INACTIVE on
+// migrateVault. Registry-based; INACTIVE marks "drained" but destroys nothing (S5).
+func TestMigrateVaultEmptyGenGoesInactive(t *testing.T) {
+	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
+	contractId, owner := "mapping_contract", "hive:milo-hpr"
+	ct.RegisterContract(contractId, owner, ContractWasm)
+	seedActiveGen0(t, &ct, contractId, owner)
+
+	// Rotate with NO deposits → gen-0 retiring but empty.
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err)
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "registerPublicKey", regKeyPayload(t, Gen1PrimaryHex, "")).Err)
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "activateKey", []byte("")).Err)
+
+	r := callKeyAction(t, &ct, contractId, owner, "migrateVault", []byte(""))
+	require.Empty(t, r.Err, r.ErrMsg)
+	require.Contains(t, r.Ret, "drained")
+	vaults, _, activeGen := loadVaults(t, &ct, contractId)
+	require.Equal(t, uint32(1), activeGen)
+	require.Equal(t, mapping.VaultStatusInactive, vaults[0].Status, "empty retiring gen-0 finalizes to inactive")
+	require.Equal(t, mapping.VaultStatusActive, vaults[1].Status)
 }
 
 // TestMapCreditsRetiringGenDeposit is the S1.4 end-to-end proof (NR-4 / C-2). After a

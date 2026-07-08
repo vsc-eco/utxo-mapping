@@ -60,6 +60,23 @@ func (cs *ContractState) getMigrationInputs(gen uint32) (inputIds []uint16, tota
 	return inputIds, total, moreRemain, nil
 }
 
+// generationHasUtxos reports whether ANY registry UTXO (confirmed OR unconfirmed) is
+// tagged `gen` — used to detect a fully-drained generation. Registry-based (THORChain
+// HasFunds style); S5 hardens the drained check with an SPV zero-L1 proof (a corrupted
+// registry must not be able to falsely report "empty"). Deterministic slice scan.
+func (cs *ContractState) generationHasUtxos(gen uint32) (bool, error) {
+	for i := range cs.UtxoList {
+		utxo, err := loadUtxo(cs.UtxoList[i].Id)
+		if err != nil {
+			return false, err
+		}
+		if utxo.Generation == gen {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // assertOutputsPaySuccessor verifies EVERY output of a sweep pays the successor vault's
 // script (NN#1 Layer-1). A migration must never route funds anywhere but the successor;
 // because the contract is consensus-re-executed, this assertion is consensus-validated
@@ -155,8 +172,22 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 		return "", err
 	}
 	if len(inputIds) == 0 {
-		// Nothing confirmed to sweep (gen empty, or only unconfirmed change of an in-flight
-		// tranche). Not an error; draining→inactive on SPV-empty is S2.3/S5.
+		// No confirmed UTXOs to sweep. If the gen is registry-empty (no confirmed OR
+		// unconfirmed UTXO tagged it) AND no sweeps are in flight, it is drained →
+		// (retiring/draining) → INACTIVE (S2.3). Registry-based (THORChain HasFunds
+		// style); S5 hardens this with an SPV zero-L1 proof + grace≥reorg before the
+		// fund-gated purge, and S2.4 adds reorg-reversal (un-empty) + per-gen pending
+		// tracking (the TxSpendsList-empty gate here is a conservative stand-in that
+		// waits for every in-flight spend to confirm). INACTIVE only marks "drained" —
+		// NO shares are destroyed (that is S5); the gen keeps its keys.
+		hasUtxos, herr := cs.generationHasUtxos(targetGen)
+		if herr != nil {
+			return "", herr
+		}
+		if !hasUtxos && len(cs.TxSpendsList) == 0 {
+			cs.Vaults[targetIdx].Status = VaultStatusInactive
+			return "generation " + strconv.FormatUint(uint64(targetGen), 10) + " drained (inactive)", nil
+		}
 		return "nothing to migrate for generation " + strconv.FormatUint(uint64(targetGen), 10), nil
 	}
 
