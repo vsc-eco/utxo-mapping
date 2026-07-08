@@ -270,6 +270,32 @@ func TestDepositAddressGenerationsExcludesAndFallsBack(t *testing.T) {
 	}
 }
 
+// TestDepositAddressGenerationsTwoSupersededGens proves matching spans MULTIPLE
+// superseded generations at once (a double rotation: gen-0 draining + gen-1 retiring
+// while gen-2 is active) — active first, then every fund-holding predecessor in
+// vault-list order. Covers the S1.4-council F3 gap (no multi-retiring-gen coverage).
+func TestDepositAddressGenerationsTwoSupersededGens(t *testing.T) {
+	cs := &ContractState{
+		Vaults: VaultRegistry{
+			{Generation: 0, Primary: pk(0x10), Backup: pk(0x11), Status: VaultStatusDraining},
+			{Generation: 1, Primary: pk(0x20), Backup: pk(0x21), Status: VaultStatusRetiring},
+			{Generation: 2, Primary: pk(0x30), Backup: pk(0x31), Status: VaultStatusActive},
+		},
+		ActiveGen: 2,
+	}
+	got := cs.depositAddressGenerations()
+	if len(got) != 3 {
+		t.Fatalf("want all 3 fund-holding gens matched, got %d", len(got))
+	}
+	if got[0].generation != 2 {
+		t.Fatalf("active gen 2 must be first, got %d", got[0].generation)
+	}
+	// Both superseded gens follow, in vault-list order (0 draining, then 1 retiring).
+	if got[1].generation != 0 || got[2].generation != 1 {
+		t.Fatalf("both superseded gens must be matched in list order, got [%d,%d]", got[1].generation, got[2].generation)
+	}
+}
+
 // TestChangeOutputTaggedWithActiveGen proves fix #2 (council 1a): a change output is
 // tagged with the active generation, not the default 0. Reverting the tag fails this.
 func TestChangeOutputTaggedWithActiveGen(t *testing.T) {

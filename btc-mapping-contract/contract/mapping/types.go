@@ -142,10 +142,10 @@ type AddressMetadata struct {
 	Tag         []byte // tag (hashed instruction) used to create the address
 	Type        MappingType
 	// Generation is the vault generation whose keys derived this deposit address.
-	// A deposit indexed at this address is tagged with it (S1.3 C-1 fix) so the
+	// A deposit indexed at this address is tagged with it (S1.3 C-1 / S1.4) so the
 	// spend path later resolves the correct per-generation witness keys + TSS keyId.
-	// Currently every registry address is the active generation's; S1.4 will extend
-	// matching to all non-purged generations, each carrying its own Generation.
+	// S1.4: the registry holds an address for EVERY fund-holding generation, each
+	// entry carrying its own Generation, so a late deposit to a superseded gen credits.
 	Generation uint32
 }
 

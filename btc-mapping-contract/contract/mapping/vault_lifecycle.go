@@ -378,17 +378,32 @@ func DiscardPendingGeneration() (uint32, error) {
 }
 
 // isFundHoldingStatus reports whether a vault generation holds — or may still
-// receive — funds: active, retiring, or draining. It is the SINGLE predicate
-// behind two invariants that MUST stay in lockstep:
-//   - its deposit address stays matchable  (S1.4 dual-generation crediting), and
-//   - its TSS key stays renewable           (RenewableVaultKeyIds, below).
+// receive — funds: active, retiring, or draining. It defines the generations that
+// (a) stay deposit-address-matchable (S1.4 dual-generation crediting) and (b) are
+// candidates for TSS-key renewal (RenewableVaultKeyIds, below).
 //
-// The coupling is load-bearing: if a generation were deposit-matchable but NOT
-// renewable, a late deposit we credit to it could become UNSPENDABLE once its
-// key expired (renewal is what keeps a retiring gen signable) — reintroducing
-// the very fund-loss class S1.4 exists to close. Sharing this predicate makes
-// the two sets provably identical. Pending (no keys yet) and Inactive/Purged
-// (S2/S5: SPV-proven-empty / destroyed) are deliberately excluded.
+// ★ These two sets share this STATUS predicate but are NOT identical: Renewable-
+// VaultKeyIds further intersects with tssKeyIsRenewable (a key that has aged to
+// `retired`/missing on the TSS side can't be renewed and is dropped), so the
+// deposit-matchable set is a SUPERSET of the renewable set. The safety property is
+// therefore "matched ⇒ RECOVERABLE", NOT "matched ⇒ renewable": funds credited to a
+// matched gen are spendable via its PRIMARY key while that key is kept renewed
+// (renewKey renews every fund-holding gen — the operational control), and are
+// recoverable via the CSV BACKUP path regardless, because a gen's backup shares
+// survive until it is PURGED (never-brick invariant #4). Keeping a funded gen's
+// primary key alive until it is swept+empty is never-brick invariant #1 — enforced
+// by renewKey + the fund-gated purge (S5), not by this predicate. Matching a
+// late deposit is always strictly better than dropping it (dropped = uncredited
+// loss; matched = credited + at-least-backup-recoverable).
+//
+// EXCLUSIONS: Pending (no keys yet) is excluded. Inactive and Purged are excluded
+// ONLY because S1 never produces them (S1 drives Pending→Active→Retiring only) — NOT
+// because an Inactive gen is safe to ignore. S1-DESIGN §5a-#4 requires addresses stay
+// matchable UNTIL PURGED (a late deposit to an emptied-but-unpurged gen must still
+// credit + revert it to Draining). ★ S5 MUST re-include Inactive here (paired with
+// revert-on-late-deposit) when it builds the Inactive→Purged flow, or it reopens the
+// C-2/NR-4 fund-loss. Purged stays excluded (shares destroyed → unspendable → its
+// address must not be advertised).
 func isFundHoldingStatus(s VaultStatus) bool {
 	return s == VaultStatusActive || s == VaultStatusRetiring || s == VaultStatusDraining
 }
@@ -426,9 +441,11 @@ func RenewableVaultKeyIds() ([]string, error) {
 	}
 	var ids []string
 	for i := range vaults {
-		// Same fund-holding set as S1.4 deposit matching (isFundHoldingStatus) —
-		// keep these two in lockstep: every gen we still credit deposits to must
-		// stay renewable, or a late deposit could outlive its signable key.
+		// Same fund-holding STATUS set as S1.4 deposit matching (isFundHoldingStatus),
+		// then further filtered by tssKeyIsRenewable below — so the renewable set is a
+		// SUBSET of the deposit-matchable set (see isFundHoldingStatus: a matched gen's
+		// funds stay recoverable via a renew-kept primary key or the CSV backup path,
+		// NOT because the two sets are identical — they are not).
 		if isFundHoldingStatus(vaults[i].Status) {
 			if keyId := VaultKeyId(vaults[i].Generation); tssKeyIsRenewable(keyId) {
 				ids = append(ids, keyId)

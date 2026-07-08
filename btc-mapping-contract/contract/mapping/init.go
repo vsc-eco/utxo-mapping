@@ -161,9 +161,13 @@ type depositVaultKeys struct {
 // depositAddressGenerations returns the key material of every generation whose
 // deposit address must be matched (S1.4 dual-generation crediting): all
 // fund-holding generations (active + retiring + draining, isFundHoldingStatus)
-// that carry a real primary key — with the ACTIVE generation FIRST, so it wins
-// any address collision (collisions are precluded by the R6 pubkey-uniqueness
-// rule, but ordering makes the tie-break deterministic regardless).
+// that carry a real primary key — with the ACTIVE generation FIRST, so it wins any
+// address collision. (A collision is infeasible in practice: each generation's key
+// is independently attested to its own TSS ceremony output at activation — D-1, so
+// keys can't be freely chosen to collide — and distinct keys yield distinct P2WSH
+// addresses; active-first ordering makes the tie-break deterministic regardless.
+// NOTE: cross-generation pubkey-uniqueness (design R6) is NOT separately enforced in
+// the contract; collision-safety rests on attestation + address derivation, above.)
 //
 // New deposits are directed to the active gen's address (the address the
 // router/UI hands out), but every superseded gen's address stays matchable
@@ -270,8 +274,9 @@ func (cs *ContractState) parseInstructions(
 			if err != nil {
 				return nil, err
 			}
-			// Active-first ordering already claimed this address on the (R6-precluded)
-			// chance two generations derive the same one — keep the active gen's entry.
+			// Active-first ordering already claimed this address on the (infeasible:
+			// distinct attested keys → distinct P2WSH addresses) chance two generations
+			// derive the same one — keep the active gen's entry, deterministically.
 			if _, exists := registry[address]; exists {
 				continue
 			}
