@@ -472,7 +472,11 @@ func DecreaseAllowance(input *string) *string {
 //
 //go:wasmexport confirmSpend
 func ConfirmSpend(input *string) *string {
-	checkNotPaused()
+	// BRK-4b (brick council FS-1/V-8): the pause check is applied INSIDE
+	// HandleConfirmSpend, which EXEMPTS a confirm of an already-pending spend (in
+	// the TxSpends registry) — reconciling an already-authorized, already-broadcast
+	// spend moves no new funds, and freezing it merely strands an in-flight
+	// migration/withdrawal. A confirm of any other tx stays pause-gated.
 	var params mapping.ConfirmSpendParams
 	err := tinyjson.Unmarshal([]byte(*input), &params)
 	if err != nil {

@@ -299,6 +299,24 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 	}
 	txId := msgTx.TxID()
 
+	// BRK-4b (brick council FS-1/V-8): a confirm of an ALREADY-PENDING spend (in
+	// the TxSpends registry) is EXEMPT from pause — it only reconciles an
+	// already-authorized, already-broadcast spend and moves no new funds; freezing
+	// it merely strands an in-flight migration/withdrawal. Any OTHER confirm stays
+	// pause-gated.
+	isPending := false
+	for _, id := range cs.TxSpendsList {
+		if id == txId {
+			isPending = true
+			break
+		}
+	}
+	if !isPending {
+		if p := sdk.StateGetObject(constants.PausedKey); p != nil && *p != "" {
+			return ce.NewContractError(ce.ErrTransaction, "contract is paused")
+		}
+	}
+
 	indexSet := make(map[uint32]struct{}, len(indices))
 	for _, idx := range indices {
 		indexSet[idx] = struct{}{}

@@ -98,8 +98,17 @@ const MaxMigrationInputs = 100
 
 // MaxBlockRetention is the number of recent block headers to keep.
 // Older headers are pruned during addBlocks to prevent unbounded state growth.
-// keep a week worth of headers to allow addresses to be registered after the fact
-const MaxBlockRetention = 1080
+//
+// Must be >= the CSV backup timelock (BackupCSVBlocks = 4320 ≈ 1 month on
+// mainnet) + a reorg-depth margin. A CSV backup recovery becomes spendable on L1
+// only after the timelock, and a pending migration sweep may not confirm for a
+// while (a pause/suspend can outlast the window); if headers referenced by such
+// a spend are pruned first, the contract can no longer SPV-verify the
+// confirmation/recovery and the accounting cannot reconcile it (brick council
+// FS-1/FS-2/FS-4/FS-5 H-3 — a recoverable freeze that would otherwise degrade
+// past the primary path). 4608 = 4320 (mainnet CSV) + 288 (~2-day reorg margin);
+// on testnet (CSV=2) this is harmless headroom. Header storage ≈ 4608*80 B ≈ 369 KB.
+const MaxBlockRetention = 4608
 
 // MaxPrunePerCall limits how many old headers are deleted in a single
 // addBlocks invocation to keep gas usage predictable.

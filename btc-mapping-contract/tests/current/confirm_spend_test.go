@@ -128,6 +128,32 @@ func TestConfirmSpend(t *testing.T) {
 	}
 }
 
+// TestConfirmSpendPendingExemptFromPause — BRK-4b (brick council FS-1/V-8): a
+// confirm of an ALREADY-PENDING spend must succeed even while the contract is
+// PAUSED (it only reconciles an already-authorized, already-broadcast spend;
+// freezing it merely strands an in-flight migration/withdrawal).
+func TestConfirmSpendPendingExemptFromPause(t *testing.T) {
+	ct, contractId, fixture := setupConfirmSpendContract(t)
+	ct.StateSet(contractId, constants.PausedKey, "1") // pause the contract
+
+	params := mapping.ConfirmSpendParams{
+		TxData: &mapping.VerificationRequest{
+			BlockHeight:    fixture.BlockHeight,
+			RawTxHex:       fixture.RawTxHex,
+			MerkleProofHex: fixture.MerkleProofHex,
+			TxIndex:        fixture.TxIndex,
+		},
+		Indices: []uint32{0},
+	}
+	r := callConfirmSpend(t, ct, contractId, "hive:milo-hpr", params)
+	if r.Err != "" {
+		fmt.Printf("%s: %s\n", r.Err, r.ErrMsg)
+	}
+	assert.True(t, r.Success, "confirmSpend of a PENDING spend must succeed while paused (BRK-4b)")
+	assert.Equal(t, "", ct.StateGet(contractId, constants.TxSpendsPrefix+fixture.TxId),
+		"the pending spend should be reconciled and removed even under pause")
+}
+
 // TestConfirmSpendUnknownTxId verifies that calling confirmSpend with a valid
 // proof for a tx not in the pending list is a successful no-op.
 func TestConfirmSpendUnknownTxId(t *testing.T) {
