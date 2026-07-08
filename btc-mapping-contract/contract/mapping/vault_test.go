@@ -296,6 +296,26 @@ func TestDepositAddressGenerationsTwoSupersededGens(t *testing.T) {
 	}
 }
 
+// TestDepositAddressGenerationsSkipsZeroBackup proves the S1.4 council D-2 defensive
+// guard: a (would-be fund-holding) generation with a real primary but a ZERO backup
+// key is NOT matched — deriving an address with a zero backup leaves its CSV recovery
+// path unspendable. Unreachable in normal flow (activation requires both keys) but
+// defense-in-depth; reverting the backup zero-check matches it into the registry.
+func TestDepositAddressGenerationsSkipsZeroBackup(t *testing.T) {
+	act, actb := pk(0x51), pk(0x52)
+	cs := &ContractState{
+		Vaults: VaultRegistry{
+			{Generation: 0, Primary: act, Backup: actb, Status: VaultStatusActive},
+			{Generation: 1, Primary: pk(0x61), Status: VaultStatusRetiring}, // zero Backup
+		},
+		ActiveGen: 0,
+	}
+	got := cs.depositAddressGenerations()
+	if len(got) != 1 || got[0].generation != 0 {
+		t.Fatalf("gen 1 with a zero backup key must be skipped; got %d entries", len(got))
+	}
+}
+
 // TestChangeOutputTaggedWithActiveGen proves fix #2 (council 1a): a change output is
 // tagged with the active generation, not the default 0. Reverting the tag fails this.
 func TestChangeOutputTaggedWithActiveGen(t *testing.T) {

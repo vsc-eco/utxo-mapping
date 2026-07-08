@@ -161,7 +161,9 @@ type depositVaultKeys struct {
 // depositAddressGenerations returns the key material of every generation whose
 // deposit address must be matched (S1.4 dual-generation crediting): all
 // fund-holding generations (active + retiring + draining, isFundHoldingStatus)
-// that carry a real primary key — with the ACTIVE generation FIRST, so it wins any
+// that carry a real primary AND backup key pair (a zero backup would derive an
+// address whose CSV recovery path is unspendable) — with the ACTIVE generation
+// FIRST, so it wins any
 // address collision. (A collision is infeasible in practice: each generation's key
 // is independently attested to its own TSS ceremony output at activation — D-1, so
 // keys can't be freely chosen to collide — and distinct keys yield distinct P2WSH
@@ -185,7 +187,7 @@ func (cs *ContractState) depositAddressGenerations() []depositVaultKeys {
 	// Active generation first (collision precedence).
 	for i := range cs.Vaults {
 		v := &cs.Vaults[i]
-		if v.Generation == cs.ActiveGen && isFundHoldingStatus(v.Status) && !isZeroKey(v.Primary) {
+		if v.Generation == cs.ActiveGen && isFundHoldingStatus(v.Status) && !isZeroKey(v.Primary) && !isZeroKey(v.Backup) {
 			out = append(out, depositVaultKeys{v.Generation, v.Primary, v.Backup})
 			break
 		}
@@ -194,7 +196,7 @@ func (cs *ContractState) depositAddressGenerations() []depositVaultKeys {
 	// gen that still holds funds), in vault-list order.
 	for i := range cs.Vaults {
 		v := &cs.Vaults[i]
-		if v.Generation != cs.ActiveGen && isFundHoldingStatus(v.Status) && !isZeroKey(v.Primary) {
+		if v.Generation != cs.ActiveGen && isFundHoldingStatus(v.Status) && !isZeroKey(v.Primary) && !isZeroKey(v.Backup) {
 			out = append(out, depositVaultKeys{v.Generation, v.Primary, v.Backup})
 		}
 	}
