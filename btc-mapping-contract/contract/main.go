@@ -640,7 +640,7 @@ func Migrate(_ *string) *string {
 				// Heights left 0: gen-0 predates per-generation height tracking; the
 				// safety-critical RetiredHeight is set only at the retiring transition.
 				sdk.StateSetObject(constants.VaultRegistryKey, string(mapping.MarshalVaultRegistry(mapping.VaultRegistry{gen0})))
-				sdk.StateSetObject(constants.VaultNextGenKey, string([]byte{0, 0, 0, 1}))  // next gen to mint = 1
+				sdk.StateSetObject(constants.VaultNextGenKey, string([]byte{0, 0, 0, 1}))   // next gen to mint = 1
 				sdk.StateSetObject(constants.VaultActiveGenKey, string([]byte{0, 0, 0, 0})) // gen 0 receives deposits
 				sdk.Log("migrate|v=2|fold_gen0")
 			} else {
@@ -706,36 +706,66 @@ func RegisterPublicKey(keyStr *string) *string {
 		)
 	}
 
-	var resultBuilder strings.Builder
-
+	// Decode whichever key(s) were provided up front (split primary/backup
+	// registration is allowed — either may be empty).
+	var primaryPtr, backupPtr *mapping.CompressedPubKey
 	if keys.PrimaryPubKey != "" {
 		key, err := validateAndDecodeKey(keys.PrimaryPubKey)
 		if err != nil {
 			ce.CustomAbort(ce.Prepend(err, "error registering primary public key"))
 		}
-		existingPrimary := sdk.StateGetObject(constants.PrimaryPublicKeyStateKey)
-		if *existingPrimary == "" || constants.IsTestnet(NetworkMode) {
-			sdk.StateSetObject(constants.PrimaryPublicKeyStateKey, string(key[:]))
-			resultBuilder.WriteString("set primary key to: " + keys.PrimaryPubKey)
-		} else {
-			resultBuilder.WriteString("primary key already registered: " + hex.EncodeToString([]byte(*existingPrimary)))
-		}
+		primaryPtr = &key
 	}
-
 	if keys.BackupPubKey != "" {
 		key, err := validateAndDecodeKey(keys.BackupPubKey)
 		if err != nil {
 			ce.CustomAbort(ce.Prepend(err, "error registering backup public key"))
 		}
+		backupPtr = &key
+	}
+
+	// S1.3: route the key(s) into the PENDING vault createKey minted. For the genesis
+	// generation this activates gen-0 once both keys are set. targetGen tells us which
+	// generation we filled: gen-0 also writes the legacy flat keys (back-compat / the
+	// empty-list fallback), a later generation leaves the flat gen-0 keys untouched
+	// (the spend path resolves per-generation keys from the vault list).
+	height, _ := blocklist.LastHeightFromState()
+	targetGen, hasPending, err := mapping.RegisterVaultKeys(primaryPtr, backupPtr, height)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	writeFlat := !hasPending || targetGen == 0
+
+	var resultBuilder strings.Builder
+
+	if primaryPtr != nil {
+		if writeFlat {
+			existingPrimary := sdk.StateGetObject(constants.PrimaryPublicKeyStateKey)
+			if *existingPrimary == "" || constants.IsTestnet(NetworkMode) {
+				sdk.StateSetObject(constants.PrimaryPublicKeyStateKey, string(primaryPtr[:]))
+				resultBuilder.WriteString("set primary key to: " + keys.PrimaryPubKey)
+			} else {
+				resultBuilder.WriteString("primary key already registered: " + hex.EncodeToString([]byte(*existingPrimary)))
+			}
+		} else {
+			resultBuilder.WriteString("set primary key for generation " + strconv.FormatUint(uint64(targetGen), 10))
+		}
+	}
+
+	if backupPtr != nil {
 		if resultBuilder.Len() > 0 {
 			resultBuilder.WriteString(", ")
 		}
-		existingBackup := sdk.StateGetObject(constants.BackupPublicKeyStateKey)
-		if *existingBackup == "" || constants.IsTestnet(NetworkMode) {
-			sdk.StateSetObject(constants.BackupPublicKeyStateKey, string(key[:]))
-			resultBuilder.WriteString("set backup key to: " + keys.BackupPubKey)
+		if writeFlat {
+			existingBackup := sdk.StateGetObject(constants.BackupPublicKeyStateKey)
+			if *existingBackup == "" || constants.IsTestnet(NetworkMode) {
+				sdk.StateSetObject(constants.BackupPublicKeyStateKey, string(backupPtr[:]))
+				resultBuilder.WriteString("set backup key to: " + keys.BackupPubKey)
+			} else {
+				resultBuilder.WriteString("backup key already registered: " + hex.EncodeToString([]byte(*existingBackup)))
+			}
 		} else {
-			resultBuilder.WriteString("backup key already registered: " + hex.EncodeToString([]byte(*existingBackup)))
+			resultBuilder.WriteString("set backup key for generation " + strconv.FormatUint(uint64(targetGen), 10))
 		}
 	}
 
@@ -751,9 +781,17 @@ func CreateKey(_ *string) *string {
 		)
 	}
 
-	keyId := constants.TssKeyName
+	// S1.3: mint the NEXT generation as a pending vault (genesis mints gen-0),
+	// bound to the active generation as predecessor, then request its TSS key. The
+	// live vault is untouched — it keeps receiving deposits and signing until an
+	// explicit activateKey cuts over. Refuses if a keygen is already in flight.
+	height, _ := blocklist.LastHeightFromState() // 0 pre-genesis (no blocks yet) is fine
+	gen, keyId, err := mapping.MintNextGeneration(height)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
 	sdk.TssCreateKey(keyId, "ecdsa", 365)
-	return mapping.StrPtr("key created, id: " + keyId)
+	return mapping.StrPtr("minted generation " + strconv.FormatUint(uint64(gen), 10) + ", key id: " + keyId + " (awaiting keygen)")
 }
 
 //go:wasmexport renewKey
@@ -765,9 +803,60 @@ func RenewKey(_ *string) *string {
 		)
 	}
 
-	keyId := constants.TssKeyName
+	// S1.3: renew the ACTIVE generation's key (gen 0 -> "main", gen N -> "mainv<N>"),
+	// not always the legacy "main" — after a rotation "main" belongs to a retiring gen.
+	// On a pre-fold/legacy contract activeGen is 0, so this stays "main".
+	_, _, activeGen, err := mapping.LoadVaultState()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	keyId := mapping.VaultKeyId(activeGen)
 	sdk.TssRenewKey(keyId, 365)
 	return mapping.StrPtr("key \"" + keyId + "\" renewed")
+}
+
+//go:wasmexport activateKey
+func ActivateKey(_ *string) *string {
+	// leave this as owner always
+	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
+		ce.CustomAbort(
+			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
+		)
+	}
+
+	// S1.3: cut over to the pending generation. Its predecessor moves to RETIRING
+	// (keeps keys + funds, still fully spendable); it is NEVER purged here (S5 purges
+	// only after funds are gone). Aborts on incomplete keygen or broken lineage,
+	// leaving the live vault untouched.
+	height, _ := blocklist.LastHeightFromState()
+	activated, retired, hadPredecessor, err := mapping.ActivatePendingGeneration(height)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	if hadPredecessor {
+		return mapping.StrPtr("activated generation " + strconv.FormatUint(uint64(activated), 10) +
+			"; generation " + strconv.FormatUint(uint64(retired), 10) + " now retiring")
+	}
+	return mapping.StrPtr("activated generation " + strconv.FormatUint(uint64(activated), 10))
+}
+
+//go:wasmexport discardPendingKey
+func DiscardPendingKey(_ *string) *string {
+	// leave this as owner always
+	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
+		ce.CustomAbort(
+			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
+		)
+	}
+
+	// S1.3 never-brick escape: drop a stalled/failed pending keygen so the owner can
+	// re-mint. Only ever removes a PENDING vault (which holds no funds); the
+	// generation number is not reused.
+	discarded, err := mapping.DiscardPendingGeneration()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	return mapping.StrPtr("discarded pending generation " + strconv.FormatUint(uint64(discarded), 10))
 }
 
 //go:wasmexport registerRouter

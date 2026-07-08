@@ -105,8 +105,15 @@ func IntializeContractState(publicKeys PublicKeys, networkMode string) (*Contrac
 	// vault list is empty (pre-fold / fresh deploy) keep the legacy single-slot keys
 	// (the passed publicKeys). While only gen-0 exists, the active vault's keys ==
 	// the legacy keys (the fold copied them), so this is byte-identical to today.
+	//
+	// S1.3: match by Generation AND Status==Active. The counter alone is not enough
+	// once the lifecycle can create a PENDING gen-0 (a fresh-deploy genesis mint sits
+	// at Generation 0 == the default ActiveGen 0 with ZERO keys until it activates) —
+	// matching it would resolve to a zero key. Requiring Active leaves cs.PublicKeys
+	// on the legacy fallback until a real activation lands. Byte-identical for every
+	// existing deploy: the post-fold gen-0 is already Active.
 	for i := range cs.Vaults {
-		if cs.Vaults[i].Generation == cs.ActiveGen {
+		if cs.Vaults[i].Generation == cs.ActiveGen && cs.Vaults[i].Status == VaultStatusActive {
 			cs.PublicKeys = PublicKeys{Primary: cs.Vaults[i].Primary, Backup: cs.Vaults[i].Backup}
 			break
 		}

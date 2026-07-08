@@ -258,7 +258,7 @@ func (cs *ContractState) buildSpendTransaction(
 		inPrimary, inBackup, genFound := cs.vaultKeysForGeneration(utxo.Generation)
 		// Council F2 (3-lens): the keys fall back but the keyId (vaultKeyId) does NOT,
 		// so a UTXO whose generation is absent from a POPULATED vault list would get a
-		// witness from the wrong gen + a signature from "main-v<N>" → an unsatisfiable,
+		// witness from the wrong gen + a signature from "mainv<N>" → an unsatisfiable,
 		// unspendable tx. ABORT instead. Fallback is only safe when the list is empty
 		// (pre-fold — every UTXO is gen-0/legacy).
 		if !genFound && len(cs.Vaults) > 0 {
@@ -388,9 +388,9 @@ func signSpendTransaction(tx *wire.MsgTx, inputs []*Utxo, witnessScripts map[int
 		}
 
 		// S1.2: sign each input with the keyId of the generation that locked it
-		// (gen 0 → "main", gen N → "main-v<N>"), so the retiring-gen inputs of a
+		// (gen 0 → "main", gen N → "mainv<N>"), so the retiring-gen inputs of a
 		// migration sweep are signed by the retiring gen's key.
-		sdk.TssSignKey(vaultKeyId(utxo.Generation), sigHash)
+		sdk.TssSignKey(VaultKeyId(utxo.Generation), sigHash)
 
 		unsignedSigHashes[i] = UnsignedSigHash{
 			Index:         uint32(i),

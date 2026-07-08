@@ -218,15 +218,34 @@ func UnmarshalVaultRegistry(data []byte) (VaultRegistry, error) {
 	return out, nil
 }
 
-// vaultKeyId returns the TSS keyId for a vault generation. Generation 0 keeps the
+// VaultKeyId returns the TSS keyId for a vault generation. Generation 0 keeps the
 // legacy "main" id (backward-compatible with the live deployed key); generation N
-// uses "main-v<N>". The node prefixes the contract id and its isBtcVaultKey gate
-// prefix-matches every generation.
-func vaultKeyId(gen uint32) string {
+// uses "mainv<N>". The node prefixes the contract id and its isBtcVaultKey gate
+// prefix-matches "main" for every generation. Exported: the key ceremony in main.go
+// (createKey/renewKey) mints/renews keys by generation and MUST use this single
+// source of truth — never re-derive the id inline (drift would strand a gen's key).
+//
+// The id MUST be alphanumeric (^[a-zA-Z0-9]+$): the runtime's tss create_key /
+// tss_v2.create_key / renew_key host bindings reject any other keyName with
+// ErrInvalidArgument. A hyphenated "main-v<N>" would be rejected at keygen time —
+// rotation would be impossible (a latent brick). Hence "mainv<N>", no separator.
+func VaultKeyId(gen uint32) string {
 	if gen == 0 {
 		return constants.TssKeyName
 	}
-	return constants.TssKeyName + "-v" + strconv.FormatUint(uint64(gen), 10)
+	return constants.TssKeyName + "v" + strconv.FormatUint(uint64(gen), 10)
+}
+
+// isZeroKey reports whether a compressed pubkey is the zero value — i.e. a vault
+// whose TSS keygen has not yet landed a real key. Activation MUST refuse a
+// zero-key vault (its address would be underivable / unspendable).
+func isZeroKey(k CompressedPubKey) bool {
+	for _, b := range k {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // vaultKeysForGeneration returns the primary+backup pubkeys of the given vault
@@ -234,7 +253,7 @@ func vaultKeyId(gen uint32) string {
 // The caller MUST check `found`: falling back to cs.PublicKeys is only safe when
 // the vault list is empty (pre-fold — everything is gen-0/legacy). For a missing
 // generation in a POPULATED list the caller must ABORT, because vaultKeyId does
-// NOT fall back (it returns "main-v<N>") — a silent key-fallback would build a
+// NOT fall back (it returns "mainv<N>") — a silent key-fallback would build a
 // witness the signature cannot satisfy → an unspendable tx (council F2, 3-lens).
 func (cs *ContractState) vaultKeysForGeneration(gen uint32) (CompressedPubKey, CompressedPubKey, bool) {
 	for i := range cs.Vaults {

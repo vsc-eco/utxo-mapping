@@ -23,14 +23,24 @@ func pk(b byte) CompressedPubKey {
 }
 
 func TestVaultKeyId(t *testing.T) {
-	if got := vaultKeyId(0); got != constants.TssKeyName {
+	if got := VaultKeyId(0); got != constants.TssKeyName {
 		t.Fatalf("gen 0 keyId = %q, want %q", got, constants.TssKeyName)
 	}
-	if got := vaultKeyId(1); got != constants.TssKeyName+"-v1" {
+	if got := VaultKeyId(1); got != constants.TssKeyName+"v1" {
 		t.Fatalf("gen 1 keyId = %q", got)
 	}
-	if got := vaultKeyId(42); got != constants.TssKeyName+"-v42" {
+	if got := VaultKeyId(42); got != constants.TssKeyName+"v42" {
 		t.Fatalf("gen 42 keyId = %q", got)
+	}
+	// The keyId MUST be alphanumeric — the runtime create_key/renew_key bindings
+	// reject anything else, which would brick rotation (a hyphen was the original bug).
+	for _, gen := range []uint32{0, 1, 7, 42, 1000} {
+		id := VaultKeyId(gen)
+		for _, c := range id {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+				t.Fatalf("gen %d keyId %q is not alphanumeric (runtime would reject at keygen)", gen, id)
+			}
+		}
 	}
 }
 
