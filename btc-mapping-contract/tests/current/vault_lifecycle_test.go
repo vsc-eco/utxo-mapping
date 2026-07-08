@@ -477,3 +477,29 @@ func TestRenewKeySkipsUnrenewableKey(t *testing.T) {
 	require.Contains(t, r.Ret, "mainv1", "the active gen-1 key is still renewed")
 	require.NotContains(t, r.Ret, "main,", "the retired gen-0 key is skipped, not renewed")
 }
+
+// TestRenewKeyRevivesDeprecatedKey — round-3 (R3-1) fix: a fund-holding key that has
+// EXPIRED becomes "deprecated" (and stays there — retirement is disabled). renewKey
+// must REVIVE it (renewal reactivates a deprecated key), not skip it — otherwise the
+// D-2 recovery can't rescue an expired retiring key.
+func TestRenewKeyRevivesDeprecatedKey(t *testing.T) {
+	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
+	contractId, owner := "mapping_contract", "hive:milo-hpr"
+	ct.RegisterContract(contractId, owner, ContractWasm)
+	seedActiveGen0(t, &ct, contractId, owner)
+
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err)
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "registerPublicKey", regKeyPayload(t, Gen1PrimaryHex, Gen1BackupHex)).Err)
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "activateKey", []byte("")).Err)
+
+	// Retiring gen-0 key EXPIRED -> deprecated (still custodies unswept funds).
+	require.NoError(t, ct.Tss.Keys.SetKey(tss.TssKey{
+		Id: contractId + "-main", Status: "deprecated", PublicKey: TestPrimaryPubKeyHex, Algo: tss.EcdsaType, ExpiryEpoch: 366,
+	}))
+
+	r := callKeyAction(t, &ct, contractId, owner, "renewKey", []byte(""))
+	require.Empty(t, r.Err)
+	require.Contains(t, r.Ret, "main,", "a deprecated (expired) fund-holding key must be renewed to revive it (R3-1)")
+	require.Contains(t, r.Ret, "mainv1", "the active gen-1 key is also renewed")
+}

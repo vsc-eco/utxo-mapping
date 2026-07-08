@@ -44,9 +44,13 @@ import (
 // spend via the backup path AFTER the CSV timelock (by design: the timelock is the
 // response window).
 
-// tssKeyActiveStatus is the TssGetKey status string for a completed, current key
-// (mirrors tss_db.TssKeyActive in go-vsc-node).
-const tssKeyActiveStatus = "active"
+// TssGetKey status strings (mirror tss_db.TssKeyActive / TssKeyDeprecated in
+// go-vsc-node). "active" = current key; "deprecated" = expired but still renewable
+// (renewal reactivates it).
+const (
+	tssKeyActiveStatus     = "active"
+	tssKeyDeprecatedStatus = "deprecated"
+)
 
 // LoadVaultState reads ONLY the S1 dual-generation state — the append-only vault
 // list plus the next/active generation counters — decoupled from the heavy
@@ -373,25 +377,31 @@ func DiscardPendingGeneration() (uint32, error) {
 	return discarded, nil
 }
 
-// tssKeyIsActive reports whether the TSS key for keyId is currently status "active"
-// (the only state TssRenewKey renews without aborting). TssGetKey returns
-// "status,pubkey,algo" and never traps on a missing key (returns a non-"active"
-// status), so this is a safe pre-check.
-func tssKeyIsActive(keyId string) bool {
+// tssKeyIsRenewable reports whether the TSS key for keyId can be renewed WITHOUT
+// aborting the tx. sdk.TssRenewKey traps on a retired key, a missing key, and an
+// "active" key with no expiry; it does NOT trap on "active" (with expiry — every
+// contract key has one, createKey epochs=365) nor on "deprecated" — for a deprecated
+// (expired) key renewal REACTIVATES it, which is exactly the D-2 recovery. So the
+// renewable set is {active, deprecated} (round-3 R3-1: "active"-only wrongly skipped a
+// deprecated fund-holding key, defeating the recovery). TssGetKey returns
+// "status,pubkey,algo" and never traps on a missing key (returns an empty status).
+func tssKeyIsRenewable(keyId string) bool {
 	parts := strings.Split(sdk.TssGetKey(keyId), ",")
-	return len(parts) >= 1 && parts[0] == tssKeyActiveStatus
+	if len(parts) < 1 {
+		return false
+	}
+	return parts[0] == tssKeyActiveStatus || parts[0] == tssKeyDeprecatedStatus
 }
 
 // RenewableVaultKeyIds returns the keyIds of every fund-holding vault (active +
-// retiring + draining) whose TSS key is currently "active" — i.e. exactly the set
-// renewKey can renew WITHOUT trapping. The status pre-check is the error-isolation
-// (round-2 H/I finding): sdk.TssRenewKey aborts the ENTIRE tx on any un-renewable
-// key (missing / retired / no-expiry), so without filtering, one bad key in ANY
-// generation would block renewing the active fund-signing key forever — the exact
-// never-brick violation D-2 exists to prevent. It also folds an unmigrated legacy
-// gen-0 first so a pre-fold contract's gen-0 is covered. A vault key is always
-// created with a lifespan (createKey epochs=365), so an "active" key always has a
-// nonzero expiry and is renewable.
+// retiring + draining) whose TSS key can be renewed WITHOUT trapping — i.e. status
+// active or deprecated. The pre-check is the error-isolation (round-2 H/I finding):
+// sdk.TssRenewKey aborts the ENTIRE tx on any un-renewable key (missing / retired /
+// active-no-expiry), so without filtering, one bad key in ANY generation would block
+// renewing the active fund-signing key forever — the never-brick violation D-2 exists
+// to prevent. Including "deprecated" restores renewal of an EXPIRED fund-holding key
+// (R3-1). It also folds an unmigrated legacy gen-0 first so a pre-fold contract's
+// gen-0 is covered.
 func RenewableVaultKeyIds() ([]string, error) {
 	FoldLegacyGen0IfNeeded()
 	vaults, _, _, err := LoadVaultState()
@@ -402,7 +412,7 @@ func RenewableVaultKeyIds() ([]string, error) {
 	for i := range vaults {
 		switch vaults[i].Status {
 		case VaultStatusActive, VaultStatusRetiring, VaultStatusDraining:
-			if keyId := VaultKeyId(vaults[i].Generation); tssKeyIsActive(keyId) {
+			if keyId := VaultKeyId(vaults[i].Generation); tssKeyIsRenewable(keyId) {
 				ids = append(ids, keyId)
 			}
 		}
