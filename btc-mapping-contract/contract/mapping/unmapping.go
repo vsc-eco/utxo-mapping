@@ -150,9 +150,18 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint16, int64, error) 
 	// pre/post-rotation case (single active gen) skips it, so the hot path and
 	// pre-vault (gen-0-only, no Vaults) behaviour are byte-identical.
 	activeIdx := firstVaultWithStatus(cs.Vaults, VaultStatusActive)
-	filterGen := activeIdx >= 0 &&
-		countVaultsWithStatus(cs.Vaults, VaultStatusRetiring)+
-			countVaultsWithStatus(cs.Vaults, VaultStatusDraining) > 0
+	hasSuperseded := countVaultsWithStatus(cs.Vaults, VaultStatusRetiring)+
+		countVaultsWithStatus(cs.Vaults, VaultStatusDraining) > 0
+	// The filter must engage whenever a superseded fund-holding generation
+	// exists, INDEPENDENT of whether an Active gen is present. The earlier
+	// `activeIdx >= 0 && ...` silently disabled it in a corrupt 0-Active state,
+	// reopening the silent-debit hole (methodology money-math MED). And if
+	// superseded gens exist with NO active successor to serve the unmap from,
+	// we cannot safely select any UTXO → hard-refuse (fail closed, no debit).
+	if hasSuperseded && activeIdx < 0 {
+		return nil, 0, ce.NewContractError(ce.ErrBalance, "no active generation available to serve unmap during rotation")
+	}
+	filterGen := hasSuperseded
 	activeGen := uint32(0)
 	if activeIdx >= 0 {
 		activeGen = cs.Vaults[activeIdx].Generation
