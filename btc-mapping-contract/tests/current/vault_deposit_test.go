@@ -358,3 +358,70 @@ func TestMapCreditsRetiringGenDeposit(t *testing.T) {
 	require.Equal(t, uint32(0), utxoGenerationForId(t, &ct, contractId, reg[0].Id),
 		"the retiring-gen deposit UTXO must be tagged generation 0")
 }
+
+// TestUnmapExcludesRetiringGenUtxo — D-1 (S3): after a rotation, an ordinary user
+// unmap must NOT select the retiring generation's UTXO. Retiring/draining-gen
+// UTXOs leave the vault ONLY via a migration sweep (which the node output-scopes
+// to the successor); dragging one into a user unmap would make the retiring key
+// sign a user-address output — refused by the node's output-scoped signing gate,
+// stranding the already-debited withdrawal. Here gen-0 (retiring) holds the only
+// UTXO and gen-1 (active) is empty, so the unmap must be refused with NO debit
+// (fail-safe: the user retries once the sweep moves funds to gen-1), never
+// selecting the gen-0 UTXO.
+func TestUnmapExcludesRetiringGenUtxo(t *testing.T) {
+	const instruction = "deposit_to=hive:milo-hpr"
+	const amount = int64(100000)
+	const blockHeight = uint32(100)
+	fixture := buildMapFixture(t, instruction, amount, blockHeight)
+
+	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
+	contractId, owner := "mapping_contract", "hive:milo-hpr"
+	ct.RegisterContract(contractId, owner, ContractWasm)
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
+	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
+	seedActiveGen0(t, &ct, contractId, owner)
+
+	// Deposit to gen-0 while ACTIVE → one confirmed gen-0 UTXO + user balance.
+	params := mapping.MapParams{
+		TxData: &mapping.VerificationRequest{
+			BlockHeight: blockHeight, RawTxHex: fixture.RawTxHex,
+			MerkleProofHex: fixture.MerkleProofHex, TxIndex: fixture.TxIndex,
+		},
+		Instructions: []string{instruction},
+	}
+	payload, err := tinyjson.Marshal(params)
+	require.NoError(t, err)
+	require.True(t, ct.Call(stateEngine.TxVscCallContract{
+		Self: stateEngine.TxSelf{TxId: "map-dep", BlockId: "block:map", Index: 70, OpIndex: 0,
+			Timestamp: "2025-10-14T00:00:00", RequiredAuths: []string{owner}, RequiredPostingAuths: []string{}},
+		ContractId: contractId, Action: "map", Payload: payload,
+		RcLimit: 100000000, Intents: []contracts.Intent{}, Caller: owner,
+	}).Success)
+	require.Equal(t, encodeBalance(t, amount), ct.StateGet(contractId, constants.BalancePrefix+owner))
+
+	// Rotate: gen-0 → retiring, gen-1 → active (gen-1 holds NO UTXO).
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err)
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "registerPublicKey", regKeyPayload(t, Gen1PrimaryHex, "")).Err)
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "activateKey", []byte("")).Err)
+
+	// A user unmap that would need the gen-0 (retiring) UTXO must be refused.
+	unmapPayload, err := tinyjson.Marshal(mapping.TransferParams{Amount: "50000", To: regtestDestAddress(t)})
+	require.NoError(t, err)
+	r := ct.Call(stateEngine.TxVscCallContract{
+		Self: stateEngine.TxSelf{TxId: "unmap-d1", BlockId: "block:unmap", Index: 71, OpIndex: 0,
+			Timestamp: "2025-10-14T00:00:00", RequiredAuths: []string{owner}, RequiredPostingAuths: []string{}},
+		ContractId: contractId, Action: "unmap", Payload: unmapPayload,
+		RcLimit: 100000000, Intents: []contracts.Intent{}, Caller: owner,
+	})
+	require.False(t, r.Success, "unmap must be refused: only the retiring gen-0 UTXO exists (D-1)")
+
+	// Fail-safe: balance unchanged (no debit) and the gen-0 UTXO is untouched.
+	require.Equal(t, encodeBalance(t, amount), ct.StateGet(contractId, constants.BalancePrefix+owner),
+		"a refused unmap must not debit the caller")
+	reg, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
+	require.NoError(t, err)
+	require.Len(t, reg, 1, "the retiring gen-0 UTXO is untouched by the refused unmap")
+	require.Equal(t, uint32(0), utxoGenerationForId(t, &ct, contractId, reg[0].Id))
+}

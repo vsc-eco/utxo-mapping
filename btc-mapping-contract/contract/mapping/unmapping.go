@@ -140,9 +140,40 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint16, int64, error) 
 	// accumulates amount of all inputs
 	accAmount := int64(0)
 
+	// D-1 (S3): a user unmap must select ONLY active-generation UTXOs. A
+	// retiring/draining generation's UTXOs leave the vault ONLY via a migration
+	// sweep (getMigrationInputs); dragging one into an ordinary unmap makes the
+	// retiring gen's key sign a user-address output, which the node's
+	// output-scoped signing gate refuses — stranding the already-debited
+	// withdrawal (silent debit-without-delivery). The filter engages ONLY while a
+	// superseded fund-holding generation exists (mid-rotation); the common
+	// pre/post-rotation case (single active gen) skips it, so the hot path and
+	// pre-vault (gen-0-only, no Vaults) behaviour are byte-identical.
+	activeIdx := firstVaultWithStatus(cs.Vaults, VaultStatusActive)
+	filterGen := activeIdx >= 0 &&
+		countVaultsWithStatus(cs.Vaults, VaultStatusRetiring)+
+			countVaultsWithStatus(cs.Vaults, VaultStatusDraining) > 0
+	activeGen := uint32(0)
+	if activeIdx >= 0 {
+		activeGen = cs.Vaults[activeIdx].Generation
+	}
+	isSelectable := func(id uint16) bool {
+		if !filterGen {
+			return true
+		}
+		u, err := loadUtxo(id)
+		if err != nil || u == nil {
+			return false // fail closed: cannot confirm generation → do not select
+		}
+		return u.Generation == activeGen
+	}
+
 	// first loop: find single confirmed UTXO sufficient to cover spend
 	for _, entry := range cs.UtxoList {
 		if entry.Id < constants.UtxoConfirmedPoolStart {
+			continue
+		}
+		if !isSelectable(entry.Id) {
 			continue
 		}
 		fee, err := cs.estimateFee(1, amount, entry.Amount)
@@ -164,6 +195,9 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint16, int64, error) 
 
 	var err error
 	for _, entry := range cs.UtxoList {
+		if !isSelectable(entry.Id) {
+			continue
+		}
 		if entry.Id >= constants.UtxoConfirmedPoolStart {
 			inputs = append(inputs, entry.Id)
 			accAmount, err = safeAdd64(accAmount, entry.Amount)
@@ -397,6 +431,9 @@ func signSpendTransaction(tx *wire.MsgTx, inputs []*Utxo, witnessScripts map[int
 			Index:         uint32(i),
 			SigHash:       sigHash,
 			WitnessScript: witnessScript,
+			// S3: carry the spent input's value so the node can independently
+			// recompute this input's BIP143 sighash for output-scoped signing.
+			Amount: utxo.Amount,
 		}
 	}
 
