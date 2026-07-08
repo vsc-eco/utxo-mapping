@@ -223,6 +223,58 @@ func TestMigrateVaultRejectsWithoutFeeReserve(t *testing.T) {
 	require.Len(t, reg, 1, "input UTXO not deleted (atomic)")
 }
 
+// TestDoubleRotationRequiresDrain — S2-close NN#3 end-to-end: a second rotation is refused
+// while the first superseded generation still holds funds, and ALLOWED once it's drained.
+// Proves the NN#3-gated rotation lifecycle (rotate → drain → rotate) — funded old keys
+// cannot pile up.
+func TestDoubleRotationRequiresDrain(t *testing.T) {
+	const instruction = "deposit_to=hive:milo-hpr"
+	const amount = int64(100000)
+	const blockHeight = uint32(100)
+	fixture := buildMapFixture(t, instruction, amount, blockHeight)
+
+	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
+	contractId, owner := "mapping_contract", "hive:milo-hpr"
+	ct.RegisterContract(contractId, owner, ContractWasm)
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1, FeeSupply: 100000})))
+	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
+	seedActiveGen0(t, &ct, contractId, owner)
+
+	// Deposit to gen-0, then rotate → gen-0 retiring (funded), gen-1 active.
+	params := mapping.MapParams{TxData: &mapping.VerificationRequest{
+		BlockHeight: blockHeight, RawTxHex: fixture.RawTxHex,
+		MerkleProofHex: fixture.MerkleProofHex, TxIndex: fixture.TxIndex}, Instructions: []string{instruction}}
+	payload, err := tinyjson.Marshal(params)
+	require.NoError(t, err)
+	require.True(t, ct.Call(stateEngine.TxVscCallContract{
+		Self: stateEngine.TxSelf{TxId: "map-dep", BlockId: "block:map", Index: 70, OpIndex: 0,
+			Timestamp: "2025-10-14T00:00:00", RequiredAuths: []string{owner}, RequiredPostingAuths: []string{}},
+		ContractId: contractId, Action: "map", Payload: payload, RcLimit: 100000000, Intents: []contracts.Intent{}, Caller: owner}).Success)
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err)
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "registerPublicKey", regKeyPayload(t, Gen1PrimaryHex, "")).Err)
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "activateKey", []byte("")).Err)
+
+	// Second rotation REFUSED while gen-0 (retiring) still holds the deposit (NN#3).
+	require.NotEmpty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err,
+		"second rotation must be refused while gen-0 holds funds (NN#3)")
+
+	// Drain gen-0.
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "migrateVault", []byte("")).Err)
+
+	// Now the second rotation is ALLOWED (gen-0 drained → gen-2 minted).
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err,
+		"second rotation allowed once gen-0 is drained (NN#3)")
+	vaults, _, activeGen := loadVaults(t, &ct, contractId)
+	require.Len(t, vaults, 3, "gen-0 (draining) + gen-1 (active) + gen-2 (pending)")
+	require.Equal(t, mapping.VaultStatusDraining, vaults[0].Status)
+	require.Equal(t, mapping.VaultStatusActive, vaults[1].Status)
+	require.Equal(t, uint32(2), vaults[2].Generation)
+	require.Equal(t, mapping.VaultStatusPending, vaults[2].Status)
+	require.Equal(t, uint32(1), activeGen)
+}
+
 // TestMapCreditsRetiringGenDeposit is the S1.4 end-to-end proof (NR-4 / C-2). After a
 // rotation, a deposit that lands on the RETIRING generation's address is still
 // credited to the recipient AND its UTXO is tagged with the retiring generation — so
