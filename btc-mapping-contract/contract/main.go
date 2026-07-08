@@ -532,8 +532,18 @@ func Migrate(_ *string) *string {
 	// string compare (`version < "2"`) misfires at v10+ ("10" < "2" is TRUE) → it
 	// re-enters an already-applied migration block and REGRESSES the version counter,
 	// which would re-run the NON-IDEMPOTENT v1 registry re-key → fund corruption.
-	// Empty/invalid → 0 (an un-migrated contract runs v1 then v2).
-	curVer, _ := strconv.Atoi(version)
+	// Empty (unmigrated) → 0 → runs v1 then v2. A NON-EMPTY but non-numeric value is
+	// unexpected (only this contract writes mv, always a decimal) → treat it as beyond
+	// all known migrations (skip everything) so a corrupt value can NEVER re-run the
+	// non-idempotent v1 (council N-1 hardening — defense-in-depth even though unreachable).
+	curVer := 0
+	if version != "" {
+		parsed, err := strconv.Atoi(version)
+		if err != nil {
+			parsed = 1 << 30 // beyond any real migration version → skip all migrations
+		}
+		curVer = parsed
+	}
 
 	// --- v1: migrate UTXO registry from 9-byte (uint8 ID + int64) to 8-byte
 	// (uint16 ID + uint48) entries, and counter from 2 bytes to 4 bytes.

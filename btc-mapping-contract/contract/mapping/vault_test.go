@@ -1,10 +1,26 @@
 package mapping
 
 import (
+	"bytes"
 	"testing"
 
 	"btc-mapping-contract/contract/constants"
+
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
 )
+
+const testTxId64 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+// pk builds a distinct valid-length compressed pubkey for tests (P2WSH is a hash,
+// so the bytes need not be a real curve point).
+func pk(b byte) CompressedPubKey {
+	var k CompressedPubKey
+	k[0], k[1] = 0x02, b
+	return k
+}
 
 func TestVaultKeyId(t *testing.T) {
 	if got := vaultKeyId(0); got != constants.TssKeyName {
@@ -19,8 +35,7 @@ func TestVaultKeyId(t *testing.T) {
 }
 
 func TestVaultKeysForGenerationFoundBool(t *testing.T) {
-	var a, b CompressedPubKey
-	a[0], b[0] = 0x02, 0x03
+	a, b := pk(0x02), pk(0x03)
 	cs := &ContractState{Vaults: VaultRegistry{{Generation: 1, Primary: a, Backup: b}}}
 	p, bk, found := cs.vaultKeysForGeneration(1)
 	if !found || p != a || bk != b {
@@ -28,5 +43,107 @@ func TestVaultKeysForGenerationFoundBool(t *testing.T) {
 	}
 	if _, _, found2 := cs.vaultKeysForGeneration(99); found2 {
 		t.Fatal("gen 99 (absent) must return found=false so the caller aborts")
+	}
+}
+
+// TestBuildSpendUsesInputGenerationKeys proves fix #3's per-gen wiring (council 1c):
+// a gen-1 input's witness is built from gen-1's keys, NOT gen-0's or the active-gen
+// fallback. Reverting the S1.2 per-input resolution (using cs.PublicKeys) fails this.
+func TestBuildSpendUsesInputGenerationKeys(t *testing.T) {
+	net := &chaincfg.RegressionNetParams
+	g0p, g0b, g1p, g1b := pk(0xA0), pk(0xB0), pk(0xC0), pk(0xD0)
+	cs := &ContractState{
+		NetworkParams: net,
+		Supply:        SystemSupply{BaseFeeRate: 1},
+		Vaults: VaultRegistry{
+			{Generation: 0, Primary: g0p, Backup: g0b, Status: VaultStatusRetiring},
+			{Generation: 1, Primary: g1p, Backup: g1b, Status: VaultStatusActive},
+		},
+		ActiveGen: 1,
+	}
+	changeAddr, _, err := createP2WSHAddressWithBackup(g1p, g1b, nil, net)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := &Utxo{TxId: testTxId64, Vout: 0, Amount: 100000, Generation: 1}
+	_, witnessScripts, _, err := cs.buildSpendTransaction([]*Utxo{in}, 100000, changeAddr, changeAddr, 50000)
+	if err != nil {
+		t.Fatalf("gen-1 spend should build: %v", err)
+	}
+	_, wantG1, _ := createP2WSHAddressWithBackup(g1p, g1b, in.Tag, net)
+	_, wantG0, _ := createP2WSHAddressWithBackup(g0p, g0b, in.Tag, net)
+	if !bytes.Equal(witnessScripts[0], wantG1) {
+		t.Fatal("input witness must be built from the input's own generation (gen-1) keys")
+	}
+	if bytes.Equal(witnessScripts[0], wantG0) {
+		t.Fatal("input witness must NOT use gen-0 keys for a gen-1 input")
+	}
+}
+
+// TestBuildSpendAbortsOnMissingGeneration proves fix #3's abort (council 1b): a UTXO
+// whose generation is absent from a POPULATED vault list must abort (never build a
+// witness the signature can't satisfy). Reverting the abort makes this build silently.
+// It also confirms the pre-fold empty-list case still falls back (no over-eager abort).
+func TestBuildSpendAbortsOnMissingGeneration(t *testing.T) {
+	net := &chaincfg.RegressionNetParams
+	g0p, g0b := pk(0x11), pk(0x22)
+	cs := &ContractState{
+		NetworkParams: net,
+		Supply:        SystemSupply{BaseFeeRate: 1},
+		Vaults:        VaultRegistry{{Generation: 0, Primary: g0p, Backup: g0b, Status: VaultStatusActive}},
+		PublicKeys:    PublicKeys{Primary: g0p, Backup: g0b},
+	}
+	changeAddr, _, _ := createP2WSHAddressWithBackup(g0p, g0b, nil, net)
+	in := &Utxo{TxId: testTxId64, Vout: 0, Amount: 100000, Generation: 99} // absent from a populated list
+	if _, _, _, err := cs.buildSpendTransaction([]*Utxo{in}, 100000, changeAddr, changeAddr, 50000); err == nil {
+		t.Fatal("spend of a UTXO whose generation is absent from a populated vault list must ABORT")
+	}
+	// Pre-fold empty list: the same gen falls back to legacy keys → NO abort.
+	csEmpty := &ContractState{NetworkParams: net, Supply: SystemSupply{BaseFeeRate: 1}, PublicKeys: PublicKeys{Primary: g0p, Backup: g0b}}
+	if _, _, _, err := csEmpty.buildSpendTransaction([]*Utxo{in}, 100000, changeAddr, changeAddr, 50000); err != nil {
+		t.Fatalf("pre-fold empty-list spend must NOT abort (legacy fallback): %v", err)
+	}
+}
+
+// TestChangeOutputTaggedWithActiveGen proves fix #2 (council 1a): a change output is
+// tagged with the active generation, not the default 0. Reverting the tag fails this.
+func TestChangeOutputTaggedWithActiveGen(t *testing.T) {
+	net := &chaincfg.RegressionNetParams
+	changeAddr, _, err := createP2WSHAddressWithBackup(pk(0x31), pk(0x32), nil, net)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cAddr, err := btcutil.DecodeAddress(changeAddr, net)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changePkScript, err := txscript.PayToAddrScript(cAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destAddrStr, _, _ := createP2WSHAddressWithBackup(pk(0x41), pk(0x42), nil, net)
+	dAddr, _ := btcutil.DecodeAddress(destAddrStr, net)
+	destPkScript, _ := txscript.PayToAddrScript(dAddr)
+
+	tx := wire.NewMsgTx(wire.TxVersion)
+	tx.AddTxOut(wire.NewTxOut(50000, destPkScript))   // destination (not change)
+	tx.AddTxOut(wire.NewTxOut(40000, changePkScript)) // change → changeAddr
+
+	utxos, err := indexUnconfimedOutputs(tx, changeAddr, net, 7) // ActiveGen = 7
+	if err != nil {
+		t.Fatal(err)
+	}
+	tagged := false
+	for _, u := range utxos {
+		if u == nil {
+			continue
+		}
+		if u.Generation != 7 {
+			t.Fatalf("change UTXO Generation = %d, want 7 (the active generation)", u.Generation)
+		}
+		tagged = true
+	}
+	if !tagged {
+		t.Fatal("expected a change UTXO to be indexed and tagged with the active generation")
 	}
 }
