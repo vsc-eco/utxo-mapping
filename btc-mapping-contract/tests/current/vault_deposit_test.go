@@ -184,6 +184,12 @@ func TestMigrateVaultSweepsRetiringGen(t *testing.T) {
 	require.Less(t, regDone[0].Amount, amount, "sweep output = deposit minus the miner fee")
 	require.Greater(t, regDone[0].Amount, int64(0))
 	require.Empty(t, ct.StateGet(contractId, constants.MigrationSweepPrefix+sweepTxId), "the sweep record is deleted at confirm")
+	// The dedicated MigrationSweeps index (A-1) is cleared 1:1 with the "ms-" record.
+	if msl := ct.StateGet(contractId, constants.MigrationSweepRegistryKey); msl != "" {
+		sweeps, err := mapping.UnmarshalTxSpendsRegistry([]byte(msl))
+		require.NoError(t, err)
+		require.NotContains(t, sweeps, sweepTxId, "sweep removed from the MigrationSweeps index at confirm")
+	}
 
 	// Conservation: FeeSupply dropped by EXACTLY the swept miner fee (input − output).
 	supplyDone, err := mapping.UnmarshalSupply([]byte(ct.StateGet(contractId, constants.SupplyKey)))
@@ -204,6 +210,90 @@ func TestMigrateVaultSweepsRetiringGen(t *testing.T) {
 	// gen-0 is now truly drained (its input is gone) → the next rotation is unblocked.
 	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err,
 		"the next rotation is allowed once the sweep has CONFIRMED and gen-0 is drained (NN#3)")
+}
+
+// TestMigrateSweepSurvivesMapThenPause — BRK-1 methodology S2-1: a confirmed migration
+// sweep must still settle even when (a) the sweep tx is first submitted via the
+// permissionless `map` path and (b) the contract is then paused. Root fix (B):
+// updateUtxoSpends must NOT strip a live-"ms-" sweep from TxSpendsList/"d-" (it must
+// settle only via confirmSpend). Defense-in-depth (A): the pause-exemption recognizes the
+// "ms-" record. Without the fix, `map` would strip the sweep from TxSpendsList, so the
+// paused confirmSpend would compute isPending=false and REVERT ("contract is paused"),
+// stranding the in-flight sweep until unpause (funds-safe, but a liveness/rotation freeze).
+func TestMigrateSweepSurvivesMapThenPause(t *testing.T) {
+	const instruction = "deposit_to=hive:milo-hpr"
+	const amount = int64(100000)
+	const blockHeight = uint32(100)
+	fixture := buildMapFixture(t, instruction, amount, blockHeight)
+
+	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
+	contractId, owner := "mapping_contract", "hive:milo-hpr"
+	ct.RegisterContract(contractId, owner, ContractWasm)
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1, FeeSupply: 100000})))
+	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
+	seedActiveGen0(t, &ct, contractId, owner)
+
+	// Deposit to gen-0, rotate (gen-0 retiring, gen-1 active), build the drain sweep.
+	params := mapping.MapParams{TxData: &mapping.VerificationRequest{
+		BlockHeight: blockHeight, RawTxHex: fixture.RawTxHex,
+		MerkleProofHex: fixture.MerkleProofHex, TxIndex: fixture.TxIndex}, Instructions: []string{instruction}}
+	payload, err := tinyjson.Marshal(params)
+	require.NoError(t, err)
+	require.True(t, ct.Call(stateEngine.TxVscCallContract{
+		Self: stateEngine.TxSelf{TxId: "map-dep", BlockId: "block:map", Index: 70, OpIndex: 0,
+			Timestamp: "2025-10-14T00:00:00", RequiredAuths: []string{owner}, RequiredPostingAuths: []string{}},
+		ContractId: contractId, Action: "map", Payload: payload, RcLimit: 100000000, Intents: []contracts.Intent{}, Caller: owner}).Success)
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err)
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "registerPublicKey", regKeyPayload(t, Gen1PrimaryHex, "")).Err)
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "activateKey", []byte("")).Err)
+	r := callKeyAction(t, &ct, contractId, owner, "migrateVault", []byte(""))
+	require.Empty(t, r.Err, r.ErrMsg)
+	sweepTxId := r.Ret
+	require.NotEmpty(t, sweepTxId)
+
+	// Read the sweep tx + seed its confirmation block at height 101.
+	sd, err := mapping.UnmarshalSigningData([]byte(ct.StateGet(contractId, constants.TxSpendsPrefix+sweepTxId)))
+	require.NoError(t, err)
+	var sweepTx wire.MsgTx
+	require.NoError(t, sweepTx.Deserialize(bytes.NewReader(sd.Tx)))
+	header := buildRegtestHeader(chainhash.Hash{}, sweepTx.TxHash(), time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC))
+	ct.StateSet(contractId, constants.BlockPrefix+"101", serializeHeaderRaw(t, header))
+	ct.StateSet(contractId, constants.LastHeightKey, "101")
+
+	// Submit the confirmed sweep tx via the PERMISSIONLESS map path, as an unrelated caller.
+	// (No deposit instructions — this just drives HandleMap→updateUtxoSpends over the txid.)
+	mapSweep := mapping.MapParams{TxData: &mapping.VerificationRequest{
+		BlockHeight: 101, RawTxHex: hex.EncodeToString(sd.Tx), MerkleProofHex: "", TxIndex: 0}, Instructions: []string{}}
+	mapSweepPayload, err := tinyjson.Marshal(mapSweep)
+	require.NoError(t, err)
+	mr := ct.Call(stateEngine.TxVscCallContract{
+		Self: stateEngine.TxSelf{TxId: "map-sweep", BlockId: "block:mapsweep", Index: 71, OpIndex: 0,
+			Timestamp: "2025-10-14T00:00:00", RequiredAuths: []string{"hive:someone-else"}, RequiredPostingAuths: []string{}},
+		ContractId: contractId, Action: "map", Payload: mapSweepPayload, RcLimit: 100000000, Intents: []contracts.Intent{}, Caller: "hive:someone-else"})
+	require.True(t, mr.Success, mr.ErrMsg)
+
+	// Root fix (B): `map` must NOT strip a live migration sweep — its "ms-" record AND its
+	// pending "d-"/TxSpendsList entry both survive, so confirmSpend can still settle it.
+	require.NotEmpty(t, ct.StateGet(contractId, constants.MigrationSweepPrefix+sweepTxId),
+		"map must not strip a live migration sweep's ms- record (S2-1 fix B)")
+	require.NotEmpty(t, ct.StateGet(contractId, constants.TxSpendsPrefix+sweepTxId),
+		"map must not strip the migration sweep's signing data (S2-1 fix B)")
+
+	// Pause, then confirm → the in-flight sweep must STILL settle (pause-exempt).
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "pause", []byte("")).Err)
+	cr := confirmMigrationSweep(t, &ct, contractId, owner, sweepTxId, 101)
+	require.True(t, cr.Success, "a mapped-then-paused migration sweep must still settle (S2-1): "+cr.ErrMsg)
+	require.Empty(t, ct.StateGet(contractId, constants.MigrationSweepPrefix+sweepTxId),
+		"the sweep settled + its record cleared even under pause")
+
+	// Settled: the gen-0 input is gone, the successor output is confirmed + tagged gen-1.
+	reg, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
+	require.NoError(t, err)
+	require.Len(t, reg, 1, "one UTXO after the settle (the successor output)")
+	require.GreaterOrEqual(t, reg[0].Id, uint16(constants.UtxoConfirmedPoolStart))
+	require.Equal(t, uint32(1), utxoGenerationForId(t, &ct, contractId, reg[0].Id), "output tagged the successor gen")
 }
 
 // TestMigrateVaultEmptyGenStaysRetiring — S2-close F-1 fix: a superseded generation with

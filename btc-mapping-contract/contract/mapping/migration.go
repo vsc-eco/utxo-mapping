@@ -363,8 +363,11 @@ func (cs *ContractState) pendingMigrationState() (map[uint16]struct{}, int64, er
 // re-derived (the SPV-proven txid commits to the outputs → the tx provably pays
 // rec.SuccessorAddress and its output must carry the build-time rec.SuccessorGen to be
 // spendable); a conservation ASSERT (>=1 output AND Σ outputs == Σ inputs − fee) guards a
-// corrupt record. Fail-closed throughout; idempotent (a replay finds the inputs already
-// gone and aborts before mutating).
+// corrupt record. Fail-closed throughout. Idempotency is enforced ONE LAYER UP by the
+// "ms-" absence gate in HandleConfirmSpend: a replay of an already-settled sweep finds no
+// "ms-" record and skips this call entirely. The "input missing from registry" guard
+// below is defense-in-depth for a CORRUPT state (an "ms-" record whose inputs were already
+// removed) — it fails closed before any mutation rather than double-settling.
 func (cs *ContractState) settleMigrationSweep(msgTx *wire.MsgTx, rec *MigrationSweep) error {
 	// Sum the swept input amounts from the registry (still present — delete-at-confirm).
 	// A missing input means the sweep already settled (idempotent replay) or the record is

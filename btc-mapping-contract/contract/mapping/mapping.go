@@ -75,6 +75,20 @@ func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) ([]Utxo, error) {
 // unconfirmed pool (IDs 0–63) to the confirmed pool (IDs 64–255), and removes
 // the signing data entry.
 func (cs *ContractState) updateUtxoSpends(txId string) error {
+	// BRK-1 (methodology M1/M4 S2-1): a MIGRATION sweep — one with a live "ms-" record —
+	// must be reconciled ONLY through confirmSpend's settle (index output → successor,
+	// delete inputs, debit fee), NEVER stripped here. If the permissionless `map` path
+	// stripped its "d-"/TxSpendsList entry, the sweep would vanish from the pending-spend
+	// list while still unsettled in "ms-"/MigrationSweeps — losing the BRK-4b pause-exempt
+	// on the later confirmSpend AND making a TxSpendsList-keyed monitor read it as
+	// reconciled so confirmSpend may never fire → NN#3 rotation freeze (funds-safe,
+	// recoverable, but a liveness hazard). Leave the migration sweep fully intact for
+	// confirmSpend. (A migration sweep indexes no unconfirmed change, so there is nothing
+	// to promote here anyway.)
+	if ms := sdk.StateGetObject(constants.MigrationSweepPrefix + txId); ms != nil && *ms != "" {
+		return nil
+	}
+
 	utxoSpendJson := sdk.StateGetObject(constants.TxSpendsPrefix + txId)
 	if utxoSpendJson == nil || len(*utxoSpendJson) < 1 {
 		return nil

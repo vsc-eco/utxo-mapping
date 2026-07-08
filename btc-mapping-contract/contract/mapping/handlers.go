@@ -311,6 +311,16 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 			break
 		}
 	}
+	// BRK-1 (methodology M1/M4 S2-1, defense-in-depth): a migration sweep is ALSO
+	// pause-exempt while its "ms-" record is live. updateUtxoSpends now preserves a
+	// migration sweep's TxSpendsList entry (so this is normally already true), but check
+	// the "ms-" record directly too — the pause-exempt guarantee for an in-flight sweep
+	// must not depend on any single list staying intact.
+	if !isPending {
+		if ms := sdk.StateGetObject(constants.MigrationSweepPrefix + txId); ms != nil && *ms != "" {
+			isPending = true
+		}
+	}
 	if !isPending {
 		if p := sdk.StateGetObject(constants.PausedKey); p != nil && *p != "" {
 			return ce.NewContractError(ce.ErrTransaction, "contract is paused")
