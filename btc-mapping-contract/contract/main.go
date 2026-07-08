@@ -539,8 +539,8 @@ func Migrate(_ *string) *string {
 	curVer := 0
 	if version != "" {
 		parsed, err := strconv.Atoi(version)
-		if err != nil {
-			parsed = 1 << 30 // beyond any real migration version → skip all migrations
+		if err != nil || parsed < 0 {
+			parsed = 1 << 30 // garbage / negative → beyond any real version → skip all migrations
 		}
 		curVer = parsed
 	}

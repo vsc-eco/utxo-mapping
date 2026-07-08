@@ -46,9 +46,12 @@ func TestVaultKeysForGenerationFoundBool(t *testing.T) {
 	}
 }
 
-// TestBuildSpendUsesInputGenerationKeys proves fix #3's per-gen wiring (council 1c):
-// a gen-1 input's witness is built from gen-1's keys, NOT gen-0's or the active-gen
-// fallback. Reverting the S1.2 per-input resolution (using cs.PublicKeys) fails this.
+// TestBuildSpendUsesInputGenerationKeys proves fix #3's per-INPUT wiring (council 1c
+// + round-3 adequacy gap 1): in a MIXED-generation spend (the migration-sweep case),
+// each input's witness is built from ITS OWN generation's keys. The RETIRING gen-0
+// input (NOT the active gen) must use gen-0 keys, and the active gen-1 input gen-1
+// keys. This locks per-INPUT resolution `vaultKeysForGeneration(utxo.Generation)` —
+// reverting to `cs.PublicKeys` OR to `cs.ActiveGen` both fail the gen-0 assertion.
 func TestBuildSpendUsesInputGenerationKeys(t *testing.T) {
 	net := &chaincfg.RegressionNetParams
 	g0p, g0b, g1p, g1b := pk(0xA0), pk(0xB0), pk(0xC0), pk(0xD0)
@@ -65,18 +68,28 @@ func TestBuildSpendUsesInputGenerationKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	in := &Utxo{TxId: testTxId64, Vout: 0, Amount: 100000, Generation: 1}
-	_, witnessScripts, _, err := cs.buildSpendTransaction([]*Utxo{in}, 100000, changeAddr, changeAddr, 50000)
+	// Mixed-gen sweep: a RETIRING gen-0 input (Vout 0) + an ACTIVE gen-1 input (Vout 1).
+	inG0 := &Utxo{TxId: testTxId64, Vout: 0, Amount: 100000, Generation: 0}
+	inG1 := &Utxo{TxId: testTxId64, Vout: 1, Amount: 100000, Generation: 1}
+	_, witnessScripts, _, err := cs.buildSpendTransaction([]*Utxo{inG0, inG1}, 200000, changeAddr, changeAddr, 50000)
 	if err != nil {
-		t.Fatalf("gen-1 spend should build: %v", err)
+		t.Fatalf("mixed-gen spend should build: %v", err)
 	}
-	_, wantG1, _ := createP2WSHAddressWithBackup(g1p, g1b, in.Tag, net)
-	_, wantG0, _ := createP2WSHAddressWithBackup(g0p, g0b, in.Tag, net)
-	if !bytes.Equal(witnessScripts[0], wantG1) {
-		t.Fatal("input witness must be built from the input's own generation (gen-1) keys")
+	_, wantG0, _ := createP2WSHAddressWithBackup(g0p, g0b, nil, net)
+	_, wantG1, _ := createP2WSHAddressWithBackup(g1p, g1b, nil, net)
+	// Input 0 (RETIRING gen-0, != active) → gen-0 keys, NOT the active gen-1 keys.
+	if !bytes.Equal(witnessScripts[0], wantG0) {
+		t.Fatal("retiring gen-0 input witness must use its OWN gen-0 keys, not the active gen")
 	}
-	if bytes.Equal(witnessScripts[0], wantG0) {
-		t.Fatal("input witness must NOT use gen-0 keys for a gen-1 input")
+	if bytes.Equal(witnessScripts[0], wantG1) {
+		t.Fatal("retiring gen-0 input witness must NOT use the active gen-1 keys")
+	}
+	// Input 1 (ACTIVE gen-1) → gen-1 keys.
+	if !bytes.Equal(witnessScripts[1], wantG1) {
+		t.Fatal("active gen-1 input witness must use gen-1 keys")
+	}
+	if bytes.Equal(witnessScripts[1], wantG0) {
+		t.Fatal("gen-1 input witness must NOT use gen-0 keys")
 	}
 }
 
