@@ -189,9 +189,15 @@ type ContractState struct {
 	ConfirmedNextId   uint16 // next candidate in the confirmed pool   (1024–65535, wraps)
 	UnconfirmedNextId uint16 // next candidate in the unconfirmed pool (0–1023,    wraps)
 	TxSpendsList      TxSpendsRegistry
-	Supply            SystemSupply
-	PublicKeys        PublicKeys
-	NetworkParams     *chaincfg.Params
+	// MigrationSweeps is the dedicated list of pending migration-sweep txids (BRK-1
+	// council A-1). It is a strict subset of TxSpendsList (every migration sweep is also a
+	// pending spend), maintained by the owner-only migrateVault path so pendingMigrationState
+	// scans only the handful of in-flight sweeps rather than the unbounded, unprivileged-
+	// inflatable TxSpendsList. Same packed-txid encoding as TxSpendsList.
+	MigrationSweeps TxSpendsRegistry
+	Supply          SystemSupply
+	PublicKeys      PublicKeys
+	NetworkParams   *chaincfg.Params
 
 	// S1 dual-generation vault state model (empty until the gen-0 fold migration).
 	Vaults    VaultRegistry

@@ -299,6 +299,10 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 		SuccessorGen:     successorGen,
 	}
 	sdk.StateSetObject(constants.MigrationSweepPrefix+txId, string(MarshalMigrationSweep(sweepRecord)))
+	// Dedicated migration-sweep index (BRK-1 council A-1): paired 1:1 with the "ms-"
+	// record — appended here, removed at confirm — so pendingMigrationState scans only
+	// in-flight sweeps, never the unprivileged-inflatable TxSpendsList.
+	cs.MigrationSweeps = append(cs.MigrationSweeps, txId)
 
 	// First tranche: retiring → draining (a sweep is now in flight). Idempotent for a gen
 	// already draining. Never touches keys or any other generation.
@@ -315,22 +319,25 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 	return txId, nil
 }
 
-// pendingMigrationState scans the in-flight migration sweeps (BRK-1: the "ms-"+txId
-// records, located by walking cs.TxSpendsList — every in-flight sweep is also a pending
-// spend) and returns (1) the set of input UTXO ids already committed to a pending sweep
-// and (2) the SUM of those sweeps' reserved miner fees. The exclusion set stops a later
-// tranche/retry from re-selecting an in-flight input (a double-sweep); the fee sum feeds
-// the build-time reserve check so every deferred confirm-side fee debit is guaranteed to
-// succeed. FAIL-CLOSED: a record that cannot be decoded aborts the whole scan (never
-// silently drop an exclusion or under-count the reserved fee). Deterministic: iterates
-// the TxSpends slice in order + keyed loads, no map ranging.
+// pendingMigrationState scans the in-flight migration sweeps and returns (1) the set of
+// input UTXO ids already committed to a pending sweep and (2) the SUM of those sweeps'
+// reserved miner fees. The exclusion set stops a later tranche/retry from re-selecting an
+// in-flight input (a double-sweep); the fee sum feeds the build-time reserve check so
+// every deferred confirm-side fee debit is guaranteed to succeed. It iterates the
+// DEDICATED cs.MigrationSweeps list (BRK-1 council A-1), NOT the general cs.TxSpendsList:
+// MigrationSweeps is written only by the owner-only migrateVault path and is bounded by
+// the handful of concurrent draining sweeps, so an unprivileged unmap flood that inflates
+// TxSpendsList can never gas-DoS this scan into freezing rotation. FAIL-CLOSED: a record
+// that cannot be decoded aborts the whole scan (never silently drop an exclusion or
+// under-count the reserved fee). Deterministic: iterates the slice in order + keyed
+// loads, no map ranging.
 func (cs *ContractState) pendingMigrationState() (map[uint16]struct{}, int64, error) {
 	excluded := make(map[uint16]struct{})
 	var feeSum int64
-	for _, txId := range cs.TxSpendsList {
+	for _, txId := range cs.MigrationSweeps {
 		raw := sdk.StateGetObject(constants.MigrationSweepPrefix + txId)
 		if raw == nil || *raw == "" {
-			continue // an ordinary unmap, not a migration sweep
+			continue // record already settled/cleared; nothing to exclude
 		}
 		rec, err := UnmarshalMigrationSweep([]byte(*raw))
 		if err != nil {

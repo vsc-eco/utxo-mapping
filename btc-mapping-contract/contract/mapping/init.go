@@ -57,6 +57,18 @@ func IntializeContractState(publicKeys PublicKeys, networkMode string) (*Contrac
 		}
 	}
 
+	// Load migration-sweep registry (BRK-1 council A-1; same 32-byte/entry encoding).
+	// Absent on any contract with no in-flight sweep (tolerant of the missing key).
+	var migrationSweeps TxSpendsRegistry
+	migrationSweepsState := sdk.StateGetObject(constants.MigrationSweepRegistryKey)
+	if len(*migrationSweepsState) > 0 {
+		var err error
+		migrationSweeps, err = UnmarshalTxSpendsRegistry([]byte(*migrationSweepsState))
+		if err != nil {
+			return nil, ce.NewContractError(ce.ErrStateAccess, "error decoding migration sweep registry: "+err.Error())
+		}
+	}
+
 	// Load supply (binary: 32 bytes)
 	var supply SystemSupply
 	supplyState := sdk.StateGetObject(constants.SupplyKey)
@@ -93,6 +105,7 @@ func IntializeContractState(publicKeys PublicKeys, networkMode string) (*Contrac
 		ConfirmedNextId:   confirmedNextId,
 		UnconfirmedNextId: unconfirmedNextId,
 		TxSpendsList:      txSpends,
+		MigrationSweeps:   migrationSweeps,
 		Supply:            supply,
 		PublicKeys:        publicKeys,
 		NetworkParams:     networkParams,
@@ -310,6 +323,9 @@ func (cs *ContractState) SaveToState() error {
 
 	// TX spends registry (binary)
 	sdk.StateSetObject(constants.TxSpendsRegistryKey, string(MarshalTxSpendsRegistry(cs.TxSpendsList)))
+
+	// Migration-sweep registry (BRK-1 council A-1; same 32-byte/entry encoding).
+	sdk.StateSetObject(constants.MigrationSweepRegistryKey, string(MarshalTxSpendsRegistry(cs.MigrationSweeps)))
 
 	// Supply (binary)
 	sdk.StateSetObject(constants.SupplyKey, string(MarshalSupply(&cs.Supply)))

@@ -38,6 +38,15 @@ const SupplyKey = "s"
 // delete the swept inputs, debit the reserved miner fee) under the sweep's SPV proof.
 const MigrationSweepPrefix = "ms" + DirPathDelimiter
 
+// MigrationSweepRegistryKey holds the packed list of pending migration-sweep txids
+// (32 bytes/entry, same encoding as TxSpendsRegistryKey). It is the DEDICATED index of
+// in-flight "ms-" records, written ONLY by the owner-only migrateVault path and cleared
+// at confirm. pendingMigrationState iterates THIS list (bounded by the number of
+// concurrent draining sweeps — a handful) instead of the general TxSpendsRegistry (which
+// an unprivileged unmap flood can inflate without bound), so migrateVault's exclusion +
+// fee-reserve scan can never be gas-DoS'd into freezing rotation (BRK-1 council A-1).
+const MigrationSweepRegistryKey = "msl"
+
 // Vault registry (S1 dual-generation vault state model — see S1-DESIGN.md).
 // Append-only list of key generations; a new generation appends a PENDING entry
 // and existing entries only status-transition (pubkeys NEVER mutated → preserves

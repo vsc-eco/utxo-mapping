@@ -190,6 +190,17 @@ func TestMigrateVaultSweepsRetiringGen(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(100000)-(amount-regDone[0].Amount), supplyDone.FeeSupply, "FeeSupply debited by exactly the miner fee at confirm")
 
+	// Conservation DELTA (BRK-1's load-bearing property): the confirm-side atomic swap is
+	// Supply-neutral to ActiveSupply (only the miner fee moves, and it leaves FeeSupply),
+	// and Σ(registry) drops by EXACTLY the same amount FeeSupply drops — Σ(UTXO) and
+	// (ActiveSupply+FeeSupply) move in lockstep, so the invariant Σ(UTXO) ==
+	// ActiveSupply + FeeSupply is preserved across confirm. (The seeded test FeeSupply is
+	// unbacked, so the ABSOLUTE invariant does not hold in the fixture — the DELTA does,
+	// which is what BRK-1 guarantees.)
+	require.Equal(t, supplyBuild.ActiveSupply, supplyDone.ActiveSupply, "migration must not touch ActiveSupply (X-2 solvency)")
+	require.Equal(t, regBuild[0].Amount-regDone[0].Amount, supplyBuild.FeeSupply-supplyDone.FeeSupply,
+		"Σ(UTXO) and FeeSupply drop by the same amount across confirm (conservation delta)")
+
 	// gen-0 is now truly drained (its input is gone) → the next rotation is unblocked.
 	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err,
 		"the next rotation is allowed once the sweep has CONFIRMED and gen-0 is drained (NN#3)")

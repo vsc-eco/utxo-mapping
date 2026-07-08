@@ -362,6 +362,16 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 			return err
 		}
 		sdk.StateDeleteObject(constants.MigrationSweepPrefix + txId)
+		// Drop this sweep from the dedicated migration-sweep index (BRK-1 council A-1),
+		// paired 1:1 with the "ms-" record delete above (same idiom as the TxSpendsList
+		// cleanup below). Swap-remove; order does not matter (membership-only scan).
+		for i, val := range cs.MigrationSweeps {
+			if val == txId {
+				cs.MigrationSweeps[i] = cs.MigrationSweeps[len(cs.MigrationSweeps)-1]
+				cs.MigrationSweeps = cs.MigrationSweeps[:len(cs.MigrationSweeps)-1]
+				break
+			}
+		}
 	}
 
 	// Clean up signing data for this tx if present.
