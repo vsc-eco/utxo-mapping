@@ -169,6 +169,107 @@ func TestDepositTaggedWithGeneration(t *testing.T) {
 	}
 }
 
+// TestIsFundHoldingStatusSet pins the deposit-matchable ≡ renewable set to exactly
+// {active, retiring, draining}. Both S1.4 deposit matching and RenewableVaultKeyIds
+// route through isFundHoldingStatus, so widening/narrowing either side (which would
+// break the "credited ⇒ renewable ⇒ signable" coupling) fails here.
+func TestIsFundHoldingStatusSet(t *testing.T) {
+	want := map[VaultStatus]bool{
+		VaultStatusPending:  false,
+		VaultStatusActive:   true,
+		VaultStatusRetiring: true,
+		VaultStatusDraining: true,
+		VaultStatusInactive: false,
+		VaultStatusPurged:   false,
+	}
+	for s, exp := range want {
+		if got := isFundHoldingStatus(s); got != exp {
+			t.Fatalf("isFundHoldingStatus(%d) = %v, want %v", s, got, exp)
+		}
+	}
+}
+
+// TestDepositAddressGenerationsMultiGen proves S1.4's core: deposit-address matching
+// spans EVERY fund-holding generation (active + retiring + draining), ACTIVE first
+// (collision precedence), each carrying its own generation — so a late deposit to a
+// superseded generation's address still credits and is tagged with THAT generation
+// (NR-4 / C-2). Reverting to active-gen-only drops the retiring/draining entries,
+// re-opening the fund-loss S1.4 closes.
+func TestDepositAddressGenerationsMultiGen(t *testing.T) {
+	g0p, g0b, g1p, g1b := pk(0xA0), pk(0xB0), pk(0xC0), pk(0xD0)
+	cs := &ContractState{
+		Vaults: VaultRegistry{
+			{Generation: 0, Primary: g0p, Backup: g0b, Status: VaultStatusRetiring},
+			{Generation: 1, Primary: g1p, Backup: g1b, Status: VaultStatusActive},
+		},
+		ActiveGen: 1,
+	}
+	got := cs.depositAddressGenerations()
+	if len(got) != 2 {
+		t.Fatalf("want 2 matchable generations (active+retiring), got %d", len(got))
+	}
+	if got[0].generation != 1 || got[0].primary != g1p || got[0].backup != g1b {
+		t.Fatalf("candidate[0] must be the ACTIVE gen 1 with its own keys, got gen %d", got[0].generation)
+	}
+	if got[1].generation != 0 || got[1].primary != g0p || got[1].backup != g0b {
+		t.Fatalf("candidate[1] must be the RETIRING gen 0 with its own keys, got gen %d", got[1].generation)
+	}
+	// Distinct generations derive DISTINCT deposit addresses for the same instruction,
+	// so a tx output matches exactly one generation → unambiguous tagging.
+	net := &chaincfg.RegressionNetParams
+	tag := []byte{1, 2, 3}
+	a0, _, _ := createP2WSHAddressWithBackup(g0p, g0b, tag, net)
+	a1, _, _ := createP2WSHAddressWithBackup(g1p, g1b, tag, net)
+	if a0 == a1 {
+		t.Fatal("distinct generations must derive distinct deposit addresses")
+	}
+}
+
+// TestDepositAddressGenerationsExcludesAndFallsBack proves the matchable set is
+// exactly the fund-holding, keyed generations (draining INCLUDED; pending / inactive
+// / purged EXCLUDED) and the pre-fold / fresh-deploy fail-safe fallback.
+func TestDepositAddressGenerationsExcludesAndFallsBack(t *testing.T) {
+	act, actb := pk(0x51), pk(0x52)
+	cs := &ContractState{
+		Vaults: VaultRegistry{
+			{Generation: 5, Primary: act, Backup: actb, Status: VaultStatusActive},
+			{Generation: 2, Primary: pk(0x91), Backup: pk(0x92), Status: VaultStatusDraining}, // fund-holding → included
+			{Generation: 4, Primary: pk(0x61), Backup: pk(0x62), Status: VaultStatusInactive}, // excluded
+			{Generation: 3, Primary: pk(0x71), Backup: pk(0x72), Status: VaultStatusPurged},   // excluded
+			{Generation: 6, Primary: pk(0x81), Backup: pk(0x82), Status: VaultStatusPending},  // excluded
+		},
+		ActiveGen: 5,
+	}
+	got := cs.depositAddressGenerations()
+	if len(got) != 2 {
+		t.Fatalf("want active gen 5 + draining gen 2 only, got %d entries", len(got))
+	}
+	if got[0].generation != 5 {
+		t.Fatalf("active gen 5 must be first, got gen %d", got[0].generation)
+	}
+	if got[1].generation != 2 {
+		t.Fatalf("draining gen 2 must be matched (fund-holding), got gen %d", got[1].generation)
+	}
+
+	// A PENDING active-gen with ZERO keys (fresh-deploy genesis pre-activation) must
+	// NOT match from the list — fall back to the resolved legacy/active key pair.
+	fb := &ContractState{
+		Vaults:     VaultRegistry{{Generation: 0, Status: VaultStatusPending}}, // zero keys
+		ActiveGen:  0,
+		PublicKeys: PublicKeys{Primary: act, Backup: actb},
+	}
+	if g := fb.depositAddressGenerations(); len(g) != 1 || g[0].generation != 0 || g[0].primary != act {
+		t.Fatal("fresh-deploy pre-activation must fall back to the resolved key pair tagged the active gen")
+	}
+
+	// Empty vault list (pre-fold) → fallback to cs.PublicKeys tagged cs.ActiveGen
+	// (byte-identical to pre-S1.4 single-address behaviour).
+	empty := &ContractState{ActiveGen: 0, PublicKeys: PublicKeys{Primary: act, Backup: actb}}
+	if e := empty.depositAddressGenerations(); len(e) != 1 || e[0].primary != act || e[0].generation != 0 {
+		t.Fatal("empty vault list must fall back to the single legacy key pair")
+	}
+}
+
 // TestChangeOutputTaggedWithActiveGen proves fix #2 (council 1a): a change output is
 // tagged with the active generation, not the default 0. Reverting the tag fails this.
 func TestChangeOutputTaggedWithActiveGen(t *testing.T) {

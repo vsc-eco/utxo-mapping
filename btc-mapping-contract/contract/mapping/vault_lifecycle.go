@@ -377,6 +377,22 @@ func DiscardPendingGeneration() (uint32, error) {
 	return discarded, nil
 }
 
+// isFundHoldingStatus reports whether a vault generation holds — or may still
+// receive — funds: active, retiring, or draining. It is the SINGLE predicate
+// behind two invariants that MUST stay in lockstep:
+//   - its deposit address stays matchable  (S1.4 dual-generation crediting), and
+//   - its TSS key stays renewable           (RenewableVaultKeyIds, below).
+//
+// The coupling is load-bearing: if a generation were deposit-matchable but NOT
+// renewable, a late deposit we credit to it could become UNSPENDABLE once its
+// key expired (renewal is what keeps a retiring gen signable) — reintroducing
+// the very fund-loss class S1.4 exists to close. Sharing this predicate makes
+// the two sets provably identical. Pending (no keys yet) and Inactive/Purged
+// (S2/S5: SPV-proven-empty / destroyed) are deliberately excluded.
+func isFundHoldingStatus(s VaultStatus) bool {
+	return s == VaultStatusActive || s == VaultStatusRetiring || s == VaultStatusDraining
+}
+
 // tssKeyIsRenewable reports whether the TSS key for keyId can be renewed WITHOUT
 // aborting the tx. sdk.TssRenewKey traps on a retired key, a missing key, and an
 // "active" key with no expiry; it does NOT trap on "active" (with expiry — every
@@ -410,8 +426,10 @@ func RenewableVaultKeyIds() ([]string, error) {
 	}
 	var ids []string
 	for i := range vaults {
-		switch vaults[i].Status {
-		case VaultStatusActive, VaultStatusRetiring, VaultStatusDraining:
+		// Same fund-holding set as S1.4 deposit matching (isFundHoldingStatus) —
+		// keep these two in lockstep: every gen we still credit deposits to must
+		// stay renewable, or a late deposit could outlive its signable key.
+		if isFundHoldingStatus(vaults[i].Status) {
 			if keyId := VaultKeyId(vaults[i].Generation); tssKeyIsRenewable(keyId) {
 				ids = append(ids, keyId)
 			}

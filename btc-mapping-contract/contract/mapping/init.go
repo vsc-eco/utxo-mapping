@@ -134,10 +134,12 @@ func InitializeMappingState(
 	var registry map[string]*AddressMetadata
 	if len(instructions) > 0 {
 		var err error
-		// S1.2: derive deposit addresses from the resolved ACTIVE-generation keys
-		// (contractState.PublicKeys), not the raw passed-in legacy pair. (S1.4 will
-		// extend this to match ALL non-purged generations' addresses for NR-4.)
-		registry, err = contractState.parseInstructions(contractState.PublicKeys, instructions, contractState.NetworkParams)
+		// S1.4: parseInstructions derives a deposit address for EVERY fund-holding
+		// generation (active + retiring + draining) from the resolved vault list,
+		// each tagged with its own generation, so a late deposit to a superseded
+		// generation's address still credits (NR-4). Pre-fold/fresh deploys fall
+		// back to the single resolved active/legacy key pair (byte-identical).
+		registry, err = contractState.parseInstructions(instructions, contractState.NetworkParams)
 		if err != nil {
 			return nil, ce.WrapContractError(ce.ErrStateAccess, err, "error unmarshalling address registry")
 		}
@@ -149,22 +151,76 @@ func InitializeMappingState(
 	}, err
 }
 
+// depositVaultKeys is one generation's deposit-address key material (S1.4).
+type depositVaultKeys struct {
+	generation uint32
+	primary    CompressedPubKey
+	backup     CompressedPubKey
+}
+
+// depositAddressGenerations returns the key material of every generation whose
+// deposit address must be matched (S1.4 dual-generation crediting): all
+// fund-holding generations (active + retiring + draining, isFundHoldingStatus)
+// that carry a real primary key — with the ACTIVE generation FIRST, so it wins
+// any address collision (collisions are precluded by the R6 pubkey-uniqueness
+// rule, but ordering makes the tie-break deterministic regardless).
+//
+// New deposits are directed to the active gen's address (the address the
+// router/UI hands out), but every superseded gen's address stays matchable
+// until that gen is PURGED (S5) — that is what lets a late deposit to a
+// retiring vault credit instead of being lost (NR-4 / C-2).
+//
+// FAIL-SAFE: on an empty vault list (pre-fold) or one with no fund-holding,
+// keyed generation (a fresh deploy whose genesis gen is still PENDING with zero
+// keys), it returns the single resolved active/legacy key pair tagged
+// cs.ActiveGen — byte-identical to the pre-S1.4 single-address behaviour, so an
+// unfolded or freshly deployed contract derives exactly the addresses it did
+// before. Deterministic: iterates the vault slice in index order (no map range).
+func (cs *ContractState) depositAddressGenerations() []depositVaultKeys {
+	out := make([]depositVaultKeys, 0, len(cs.Vaults)+1)
+	// Active generation first (collision precedence).
+	for i := range cs.Vaults {
+		v := &cs.Vaults[i]
+		if v.Generation == cs.ActiveGen && isFundHoldingStatus(v.Status) && !isZeroKey(v.Primary) {
+			out = append(out, depositVaultKeys{v.Generation, v.Primary, v.Backup})
+			break
+		}
+	}
+	// Then every OTHER fund-holding generation (retiring / draining / a non-active
+	// gen that still holds funds), in vault-list order.
+	for i := range cs.Vaults {
+		v := &cs.Vaults[i]
+		if v.Generation != cs.ActiveGen && isFundHoldingStatus(v.Status) && !isZeroKey(v.Primary) {
+			out = append(out, depositVaultKeys{v.Generation, v.Primary, v.Backup})
+		}
+	}
+	if len(out) == 0 {
+		// Pre-fold / fresh-deploy fallback: the single resolved key pair (cs.PublicKeys
+		// was resolved to the active vault or the legacy slots in IntializeContractState).
+		out = append(out, depositVaultKeys{cs.ActiveGen, cs.PublicKeys.Primary, cs.PublicKeys.Backup})
+	}
+	return out
+}
+
 func (cs *ContractState) parseInstructions(
-	publicKeys PublicKeys,
 	instrs []string,
 	networkParams *chaincfg.Params,
 ) (map[string]*AddressMetadata, error) {
-	parsedInstructions := make([]url.Values, len(instrs))
-	registry := make(map[string]*AddressMetadata, len(instrs))
-	for i, instr := range instrs {
+	// S1.4: derive a deposit address for EVERY fund-holding generation, each tagged
+	// with its own generation, so a late deposit to a superseded (retiring/draining)
+	// generation's address still credits and is tagged with THAT generation (NR-4 /
+	// C-2). When only gen-0 exists this yields exactly one address == the pre-S1.4
+	// behaviour (inert-by-construction).
+	genKeys := cs.depositAddressGenerations()
+	registry := make(map[string]*AddressMetadata, len(instrs)*len(genKeys))
+	for _, instr := range instrs {
 		params, err := url.ParseQuery(instr)
-		parsedInstructions[i] = params
 		if err != nil {
 			return nil, err
 		}
 
-		// validates all destination addresses as vaild on their network
-		// assumes VSC as the network for deposits and unspecified swaps
+		// Validate the destination once per instruction (generation-independent);
+		// assumes VSC as the network for deposits and unspecified swaps.
 		var recipient string
 		var mappingType MappingType
 		if params.Has(constants.DepositToKey) {
@@ -192,18 +248,32 @@ func (cs *ContractState) parseInstructions(
 				)
 			}
 		}
-		if recipient != "" {
-			hasher := sha256.New()
-			hasher.Write([]byte(instr))
-			hashBytes := hasher.Sum(nil)
+		if recipient == "" {
+			// should error for unsupported instruction?
+			continue
+		}
+
+		hasher := sha256.New()
+		hasher.Write([]byte(instr))
+		hashBytes := hasher.Sum(nil)
+		// One *url.Values per instruction, shared (read-only) by that instruction's
+		// per-generation entries. params is freshly declared each iteration, so &params
+		// is a distinct pointer per instruction (no loop-var aliasing across instrs).
+		for gi := range genKeys {
+			gk := &genKeys[gi]
 			address, _, err := createP2WSHAddressWithBackup(
-				publicKeys.Primary,
-				publicKeys.Backup,
+				gk.primary,
+				gk.backup,
 				hashBytes,
 				networkParams,
 			)
 			if err != nil {
 				return nil, err
+			}
+			// Active-first ordering already claimed this address on the (R6-precluded)
+			// chance two generations derive the same one — keep the active gen's entry.
+			if _, exists := registry[address]; exists {
+				continue
 			}
 			registry[address] = &AddressMetadata{
 				Instruction: instr,
@@ -211,14 +281,12 @@ func (cs *ContractState) parseInstructions(
 				Params:      &params,
 				Tag:         hashBytes,
 				Type:        mappingType,
-				// S1.3 C-1: this address is derived from the ACTIVE generation's keys
-				// (publicKeys == cs.PublicKeys, resolved to the active vault), so a
-				// deposit here belongs to the active generation. Tagging it lets the
-				// spend path pick the right per-generation keys after a rotation.
-				Generation: cs.ActiveGen,
+				// S1.3 C-1 / S1.4 NR-4: tag with the generation whose keys derived THIS
+				// address, so the spend path resolves the correct per-generation witness
+				// keys + TSS keyId after a rotation.
+				Generation: gk.generation,
 			}
 		}
-		// should error for unsupported instruction?
 	}
 	return registry, nil
 }
