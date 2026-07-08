@@ -121,6 +121,15 @@ func (cs *ContractState) buildMigrationTransaction(inputs []*Utxo, totalInputs i
 	if err != nil {
 		return nil, nil, 0, err
 	}
+	// V5-4 (migration-fee sanity ceiling): a rogue/glitched oracle BaseFeeRate (already
+	// clamped to MaxBaseFeeRate) must not burn most of a tranche on miner fees. Reject a
+	// sweep whose fee exceeds half the tranche value — fail-safe (the gen keeps these
+	// UTXOs, recoverable; abort leaves no state change). A tighter economical-fraction
+	// ceiling + a dust-burn / reserve-subsidy escape (V-1) for a genuinely un-sweepable
+	// dust residual is deferred (S2.4-refinement / S5).
+	if fee > totalInputs/2 {
+		return nil, nil, 0, ce.NewContractError(ce.ErrTransaction, "migration fee exceeds half the tranche value — sweep deferred")
+	}
 	sendAmount, err := safeSubtract64(totalInputs, fee)
 	if err != nil || sendAmount <= dustThreshold {
 		// V-1 dust residual: a tranche too small to cover its own sweep fee can't be
