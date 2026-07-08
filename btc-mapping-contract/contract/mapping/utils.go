@@ -434,6 +434,60 @@ func UnmarshalTxSpendsRegistry(data []byte) (TxSpendsRegistry, error) {
 }
 
 // ---------------------------------------------------------------------------
+// MigrationSweep record binary encoding (BRK-1 delete-at-confirm). State key
+// "ms-"+txId, one record per in-flight migration sweep. Layout:
+//
+//	[8]   BtcFee            (int64  BE; the reserved miner fee, always >= 0)
+//	[4]   SuccessorGen      (uint32 BE)
+//	[2]   len(InputIds)     (uint16 BE; bounded by MaxMigrationInputs)
+//	[2*N] InputIds          (uint16 BE each)
+//	[M]   SuccessorAddress  (UTF-8, the record tail — no length prefix)
+// ---------------------------------------------------------------------------
+
+func MarshalMigrationSweep(r *MigrationSweep) []byte {
+	n := len(r.InputIds)
+	buf := make([]byte, 8+4+2+n*2+len(r.SuccessorAddress))
+	off := 0
+	binary.BigEndian.PutUint64(buf[off:], uint64(r.BtcFee))
+	off += 8
+	binary.BigEndian.PutUint32(buf[off:], r.SuccessorGen)
+	off += 4
+	binary.BigEndian.PutUint16(buf[off:], uint16(n))
+	off += 2
+	for _, id := range r.InputIds {
+		binary.BigEndian.PutUint16(buf[off:], id)
+		off += 2
+	}
+	copy(buf[off:], r.SuccessorAddress)
+	return buf
+}
+
+func UnmarshalMigrationSweep(data []byte) (*MigrationSweep, error) {
+	const minLen = 8 + 4 + 2
+	if len(data) < minLen {
+		return nil, errors.New("migration sweep record too short")
+	}
+	r := &MigrationSweep{}
+	off := 0
+	r.BtcFee = int64(binary.BigEndian.Uint64(data[off:]))
+	off += 8
+	r.SuccessorGen = binary.BigEndian.Uint32(data[off:])
+	off += 4
+	n := int(binary.BigEndian.Uint16(data[off:]))
+	off += 2
+	if off+n*2 > len(data) {
+		return nil, errors.New("migration sweep record truncated (input ids)")
+	}
+	r.InputIds = make([]uint16, n)
+	for i := 0; i < n; i++ {
+		r.InputIds[i] = binary.BigEndian.Uint16(data[off:])
+		off += 2
+	}
+	r.SuccessorAddress = string(data[off:])
+	return r, nil
+}
+
+// ---------------------------------------------------------------------------
 // UTXO ID allocation with rollover and existence check
 // ---------------------------------------------------------------------------
 

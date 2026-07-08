@@ -503,3 +503,41 @@ func indexUnconfimedOutputs(tx *wire.MsgTx, changeAddress string, network *chain
 
 	return utxos, nil
 }
+
+// indexMigrationOutputs returns the confirmed migration sweep's output UTXO(s) that pay
+// the successor vault address, each tagged with the successor generation (BRK-1
+// delete-at-confirm). Unlike indexUnconfimedOutputs — which reserves the FIRST output as
+// a withdrawal destination and indexes only change — EVERY output of a migration sweep
+// pays the successor (assertOutputsPaySuccessor at build), so this indexes all matching
+// outputs and makes no destination-output/len-1 assumption. Caps each output at
+// MaxUtxoAmount (the uint48 registry width) exactly like the change path. The caller
+// (settleMigrationSweep) allocates CONFIRMED ids for the returned UTXOs and asserts
+// conservation (Σ outputs == Σ inputs − fee), so a mis-addressed or empty result is
+// caught rather than silently dropped.
+func indexMigrationOutputs(tx *wire.MsgTx, successorAddress string, network *chaincfg.Params, successorGen uint32) ([]*Utxo, error) {
+	var utxos []*Utxo
+	for index, txOut := range tx.TxOut {
+		_, addrs, _, err := txscript.ExtractPkScriptAddrs(txOut.PkScript, network)
+		if err != nil {
+			return nil, err
+		}
+		if len(addrs) != 1 {
+			return nil, ce.NewContractError(ce.ErrTransaction, "incorrect number of addresses for migration output")
+		}
+		if addrs[0].EncodeAddress() != successorAddress {
+			continue
+		}
+		if txOut.Value > constants.MaxUtxoAmount {
+			return nil, ce.NewContractError(ce.ErrTransaction, "migration output amount exceeds maximum utxo amount")
+		}
+		utxos = append(utxos, &Utxo{
+			TxId:       tx.TxID(),
+			Vout:       uint32(index),
+			Amount:     txOut.Value,
+			PkScript:   txOut.PkScript,
+			Tag:        nil,
+			Generation: successorGen,
+		})
+	}
+	return utxos, nil
+}

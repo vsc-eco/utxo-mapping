@@ -345,6 +345,25 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 		cs.UtxoList[i].Id = newId
 	}
 
+	// BRK-1 (delete-at-confirm migration settle): if this confirmed tx is a migration
+	// sweep (it has an "ms-"+txId record), perform the atomic swap HandleMigrateVault
+	// deferred — index the swept output(s) to the successor, delete the swept inputs, and
+	// debit the reserved miner fee — under the SPV proof verified above. A normal unmap has
+	// no "ms-" record and skips this entirely; a migration sweep indexed NOTHING at build,
+	// so the promotion loop above is a no-op for it (they never touch the same UTXOs).
+	// A migration sweep is always in the TxSpends registry, so isPending==true above → this
+	// settle is pause-EXEMPT (BRK-4b): pausing must not strand an already-broadcast sweep.
+	if msRaw := sdk.StateGetObject(constants.MigrationSweepPrefix + txId); msRaw != nil && *msRaw != "" {
+		rec, err := UnmarshalMigrationSweep([]byte(*msRaw))
+		if err != nil {
+			return ce.NewContractError(ce.ErrStateAccess, "error decoding migration sweep record: "+err.Error())
+		}
+		if err := cs.settleMigrationSweep(&msgTx, rec); err != nil {
+			return err
+		}
+		sdk.StateDeleteObject(constants.MigrationSweepPrefix + txId)
+	}
+
 	// Clean up signing data for this tx if present.
 	sdk.StateDeleteObject(constants.TxSpendsPrefix + txId)
 	for i, val := range cs.TxSpendsList {

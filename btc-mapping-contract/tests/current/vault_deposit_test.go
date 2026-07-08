@@ -1,8 +1,11 @@
 package current_test
 
 import (
+	"bytes"
+	"encoding/hex"
 	"strconv"
 	"testing"
+	"time"
 
 	"btc-mapping-contract/contract/constants"
 	"btc-mapping-contract/contract/mapping"
@@ -12,9 +15,54 @@ import (
 	"github.com/CosmWasm/tinyjson"
 	"github.com/stretchr/testify/require"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
+
 	"vsc-node/lib/test_utils"
 	"vsc-node/modules/db/vsc/contracts"
 )
+
+// confirmMigrationSweep confirms an internally-built migration sweep tx. It reads the
+// sweep's serialized (unsigned) tx from the "d-" signing record, wraps it in a single-tx
+// regtest block (MerkleRoot = TxHash, empty proof, TxIndex=0) seeded at blockHeight, and
+// calls confirmSpend — the delete-at-confirm settle that BRK-1 defers from build. The
+// segwit txid is witness-independent, so the unsigned serialization confirms under the
+// same txid the sweep was recorded under. Returns the call result.
+func confirmMigrationSweep(
+	t *testing.T, ct *test_utils.ContractTest, contractId, caller, sweepTxId string, blockHeight uint32,
+) test_utils.ContractTestCallResult {
+	t.Helper()
+	sigRaw := ct.StateGet(contractId, constants.TxSpendsPrefix+sweepTxId)
+	require.NotEmpty(t, sigRaw, "pending signing data must exist for the sweep")
+	sd, err := mapping.UnmarshalSigningData([]byte(sigRaw))
+	require.NoError(t, err)
+	require.NotEmpty(t, sd.Tx, "sweep signing data must carry the serialized tx")
+
+	var sweepTx wire.MsgTx
+	require.NoError(t, sweepTx.Deserialize(bytes.NewReader(sd.Tx)))
+	require.Equal(t, sweepTxId, sweepTx.TxID(), "deserialized sweep tx id must match the recorded id")
+
+	// Single-tx block: MerkleRoot = TxHash so the empty-proof SPV verification passes.
+	txHash := sweepTx.TxHash()
+	header := buildRegtestHeader(chainhash.Hash{}, txHash, time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC))
+	ct.StateSet(contractId, constants.BlockPrefix+strconv.FormatUint(uint64(blockHeight), 10), serializeHeaderRaw(t, header))
+	ct.StateSet(contractId, constants.LastHeightKey, strconv.FormatUint(uint64(blockHeight), 10))
+
+	params := mapping.ConfirmSpendParams{
+		TxData: &mapping.VerificationRequest{
+			BlockHeight: blockHeight, RawTxHex: hex.EncodeToString(sd.Tx), MerkleProofHex: "", TxIndex: 0,
+		},
+		Indices: []uint32{0},
+	}
+	payload, err := tinyjson.Marshal(params)
+	require.NoError(t, err)
+	return ct.Call(stateEngine.TxVscCallContract{
+		Self: stateEngine.TxSelf{TxId: "confirm-sweep-" + sweepTxId[:8], BlockId: "block:confirm", Index: 72, OpIndex: 0,
+			Timestamp: "2025-10-14T00:00:00", RequiredAuths: []string{caller}, RequiredPostingAuths: []string{}},
+		ContractId: contractId, Action: "confirmSpend", Payload: payload,
+		RcLimit: 100000000, Intents: []contracts.Intent{}, Caller: caller,
+	})
+}
 
 // utxoGenerationForId loads the stored UTXO blob for a pool id and returns its
 // generation tag — the value the spend path uses to pick per-generation keys.
@@ -84,35 +132,67 @@ func TestMigrateVaultSweepsRetiringGen(t *testing.T) {
 		"migrateVault must be refused while paused (F-2)")
 	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "unpause", []byte("")).Err)
 
-	// Migrate: sweep the retiring gen-0 UTXO to the gen-1 successor.
+	// Migrate: BUILD+RECORD the sweep of the retiring gen-0 UTXO to the gen-1 successor.
+	// BRK-1 (delete-at-confirm): BUILD settles NOTHING — the input is not spent, no output
+	// is indexed, and FeeSupply is not debited; all three happen atomically at confirmSpend.
 	r := callKeyAction(t, &ct, contractId, owner, "migrateVault", []byte(""))
 	require.Empty(t, r.Err, r.ErrMsg)
+	sweepTxId := r.Ret
+	require.NotEmpty(t, sweepTxId)
 
-	// gen-0 → draining, gen-1 still active.
+	// gen-0 → draining (a sweep is in flight), gen-1 still active.
 	vaults, _, activeGen := loadVaults(t, &ct, contractId)
 	require.Equal(t, uint32(1), activeGen)
-	require.Equal(t, mapping.VaultStatusDraining, vaults[0].Status, "retiring gen-0 transitions to draining after a sweep")
+	require.Equal(t, mapping.VaultStatusDraining, vaults[0].Status, "retiring gen-0 transitions to draining once a sweep is built")
 	require.Equal(t, mapping.VaultStatusActive, vaults[1].Status)
 
-	// The gen-0 input is spent; the sweep output is a single UNCONFIRMED UTXO tagged gen-1.
-	reg, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
+	// BRK-1 at BUILD: the gen-0 input is NOT spent — it stays in the registry (confirmed,
+	// gen-0, full deposit value) so AnyFundedSupersededGen keeps NN#3 blocking the next
+	// rotation until the sweep confirms. No output is indexed; the "ms-" record and the
+	// pending "d-" spend are written; FeeSupply is untouched.
+	regBuild, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
 	require.NoError(t, err)
-	require.Len(t, reg, 1, "one UTXO after the sweep (the successor output)")
-	require.Less(t, reg[0].Id, uint16(constants.UtxoConfirmedPoolStart), "sweep output is unconfirmed until confirmSpend")
-	require.Equal(t, uint32(1), utxoGenerationForId(t, &ct, contractId, reg[0].Id), "sweep output tagged the successor gen (C-B)")
-	require.Less(t, reg[0].Amount, amount, "sweep output = deposit minus the miner fee")
-	require.Greater(t, reg[0].Amount, int64(0))
+	require.Len(t, regBuild, 1, "the gen-0 input stays in the registry until the sweep confirms (delete-at-confirm)")
+	require.GreaterOrEqual(t, regBuild[0].Id, uint16(constants.UtxoConfirmedPoolStart), "the un-swept input is still CONFIRMED")
+	require.Equal(t, amount, regBuild[0].Amount, "the input is untouched (full deposit) — nothing indexed at build")
+	require.Equal(t, uint32(0), utxoGenerationForId(t, &ct, contractId, regBuild[0].Id), "still the gen-0 input")
+	require.NotEmpty(t, ct.StateGet(contractId, constants.MigrationSweepPrefix+sweepTxId), "the sweep record is written at build")
+	require.NotEmpty(t, ct.StateGet(contractId, constants.TxSpendsPrefix+sweepTxId), "the sweep is recorded as a pending spend")
+	supplyBuild, err := mapping.UnmarshalSupply([]byte(ct.StateGet(contractId, constants.SupplyKey)))
+	require.NoError(t, err)
+	require.Equal(t, int64(100000), supplyBuild.FeeSupply, "FeeSupply is NOT debited at build (deferred to confirm)")
 
-	// A pending sweep tx is recorded so confirmSpend can promote its output.
-	require.NotEmpty(t, ct.StateGet(contractId, constants.TxSpendsRegistryKey), "sweep recorded as a pending spend")
-
-	// S2.3 guard: a second migrate BEFORE the sweep confirms must NOT finalize gen-0 to
-	// inactive — the pending sweep is still in flight (conservative reorg guard).
+	// A second migrate BEFORE the sweep confirms selects nothing — the only gen-0 UTXO is
+	// committed to the in-flight sweep (excluded), so no double-sweep is built.
 	r2 := callKeyAction(t, &ct, contractId, owner, "migrateVault", []byte(""))
 	require.Empty(t, r2.Err)
 	require.Contains(t, r2.Ret, "nothing to migrate")
 	drainingVaults, _, _ := loadVaults(t, &ct, contractId)
 	require.Equal(t, mapping.VaultStatusDraining, drainingVaults[0].Status, "gen-0 stays draining while its sweep is pending")
+
+	// Confirm the sweep: the atomic swap runs — the gen-0 input is deleted, the sweep
+	// output is indexed CONFIRMED and tagged gen-1, the reserved miner fee is debited, and
+	// the "ms-"/"d-" records are cleared.
+	cr := confirmMigrationSweep(t, &ct, contractId, owner, sweepTxId, 101)
+	require.True(t, cr.Success, cr.ErrMsg)
+
+	regDone, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
+	require.NoError(t, err)
+	require.Len(t, regDone, 1, "one UTXO after confirm (the successor output)")
+	require.GreaterOrEqual(t, regDone[0].Id, uint16(constants.UtxoConfirmedPoolStart), "the sweep output is CONFIRMED after confirmSpend")
+	require.Equal(t, uint32(1), utxoGenerationForId(t, &ct, contractId, regDone[0].Id), "sweep output tagged the successor gen (C-B)")
+	require.Less(t, regDone[0].Amount, amount, "sweep output = deposit minus the miner fee")
+	require.Greater(t, regDone[0].Amount, int64(0))
+	require.Empty(t, ct.StateGet(contractId, constants.MigrationSweepPrefix+sweepTxId), "the sweep record is deleted at confirm")
+
+	// Conservation: FeeSupply dropped by EXACTLY the swept miner fee (input − output).
+	supplyDone, err := mapping.UnmarshalSupply([]byte(ct.StateGet(contractId, constants.SupplyKey)))
+	require.NoError(t, err)
+	require.Equal(t, int64(100000)-(amount-regDone[0].Amount), supplyDone.FeeSupply, "FeeSupply debited by exactly the miner fee at confirm")
+
+	// gen-0 is now truly drained (its input is gone) → the next rotation is unblocked.
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err,
+		"the next rotation is allowed once the sweep has CONFIRMED and gen-0 is drained (NN#3)")
 }
 
 // TestMigrateVaultEmptyGenStaysRetiring — S2-close F-1 fix: a superseded generation with
@@ -260,12 +340,23 @@ func TestDoubleRotationRequiresDrain(t *testing.T) {
 	require.NotEmpty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err,
 		"second rotation must be refused while gen-0 holds funds (NN#3)")
 
-	// Drain gen-0.
-	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "migrateVault", []byte("")).Err)
+	// Build the gen-0 drain sweep. BRK-1 (delete-at-confirm): migrateVault only DEFERS the
+	// input deletion to confirmSpend, so gen-0 still holds its UTXO right after the build →
+	// the second rotation STAYS blocked. This is the stronger, safer NN#3: a gen is
+	// "drained" only when its sweep CONFIRMS on L1, never merely when it is built.
+	dr := callKeyAction(t, &ct, contractId, owner, "migrateVault", []byte(""))
+	require.Empty(t, dr.Err)
+	sweepTxId := dr.Ret
+	require.NotEmpty(t, sweepTxId)
+	require.NotEmpty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err,
+		"second rotation must STAY refused while gen-0's sweep is only built, not yet confirmed (BRK-1)")
+
+	// Confirm the sweep → gen-0's input is deleted → gen-0 is truly drained.
+	require.True(t, confirmMigrationSweep(t, &ct, contractId, owner, sweepTxId, 101).Success)
 
 	// Now the second rotation is ALLOWED (gen-0 drained → gen-2 minted).
 	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err,
-		"second rotation allowed once gen-0 is drained (NN#3)")
+		"second rotation allowed once gen-0's sweep has CONFIRMED (NN#3)")
 	vaults, _, activeGen := loadVaults(t, &ct, contractId)
 	require.Len(t, vaults, 3, "gen-0 (draining) + gen-1 (active) + gen-2 (pending)")
 	require.Equal(t, mapping.VaultStatusDraining, vaults[0].Status)

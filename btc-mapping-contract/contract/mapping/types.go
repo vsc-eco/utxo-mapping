@@ -125,6 +125,21 @@ type VaultRegistry []Vault
 // Serialised as packed binary: 32 raw bytes per entry.
 type TxSpendsRegistry []string
 
+// MigrationSweep is the per-sweep record (state key "ms-"+txId) that BRK-1's
+// delete-at-confirm migration writes at BUILD and settles+deletes at CONFIRM. It
+// carries exactly what the confirm-side atomic swap needs: the input UTXO ids to
+// delete, the reserved miner fee to debit, and the successor address+generation to
+// index the swept output(s) to. Trusted at confirm (not re-derived): the SPV-proven
+// txid commits to the outputs, so the tx provably pays SuccessorAddress and its output
+// must carry the build-time SuccessorGen to be spendable. Hand-packed binary
+// (MarshalMigrationSweep); SuccessorAddress is the record tail (no length prefix).
+type MigrationSweep struct {
+	InputIds         []uint16
+	BtcFee           int64
+	SuccessorAddress string
+	SuccessorGen     uint32
+}
+
 type MappingType string
 
 const (

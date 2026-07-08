@@ -31,6 +31,13 @@ const TxSpendsRegistryKey = "p"
 const TxSpendsPrefix = "d" + DirPathDelimiter
 const SupplyKey = "s"
 
+// MigrationSweepPrefix keys the per-sweep migration record (BRK-1 delete-at-confirm).
+// Key: "ms-"+txId. HandleMigrateVault writes it at BUILD (deferring the settle); a
+// migration sweep touches NEITHER the UTXO set nor supply until HandleConfirmSpend
+// consumes+deletes this record and performs the atomic swap (index the swept output,
+// delete the swept inputs, debit the reserved miner fee) under the sweep's SPV proof.
+const MigrationSweepPrefix = "ms" + DirPathDelimiter
+
 // Vault registry (S1 dual-generation vault state model — see S1-DESIGN.md).
 // Append-only list of key generations; a new generation appends a PENDING entry
 // and existing entries only status-transition (pubkeys NEVER mutated → preserves

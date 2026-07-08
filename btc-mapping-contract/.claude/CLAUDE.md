@@ -101,7 +101,7 @@ Keys are defined in `contract/constants/constants.go`. The separator between pre
 | `createKey` | — | Owner | Create a new TSS key |
 | `renewKey` | — | Owner | Renew the TSS key |
 | `registerRouter` | `RouterContract{router_contract}` | Owner | Register the DEX router contract ID |
-| `pause` | — | Owner | Pause all token operations (map, unmap, transfer, approve, confirmSpend) |
+| `pause` | — | Owner | Pause token operations (map, unmap, transfer, approve; and confirmSpend EXCEPT for an already-pending spend — BRK-4b) |
 | `unpause` | — | Owner | Resume token operations after pause |
 
 ### Key Design Patterns
@@ -128,7 +128,7 @@ TinyGo/WASM environment restrictions (enforced throughout contract code):
 The contract does NOT enforce a minimum confirmation depth in code. Instead, the **oracle controls confirmation depth** by only submitting block headers to `addBlocks` after they reach sufficient depth (currently 2 confirmations). This is by design:
 
 - The oracle waits for N confirmations before submitting a block, so by the time a `map` proof is possible, the block is N+1 deep.
-- Pruned block headers (beyond `MaxBlockRetention = 101`) can't be used for proofs — `verifyTransaction` fails when the header is missing from state.
+- Pruned block headers (beyond `MaxBlockRetention = 4608`) can't be used for proofs — `verifyTransaction` fails when the header is missing from state. Retention is >= the CSV backup timelock (4320) + reorg margin so a CSV-backup recovery / pause-outlasting pending sweep stays SPV-verifiable (brick council BRK-4a).
 - This avoids adding on-chain confirmation tracking complexity and keeps the contract stateless with respect to chain tip awareness.
 
 If the oracle is misconfigured to submit 0-confirmation blocks, deposits could be reversed by a Bitcoin reorg. Operators must ensure the oracle's confirmation threshold is appropriate for the value being bridged.
@@ -145,7 +145,7 @@ TSS public keys (primary and backup) are **immutable on mainnet** once registere
 
 #### Pause mechanism
 
-The contract owner can call `pause` to halt all token operations (map, unmap, transfer, approve, confirmSpend). Admin operations (addBlocks, seedBlocks, replaceBlock) and `getInfo` remain available while paused. Call `unpause` to resume.
+The contract owner can call `pause` to halt token operations (map, unmap, transfer, approve). Admin operations (addBlocks, seedBlocks, replaceBlock) and `getInfo` remain available while paused. Call `unpause` to resume. EXCEPTION (brick council BRK-4b): a `confirmSpend` of an ALREADY-PENDING spend (in the TxSpends registry) is EXEMPT from pause — it only reconciles an already-authorized, already-broadcast spend (no new funds move), so pausing it would merely strand an in-flight migration/withdrawal; a confirmSpend of any other tx stays pause-gated.
 
 #### Fee rate safety
 

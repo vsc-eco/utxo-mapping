@@ -24,11 +24,20 @@ import (
 // the cap (so the caller drains it in successive tranches — the C-F brick fix). It is
 // confirmed-only (THORChain guard: unconfirmed change from an in-flight tranche is swept
 // once it confirms). Deterministic: iterates the registry (cs.UtxoList) in slice order.
-func (cs *ContractState) getMigrationInputs(gen uint32) (inputIds []uint16, total int64, moreRemain bool, err error) {
+func (cs *ContractState) getMigrationInputs(gen uint32, excluded map[uint16]struct{}) (inputIds []uint16, total int64, moreRemain bool, err error) {
 	for i := range cs.UtxoList {
 		entry := cs.UtxoList[i]
 		if entry.Id < constants.UtxoConfirmedPoolStart {
 			continue // confirmed-only
+		}
+		// BRK-1 (delete-at-confirm): the swept inputs of an in-flight sweep STAY in the
+		// registry until that sweep confirms, so they must be EXCLUDED here — otherwise a
+		// later tranche or a retry would re-select and double-sweep an input already
+		// committed to a pending sweep (an unsatisfiable double-spend that could never
+		// confirm, stranding the tranche). The exclusion set is the union of every
+		// pending "ms-" record's InputIds (built once in pendingMigrationState).
+		if _, inflight := excluded[entry.Id]; inflight {
+			continue
 		}
 		utxo, lerr := loadUtxo(entry.Id)
 		if lerr != nil {
@@ -201,21 +210,32 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 		return "", ce.WrapContractError(ce.ErrTransaction, err, "error deriving successor vault address")
 	}
 
-	inputIds, total, moreRemain, err := cs.getMigrationInputs(targetGen)
+	// BRK-1 (delete-at-confirm): scan the in-flight migration sweeps ONCE — their
+	// committed inputs must be EXCLUDED from this tranche's selection (an input stays in
+	// the registry until its sweep confirms, so without this a retry/tranche re-selects and
+	// double-sweeps it), and the SUM of their reserved fees feeds the build-time fee-reserve
+	// check below.
+	excluded, pendingFeeSum, err := cs.pendingMigrationState()
+	if err != nil {
+		return "", err
+	}
+
+	inputIds, total, moreRemain, err := cs.getMigrationInputs(targetGen, excluded)
 	if err != nil {
 		return "", err
 	}
 	if len(inputIds) == 0 {
-		// No confirmed UTXOs to sweep for this gen. It STAYS retiring/draining — still
-		// fund-holding, so its address stays matchable for late deposits and its key keeps
-		// renewing (never-brick). The draining→inactive→purged finalization is S5's job:
-		// it needs the SPV zero-L1 proof + grace≥reorg AND the match-until-purged /
-		// revert-on-late-deposit handling (S1-DESIGN §5a). Producing INACTIVE here (in S2,
-		// before that consumer exists) would drop the gen out of isFundHoldingStatus and
-		// reopen the C-2/NR-4 late-deposit loss — the S2-close council F-1 (fail-safe +
-		// state-machine + trust-boundary). NN#3 (enforced in createKey) gates the next
-		// rotation on every superseded gen being drained, so an empty draining gen never
-		// blocks progress even though it is not marked inactive here.
+		// No selectable confirmed UTXOs for this gen — either it holds none, or every one
+		// it holds is already committed to a pending sweep (delete-at-confirm keeps them in
+		// the registry until confirmation). It STAYS retiring/draining — still fund-holding,
+		// so its address stays matchable for late deposits and its key keeps renewing
+		// (never-brick). The draining→inactive→purged finalization is S5's job: it needs the
+		// SPV zero-L1 proof + grace≥reorg AND the match-until-purged / revert-on-late-deposit
+		// handling (S1-DESIGN §5a). Producing INACTIVE here (in S2, before that consumer
+		// exists) would drop the gen out of isFundHoldingStatus and reopen the C-2/NR-4
+		// late-deposit loss — the S2-close council F-1. NN#3 (enforced in createKey) gates
+		// the next rotation on every superseded gen being drained, so an empty draining gen
+		// never blocks progress even though it is not marked inactive here.
 		return "nothing to migrate for generation " + strconv.FormatUint(uint64(targetGen), 10), nil
 	}
 
@@ -228,38 +248,43 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 		return "", err
 	}
 
+	// BRK-1 fee RESERVE CHECK (pre-mortem F-FEE/C-1 — all 3 lenses HIGH): the FeeSupply
+	// debit is DEFERRED to confirmSpend's atomic swap. A debit at BUILD would settle a fee
+	// for a sweep that may never confirm; a debit at CONFIRM *without* this guarantee could
+	// abort a sweep that already moved on L1 → permanent registry⇔L1 divergence + a wedged
+	// sweep that re-aborts forever. Instead CHECK here that the reserve covers every
+	// already-pending sweep's fee PLUS this one. Because each confirm debits exactly its
+	// recorded fee and this check runs at every build, it maintains the invariant
+	// FeeSupply >= Σ(pending sweep fees) — so every deferred confirm-side debit is
+	// GUARANTEED to succeed (never a post-L1 brick). Fail-safe: an insufficient reserve
+	// aborts BEFORE signing/broadcast (the gen keeps its UTXOs, fully recoverable). This
+	// preserves the X-2 solvency property (migration fees never erode user principal /
+	// ActiveSupply ≥ UserSupply) as a can't-START gate rather than the old can't-finish
+	// debit. NOTE: FeeSupply is NOT mutated here — the invariant Σ(UTXO) == ActiveSupply +
+	// FeeSupply therefore holds trivially at build (nothing settled).
+	feeNeeded, err := safeAdd64(pendingFeeSum, btcFee)
+	if err != nil {
+		return "", ce.WrapContractError(ce.ErrArithmetic, err, "migration pending-fee sum overflow")
+	}
+	if cs.Supply.FeeSupply < feeNeeded {
+		return "", ce.NewContractError(ce.ErrBalance, "insufficient fee reserve to cover pending and current migration sweeps")
+	}
+
 	// Sign each input with its (retiring) generation's keyId.
 	signingData, err := signSpendTransaction(tx, inputUtxos, witnessScripts)
 	if err != nil {
 		return "", ce.WrapContractError(ce.ErrTransaction, err, "error signing migration sweep")
 	}
 
-	// Index the sweep output as an UNCONFIRMED UTXO tagged the SUCCESSOR gen, so once it
-	// confirms it lands in the successor's registry (the C-B fix: a sweep pays the
-	// successor P2WSH, which the withdrawal-change indexer would otherwise never see).
-	sweepOutputs, err := indexUnconfimedOutputs(tx, successorAddress, cs.NetworkParams, successorGen)
-	if err != nil {
-		return "", err
-	}
-	for _, utxo := range sweepOutputs {
-		if utxo == nil {
-			continue
-		}
-		internalId, aerr := cs.allocateUnconfirmedId()
-		if aerr != nil {
-			return "", aerr
-		}
-		cs.UtxoList = append(cs.UtxoList, UtxoRegistryEntry{Id: internalId, Amount: utxo.Amount})
-		saveUtxo(internalId, utxo)
-	}
-
-	// Remove the swept input UTXOs from the registry + state.
-	for _, inputId := range inputIds {
-		cs.UtxoList = slices.DeleteFunc(cs.UtxoList, func(e UtxoRegistryEntry) bool { return e.Id == inputId })
-		sdk.StateDeleteObject(getUtxoKey(inputId))
-	}
-
-	// Record the pending sweep so confirmSpend can promote its output on confirmation.
+	// Record the pending sweep. Under BRK-1 (delete-at-confirm) BUILD settles NOTHING: the
+	// sweep output is NOT indexed, the swept inputs are NOT deleted, and FeeSupply is NOT
+	// debited here — all three happen ATOMICALLY in HandleConfirmSpend (settleMigrationSweep)
+	// under the sweep's SPV proof. Keeping the inputs in the registry keeps
+	// AnyFundedSupersededGen true, so NN#3 blocks the next rotation until this sweep
+	// confirms (guard-5 fix + A-F2 closed for FREE — the successor stays the active gen for
+	// the whole pending window, matching the node's output-scoped signing check). The "d-"
+	// signing record + TxSpendsList entry are written exactly as before, so the node side is
+	// UNCHANGED (it reads only "p"/"d-", never "ms-").
 	signingBytes, err := MarshalSigningData(signingData)
 	if err != nil {
 		return "", ce.WrapContractError(ce.ErrJson, err, "error marshalling migration signing data")
@@ -267,26 +292,13 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 	txId := tx.TxID()
 	sdk.StateSetObject(constants.TxSpendsPrefix+txId, string(signingBytes))
 	cs.TxSpendsList = append(cs.TxSpendsList, txId)
-
-	// X-2 fix (S2-close money-math + trust-boundary): fund the migration miner fee from
-	// FeeSupply (the protocol reserve accrued from unmap vscFees), NOT from ActiveSupply,
-	// so the internal sweep is exactly Supply-neutral to USER backing and can NEVER erode
-	// the solvency relation ActiveSupply ≥ UserSupply. The invariant Σ(UTXO) == ActiveSupply
-	// + FeeSupply is preserved (Σ(UTXO) drops by btcFee via the sweep; FeeSupply drops by
-	// btcFee here). If the reserve can't cover the fee, ABORT (fail-safe: the gen keeps its
-	// UTXOs, recoverable) rather than socialize a principal loss onto the last withdrawer —
-	// accumulate fees / subsidize the reserve first. safeSubtract64 catches int64 wrap; the
-	// explicit < 0 check catches below-zero (money-math F-2). (A rotation fee charged to
-	// users, or an explicit reserve subsidy, is the fuller coverage model; this is the
-	// minimal solvency-PRESERVING version — it never lets the books lie.)
-	newFee, err := safeSubtract64(cs.Supply.FeeSupply, btcFee)
-	if err != nil {
-		return "", ce.WrapContractError(ce.ErrArithmetic, err, "migration fee arithmetic")
+	sweepRecord := &MigrationSweep{
+		InputIds:         inputIds,
+		BtcFee:           btcFee,
+		SuccessorAddress: successorAddress,
+		SuccessorGen:     successorGen,
 	}
-	if newFee < 0 {
-		return "", ce.NewContractError(ce.ErrBalance, "insufficient fee reserve to fund the migration sweep")
-	}
-	cs.Supply.FeeSupply = newFee
+	sdk.StateSetObject(constants.MigrationSweepPrefix+txId, string(MarshalMigrationSweep(sweepRecord)))
 
 	// First tranche: retiring → draining (a sweep is now in flight). Idempotent for a gen
 	// already draining. Never touches keys or any other generation.
@@ -301,4 +313,125 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 		"|fee=" + strconv.FormatInt(btcFee, 10) +
 		"|more=" + strconv.FormatBool(moreRemain))
 	return txId, nil
+}
+
+// pendingMigrationState scans the in-flight migration sweeps (BRK-1: the "ms-"+txId
+// records, located by walking cs.TxSpendsList — every in-flight sweep is also a pending
+// spend) and returns (1) the set of input UTXO ids already committed to a pending sweep
+// and (2) the SUM of those sweeps' reserved miner fees. The exclusion set stops a later
+// tranche/retry from re-selecting an in-flight input (a double-sweep); the fee sum feeds
+// the build-time reserve check so every deferred confirm-side fee debit is guaranteed to
+// succeed. FAIL-CLOSED: a record that cannot be decoded aborts the whole scan (never
+// silently drop an exclusion or under-count the reserved fee). Deterministic: iterates
+// the TxSpends slice in order + keyed loads, no map ranging.
+func (cs *ContractState) pendingMigrationState() (map[uint16]struct{}, int64, error) {
+	excluded := make(map[uint16]struct{})
+	var feeSum int64
+	for _, txId := range cs.TxSpendsList {
+		raw := sdk.StateGetObject(constants.MigrationSweepPrefix + txId)
+		if raw == nil || *raw == "" {
+			continue // an ordinary unmap, not a migration sweep
+		}
+		rec, err := UnmarshalMigrationSweep([]byte(*raw))
+		if err != nil {
+			return nil, 0, ce.NewContractError(ce.ErrStateAccess, "error decoding migration sweep record: "+err.Error())
+		}
+		for _, id := range rec.InputIds {
+			excluded[id] = struct{}{}
+		}
+		feeSum, err = safeAdd64(feeSum, rec.BtcFee)
+		if err != nil {
+			return nil, 0, ce.WrapContractError(ce.ErrArithmetic, err, "pending migration fee sum overflow")
+		}
+	}
+	return excluded, feeSum, nil
+}
+
+// settleMigrationSweep performs the atomic swap that HandleMigrateVault deferred (BRK-1
+// delete-at-confirm), called from HandleConfirmSpend under the sweep's already-verified
+// SPV proof: index the confirmed sweep's output(s) to the successor, delete the swept
+// inputs, and debit the reserved miner fee. Conservation holds at this SINGLE committed
+// step — Σ(UTXO) drops by (Σ inputs − Σ outputs) == BtcFee and FeeSupply drops by BtcFee,
+// so Σ(UTXO) == ActiveSupply + FeeSupply is preserved. The record is TRUSTED, not
+// re-derived (the SPV-proven txid commits to the outputs → the tx provably pays
+// rec.SuccessorAddress and its output must carry the build-time rec.SuccessorGen to be
+// spendable); a conservation ASSERT (>=1 output AND Σ outputs == Σ inputs − fee) guards a
+// corrupt record. Fail-closed throughout; idempotent (a replay finds the inputs already
+// gone and aborts before mutating).
+func (cs *ContractState) settleMigrationSweep(msgTx *wire.MsgTx, rec *MigrationSweep) error {
+	// Sum the swept input amounts from the registry (still present — delete-at-confirm).
+	// A missing input means the sweep already settled (idempotent replay) or the record is
+	// corrupt → fail closed BEFORE any mutation, never double-settle.
+	var inputTotal int64
+	for _, id := range rec.InputIds {
+		found := false
+		for i := range cs.UtxoList {
+			if cs.UtxoList[i].Id == id {
+				var aerr error
+				inputTotal, aerr = safeAdd64(inputTotal, cs.UtxoList[i].Amount)
+				if aerr != nil {
+					return ce.WrapContractError(ce.ErrArithmetic, aerr, "migration input total overflow")
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			return ce.NewContractError(ce.ErrStateAccess, "migration sweep input missing from registry")
+		}
+	}
+
+	// Index the sweep output(s) to the successor (trusting the recorded successor).
+	outUtxos, err := indexMigrationOutputs(msgTx, rec.SuccessorAddress, cs.NetworkParams, rec.SuccessorGen)
+	if err != nil {
+		return err
+	}
+	if len(outUtxos) == 0 {
+		return ce.NewContractError(ce.ErrTransaction, "migration sweep confirmed with no output to the successor")
+	}
+	var outputTotal int64
+	for _, u := range outUtxos {
+		outputTotal, err = safeAdd64(outputTotal, u.Amount)
+		if err != nil {
+			return ce.WrapContractError(ce.ErrArithmetic, err, "migration output total overflow")
+		}
+	}
+	// Conservation ASSERT (adversarial pre-mortem): outputs == inputs − recorded fee.
+	expected, err := safeSubtract64(inputTotal, rec.BtcFee)
+	if err != nil {
+		return ce.WrapContractError(ce.ErrArithmetic, err, "migration conservation arithmetic")
+	}
+	if outputTotal != expected {
+		return ce.NewContractError(ce.ErrTransaction, "migration sweep conservation mismatch (outputs != inputs - fee)")
+	}
+
+	// Index the sweep output(s) as CONFIRMED.
+	for _, u := range outUtxos {
+		newId, aerr := cs.allocateConfirmedId()
+		if aerr != nil {
+			return aerr
+		}
+		cs.UtxoList = append(cs.UtxoList, UtxoRegistryEntry{Id: newId, Amount: u.Amount})
+		saveUtxo(newId, u)
+	}
+
+	// Delete the swept inputs from the registry + state.
+	for _, id := range rec.InputIds {
+		cs.UtxoList = slices.DeleteFunc(cs.UtxoList, func(e UtxoRegistryEntry) bool { return e.Id == id })
+		sdk.StateDeleteObject(getUtxoKey(id))
+	}
+
+	// Debit the reserved miner fee. Guaranteed >= 0 by the build-time reserve invariant
+	// (FeeSupply >= Σ(pending fees)); the checks below are defense-in-depth for a corrupt
+	// state, fail-closed rather than letting FeeSupply go negative.
+	newFee, err := safeSubtract64(cs.Supply.FeeSupply, rec.BtcFee)
+	if err != nil {
+		return ce.WrapContractError(ce.ErrArithmetic, err, "migration fee debit arithmetic")
+	}
+	if newFee < 0 {
+		return ce.NewContractError(ce.ErrBalance, "migration fee debit would underflow the fee reserve")
+	}
+	cs.Supply.FeeSupply = newFee
+
+	return nil
 }
