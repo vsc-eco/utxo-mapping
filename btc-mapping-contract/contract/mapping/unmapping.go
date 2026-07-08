@@ -228,6 +228,37 @@ func (cs *ContractState) calculateSegwitFee(baseSize int64, witnessScripts map[i
 	return fee, nil
 }
 
+// addInputsWithWitnesses adds each UTXO as an input on tx and returns the per-input
+// witness script built from THAT input's generation keys (S1.2), so a mixed-generation
+// spend or a migration sweep signs each input against its OWN vault's script. Shared by
+// the withdrawal builder (buildSpendTransaction) and the migration sweep builder
+// (buildMigrationTransaction) so the two can NEVER diverge. Aborts if a UTXO's
+// generation is absent from a POPULATED vault list — the keys fall back but the keyId
+// (VaultKeyId) does NOT, so a wrong-gen witness + a "mainv<N>" signature would be an
+// unsatisfiable/unspendable tx (council F2). Fallback is only safe when the vault list
+// is empty (pre-fold — every UTXO is gen-0/legacy).
+func (cs *ContractState) addInputsWithWitnesses(tx *wire.MsgTx, inputs []*Utxo) (map[int][]byte, error) {
+	witnessScripts := make(map[int][]byte)
+	for index, utxo := range inputs {
+		txHash, err := chainhash.NewHashFromStr(utxo.TxId)
+		if err != nil {
+			return nil, err
+		}
+		tx.AddTxIn(wire.NewTxIn(wire.NewOutPoint(txHash, utxo.Vout), nil, nil))
+
+		inPrimary, inBackup, genFound := cs.vaultKeysForGeneration(utxo.Generation)
+		if !genFound && len(cs.Vaults) > 0 {
+			return nil, ce.NewContractError(ce.ErrTransaction, "utxo references a vault generation not in the vault list")
+		}
+		_, witnessScript, err := createP2WSHAddressWithBackup(inPrimary, inBackup, utxo.Tag, cs.NetworkParams)
+		if err != nil {
+			return nil, err
+		}
+		witnessScripts[index] = witnessScript
+	}
+	return witnessScripts, nil
+}
+
 // buildSpendTransaction constructs the Bitcoin withdrawal transaction and
 // computes the miner fee, but does NOT request TSS signing. Call
 // signSpendTransaction after all validation checks pass.
@@ -240,41 +271,11 @@ func (cs *ContractState) buildSpendTransaction(
 ) (*wire.MsgTx, map[int][]byte, int64, error) {
 	tx := wire.NewMsgTx(wire.TxVersion)
 
-	// create all witness scripts now for better size estimation
-	witnessScripts := make(map[int][]byte)
-	for index, utxo := range inputs {
-		txHash, err := chainhash.NewHashFromStr(utxo.TxId)
-		if err != nil {
-			return nil, nil, 0, err
-		}
-
-		outPoint := wire.NewOutPoint(txHash, utxo.Vout)
-		txIn := wire.NewTxIn(outPoint, nil, nil)
-		tx.AddTxIn(txIn)
-
-		// S1.2: build the witness with the pubkeys of the generation that LOCKED this
-		// input (not just the active gen), so a mixed-generation spend / migration
-		// sweep signs each input against its OWN vault's script.
-		inPrimary, inBackup, genFound := cs.vaultKeysForGeneration(utxo.Generation)
-		// Council F2 (3-lens): the keys fall back but the keyId (vaultKeyId) does NOT,
-		// so a UTXO whose generation is absent from a POPULATED vault list would get a
-		// witness from the wrong gen + a signature from "mainv<N>" → an unsatisfiable,
-		// unspendable tx. ABORT instead. Fallback is only safe when the list is empty
-		// (pre-fold — every UTXO is gen-0/legacy).
-		if !genFound && len(cs.Vaults) > 0 {
-			return nil, nil, 0, ce.NewContractError(ce.ErrTransaction, "utxo references a vault generation not in the vault list")
-		}
-		_, witnessScript, err := createP2WSHAddressWithBackup(
-			inPrimary,
-			inBackup,
-			utxo.Tag, // already []byte
-			cs.NetworkParams,
-		)
-
-		if err != nil {
-			return nil, nil, 0, err
-		}
-		witnessScripts[index] = witnessScript
+	// create all witness scripts now for better size estimation (per-input generation
+	// keys — shared with the migration sweep builder via addInputsWithWitnesses)
+	witnessScripts, err := cs.addInputsWithWitnesses(tx, inputs)
+	if err != nil {
+		return nil, nil, 0, err
 	}
 
 	destAddr, err := btcutil.DecodeAddress(destAddress, cs.NetworkParams)

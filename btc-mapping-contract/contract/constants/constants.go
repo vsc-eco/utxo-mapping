@@ -88,6 +88,14 @@ const BlockPrefix = "b" + DirPathDelimiter
 // overflow or unreasonable withdrawal fees from a misconfigured oracle.
 const MaxBaseFeeRate int64 = 1000
 
+// MaxMigrationInputs bounds the number of UTXOs a single migration sweep tranche
+// consumes (S2). Each input needs its own TSS signature and adds ~150 vB; an
+// unbounded sweep-all of a large retiring vault would blow the TSS-signing budget
+// and exceed Bitcoin standardness (~100kvB), so the sweep can never be built or
+// relayed (the C-F brick). A retiring vault with more UTXOs than this is drained in
+// successive tranches. Conservative — the live vault holds only a handful of UTXOs.
+const MaxMigrationInputs = 100
+
 // MaxBlockRetention is the number of recent block headers to keep.
 // Older headers are pruned during addBlocks to prevent unbounded state growth.
 // keep a week worth of headers to allow addresses to be registered after the fact

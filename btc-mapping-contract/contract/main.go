@@ -856,6 +856,39 @@ func DiscardPendingKey(_ *string) *string {
 	return mapping.StrPtr("discarded pending generation " + strconv.FormatUint(uint64(discarded), 10))
 }
 
+//go:wasmexport migrateVault
+func MigrateVault(_ *string) *string {
+	// leave this as owner always
+	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
+		ce.CustomAbort(
+			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
+		)
+	}
+
+	// S2: sweep one tranche of a retiring/draining generation's confirmed UTXOs to the
+	// successor (active) vault. Deliberately NOT pause-gated — like the key ceremony,
+	// migration is part of rotation/recovery and must be able to complete while token ops
+	// are paused; NN#1 constrains the sweep to pay ONLY the consensus-derived successor,
+	// so a paused (or compromised-owner) migration cannot redirect funds.
+	publicKeys, err := loadPublicKeys()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	contractState, err := mapping.IntializeContractState(publicKeys, NetworkMode)
+	if err != nil {
+		ce.CustomAbort(ce.Prepend(err, "error initializing contract state"))
+	}
+	result, err := contractState.HandleMigrateVault()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	err = contractState.SaveToState()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	return mapping.StrPtr(result)
+}
+
 //go:wasmexport registerRouter
 func RegisterRouter(input *string) *string {
 	env := sdk.GetEnv()

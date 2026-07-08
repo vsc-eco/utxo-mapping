@@ -27,6 +27,75 @@ func utxoGenerationForId(t *testing.T, ct *test_utils.ContractTest, contractId s
 	return u.Generation
 }
 
+// TestMigrateVaultSweepsRetiringGen is the S2 end-to-end proof: after a rotation, a
+// migrateVault sweep moves the RETIRING generation's confirmed UTXO to the SUCCESSOR
+// (active) vault — the input is spent (deleted), the sweep output is indexed UNCONFIRMED
+// and tagged the successor generation (C-B: a sweep pays the successor P2WSH, otherwise
+// invisible to the change indexer), the retiring gen transitions to DRAINING, and only
+// the miner fee leaves ActiveSupply (internal transfer otherwise Supply-neutral).
+func TestMigrateVaultSweepsRetiringGen(t *testing.T) {
+	const instruction = "deposit_to=hive:milo-hpr"
+	const amount = int64(100000)
+	const blockHeight = uint32(100)
+	fixture := buildMapFixture(t, instruction, amount, blockHeight)
+
+	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
+	contractId, owner := "mapping_contract", "hive:milo-hpr"
+	ct.RegisterContract(contractId, owner, ContractWasm)
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
+	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
+	seedActiveGen0(t, &ct, contractId, owner)
+
+	// Deposit to gen-0 (active) → one confirmed gen-0 UTXO.
+	params := mapping.MapParams{
+		TxData: &mapping.VerificationRequest{
+			BlockHeight: blockHeight, RawTxHex: fixture.RawTxHex,
+			MerkleProofHex: fixture.MerkleProofHex, TxIndex: fixture.TxIndex,
+		},
+		Instructions: []string{instruction},
+	}
+	payload, err := tinyjson.Marshal(params)
+	require.NoError(t, err)
+	require.True(t, ct.Call(stateEngine.TxVscCallContract{
+		Self: stateEngine.TxSelf{TxId: "map-dep", BlockId: "block:map", Index: 70, OpIndex: 0,
+			Timestamp: "2025-10-14T00:00:00", RequiredAuths: []string{owner}, RequiredPostingAuths: []string{}},
+		ContractId: contractId, Action: "map", Payload: payload,
+		RcLimit: 100000000, Intents: []contracts.Intent{}, Caller: owner,
+	}).Success)
+
+	// Rotate: gen-0 → retiring, gen-1 → active.
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err)
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "registerPublicKey", regKeyPayload(t, Gen1PrimaryHex, "")).Err)
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "activateKey", []byte("")).Err)
+
+	regBefore, _ := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
+	require.Len(t, regBefore, 1, "one confirmed gen-0 deposit UTXO before migration")
+
+	// Migrate: sweep the retiring gen-0 UTXO to the gen-1 successor.
+	r := callKeyAction(t, &ct, contractId, owner, "migrateVault", []byte(""))
+	require.Empty(t, r.Err, r.ErrMsg)
+
+	// gen-0 → draining, gen-1 still active.
+	vaults, _, activeGen := loadVaults(t, &ct, contractId)
+	require.Equal(t, uint32(1), activeGen)
+	require.Equal(t, mapping.VaultStatusDraining, vaults[0].Status, "retiring gen-0 transitions to draining after a sweep")
+	require.Equal(t, mapping.VaultStatusActive, vaults[1].Status)
+
+	// The gen-0 input is spent; the sweep output is a single UNCONFIRMED UTXO tagged gen-1.
+	reg, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
+	require.NoError(t, err)
+	require.Len(t, reg, 1, "one UTXO after the sweep (the successor output)")
+	require.Less(t, reg[0].Id, uint16(constants.UtxoConfirmedPoolStart), "sweep output is unconfirmed until confirmSpend")
+	require.Equal(t, uint32(1), utxoGenerationForId(t, &ct, contractId, reg[0].Id), "sweep output tagged the successor gen (C-B)")
+	require.Less(t, reg[0].Amount, amount, "sweep output = deposit minus the miner fee")
+	require.Greater(t, reg[0].Amount, int64(0))
+
+	// A pending sweep tx is recorded so confirmSpend can promote its output.
+	require.NotEmpty(t, ct.StateGet(contractId, constants.TxSpendsRegistryKey), "sweep recorded as a pending spend")
+}
+
 // TestMapCreditsRetiringGenDeposit is the S1.4 end-to-end proof (NR-4 / C-2). After a
 // rotation, a deposit that lands on the RETIRING generation's address is still
 // credited to the recipient AND its UTXO is tagged with the retiring generation — so
