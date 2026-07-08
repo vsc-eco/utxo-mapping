@@ -128,6 +128,47 @@ func TestBuildSpendAbortsOnMissingGeneration(t *testing.T) {
 	}
 }
 
+// TestDepositTaggedWithGeneration proves fix C-1: indexOutputs tags a DEPOSIT UTXO
+// with the generation of the address it hit (AddressMetadata.Generation), so after a
+// rotation a gen-1 deposit is recorded gen-1, not the zero value. Without the tag the
+// spend path would resolve gen-0 keys for a gen-1-locked UTXO -> an unspendable
+// witness while the balance is deducted (a fund-loss the council proved live).
+func TestDepositTaggedWithGeneration(t *testing.T) {
+	net := &chaincfg.RegressionNetParams
+	addrStr, _, err := createP2WSHAddressWithBackup(pk(0x51), pk(0x52), nil, net)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr, err := btcutil.DecodeAddress(addrStr, net)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkScript, err := txscript.PayToAddrScript(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The registry says this deposit address belongs to generation 3.
+	ms := &MappingState{
+		ContractState: ContractState{NetworkParams: net, ActiveGen: 3},
+		AddressRegistry: map[string]*AddressMetadata{
+			addrStr: {Instruction: "x", Recipient: "r", Tag: []byte{1, 2}, Type: MapDeposit, Generation: 3},
+		},
+	}
+	tx := wire.NewMsgTx(wire.TxVersion)
+	tx.AddTxOut(wire.NewTxOut(50000, pkScript))
+
+	utxos, err := ms.indexOutputs(tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(utxos) != 1 {
+		t.Fatalf("expected 1 indexed deposit, got %d", len(utxos))
+	}
+	if utxos[0].Generation != 3 {
+		t.Fatalf("deposit UTXO Generation = %d, want 3 (the address's generation)", utxos[0].Generation)
+	}
+}
+
 // TestChangeOutputTaggedWithActiveGen proves fix #2 (council 1a): a change output is
 // tagged with the active generation, not the default 0. Reverting the tag fails this.
 func TestChangeOutputTaggedWithActiveGen(t *testing.T) {

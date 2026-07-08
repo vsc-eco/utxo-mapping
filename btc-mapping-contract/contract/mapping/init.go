@@ -211,6 +211,11 @@ func (cs *ContractState) parseInstructions(
 				Params:      &params,
 				Tag:         hashBytes,
 				Type:        mappingType,
+				// S1.3 C-1: this address is derived from the ACTIVE generation's keys
+				// (publicKeys == cs.PublicKeys, resolved to the active vault), so a
+				// deposit here belongs to the active generation. Tagging it lets the
+				// spend path pick the right per-generation keys after a rotation.
+				Generation: cs.ActiveGen,
 			}
 		}
 		// should error for unsupported instruction?

@@ -97,14 +97,15 @@ const VaultEntrySize = 87
 // the mainnet key-immutability property. See S1-DESIGN.md.
 //
 // Binary layout (VaultEntrySize = 87 bytes/entry, big-endian):
-//   [0:4]   Generation
-//   [4:37]  Primary  (33-byte compressed pubkey)
-//   [37:70] Backup   (33-byte compressed pubkey)
-//   [70]    Status
-//   [71:75] Predecessor      (generation this one succeeds; gen 0 = 0)
-//   [75:79] CreatedHeight
-//   [79:83] ActivatedHeight
-//   [83:87] RetiredHeight
+//
+//	[0:4]   Generation
+//	[4:37]  Primary  (33-byte compressed pubkey)
+//	[37:70] Backup   (33-byte compressed pubkey)
+//	[70]    Status
+//	[71:75] Predecessor      (generation this one succeeds; gen 0 = 0)
+//	[75:79] CreatedHeight
+//	[79:83] ActivatedHeight
+//	[83:87] RetiredHeight
 type Vault struct {
 	Generation      uint32
 	Primary         CompressedPubKey
@@ -140,6 +141,12 @@ type AddressMetadata struct {
 	OutNetwork  NetworkName
 	Tag         []byte // tag (hashed instruction) used to create the address
 	Type        MappingType
+	// Generation is the vault generation whose keys derived this deposit address.
+	// A deposit indexed at this address is tagged with it (S1.3 C-1 fix) so the
+	// spend path later resolves the correct per-generation witness keys + TSS keyId.
+	// Currently every registry address is the active generation's; S1.4 will extend
+	// matching to all non-purged generations, each carrying its own Generation.
+	Generation uint32
 }
 
 // SystemSupply tracks protocol-wide BTC accounting.

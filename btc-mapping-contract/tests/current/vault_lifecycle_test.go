@@ -3,7 +3,9 @@ package current_test
 import (
 	"encoding/binary"
 	"testing"
+	"time"
 
+	"btc-mapping-contract/contract/blocklist"
 	"btc-mapping-contract/contract/constants"
 	"btc-mapping-contract/contract/mapping"
 
@@ -78,19 +80,31 @@ func u32be(n uint32) string {
 	return string(b[:])
 }
 
-// seedTssKeys pre-registers the given keyIds in the mock TSS keystore so that the
-// harness's tss_v2.create_key binding does not trap. (Production TssCreateKey treats
-// a not-yet-existing key as "create it", keyed on mongo.ErrNoDocuments; the mock's
-// FindKey returns a generic error instead, which the binding maps to a runtime
-// error — the documented "createKey may fail in test environment" limitation. With
-// the key pre-seeded FindKey returns nil -> the binding returns "already_exists" ->
-// Ok, and createKey's state mutation runs identically.) createKey ONLY reaches the
-// TSS call after MintNextGeneration succeeds, so refused mints need no seed.
-func seedTssKeys(t *testing.T, ct *test_utils.ContractTest, contractId string, keyIds ...string) {
+// seedTssKey pre-registers a keyId in the mock TSS keystore as an ACTIVE key with a
+// public key. Two reasons:
+//  1. createKey's tss_v2.create_key binding traps unless the key exists (production
+//     keys "create" on mongo.ErrNoDocuments; the mock's FindKey returns a generic
+//     error → runtime error — the documented "createKey may fail in test env" limit).
+//     Pre-seeding → FindKey returns nil → binding returns "already_exists" → Ok.
+//  2. Activation attests the registered primary against TssGetKey(keyId) (D-1). The
+//     seeded PublicKey IS the ceremony output the attestation checks, so a test that
+//     registers a MATCHING key activates, and one that registers a MISMATCH is refused.
+//
+// createKey only reaches the TSS call after MintNextGeneration succeeds, so refused
+// mints need no seed.
+func seedTssKey(t *testing.T, ct *test_utils.ContractTest, contractId, keyId, pubkeyHex string) {
 	t.Helper()
-	for _, k := range keyIds {
-		require.NoError(t, ct.Tss.Keys.SetKey(tss.TssKey{Id: contractId + "-" + k, Algo: tss.EcdsaType}))
-	}
+	require.NoError(t, ct.Tss.Keys.SetKey(tss.TssKey{
+		Id:        contractId + "-" + keyId,
+		Status:    "active",
+		PublicKey: pubkeyHex,
+		Algo:      tss.EcdsaType,
+		// A real keygen (epochs=365) sets a nonzero expiry; mirror it so renewKey
+		// (which refuses to renew an active key with ExpiryEpoch==0) works.
+		Epoch:       1,
+		Epochs:      365,
+		ExpiryEpoch: 366,
+	}))
 }
 
 // seedActiveGen0 puts the contract in the post-fold state: gen-0 ACTIVE with the
@@ -103,7 +117,11 @@ func seedActiveGen0(t *testing.T, ct *test_utils.ContractTest, contractId, owner
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
 	ct.StateSet(contractId, constants.MigrateVersionKey, "1")
-	seedTssKeys(t, ct, contractId, "mainv1", "mainv2")
+	// gen-0's keyId must exist in the keystore so renewKey (D-2) can renew the retiring
+	// gen-0. Plus the successor keys the rotation tests mint + attest at activation.
+	seedTssKey(t, ct, contractId, "main", TestPrimaryPubKeyHex)
+	seedTssKey(t, ct, contractId, "mainv1", Gen1PrimaryHex)
+	seedTssKey(t, ct, contractId, "mainv2", Gen1PrimaryHex) // gen-2 is only minted/discarded, never attested
 	r := callKeyAction(t, ct, contractId, owner, "migrate", []byte(""))
 	require.Empty(t, r.Err, "fold migrate should succeed")
 	vaults, nextGen, activeGen := loadVaults(t, ct, contractId)
@@ -121,7 +139,7 @@ func TestGenesisMintActivate(t *testing.T) {
 	t.Cleanup(func() { ct.DataLayer.Stop() })
 	contractId, owner := "mapping_contract", "hive:milo-hpr"
 	ct.RegisterContract(contractId, owner, ContractWasm)
-	seedTssKeys(t, &ct, contractId, "main") // genesis mints gen-0 ("main")
+	seedTssKey(t, &ct, contractId, "main", TestPrimaryPubKeyHex) // genesis mints gen-0 ("main"); attested at activation
 
 	r := callKeyAction(t, &ct, contractId, owner, "createKey", []byte(""))
 	require.Empty(t, r.Err, "genesis createKey should succeed")
@@ -305,5 +323,130 @@ func TestRenewKeyUsesActiveGen(t *testing.T) {
 
 	r := callKeyAction(t, &ct, contractId, owner, "renewKey", []byte(""))
 	require.Empty(t, r.Err)
-	require.Contains(t, r.Ret, "mainv1", "renewKey must renew the ACTIVE gen's key, not the retiring main")
+	// D-2: renewKey renews EVERY non-purged gen — the active gen-1 AND the retiring
+	// gen-0 (so a retiring key can't expire while it still custodies unswept funds).
+	require.Contains(t, r.Ret, "mainv1", "renewKey must renew the active gen's key")
+	require.Contains(t, r.Ret, "main,", "renewKey must ALSO renew the retiring gen-0 key (D-2)")
+}
+
+// TestCreateKeyBeforeMigrateFolds — B-1 fix: on an UPGRADED funded deploy (legacy
+// flat keys, vault list empty, migrate NOT yet run) a createKey must FOLD the legacy
+// gen-0 first and mint gen-1, NOT treat len(vaults)==0 as genesis and mint a
+// divergent gen-0 that strands every legacy UTXO.
+func TestCreateKeyBeforeMigrateFolds(t *testing.T) {
+	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
+	contractId, owner := "mapping_contract", "hive:milo-hpr"
+	ct.RegisterContract(contractId, owner, ContractWasm)
+
+	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
+	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
+	seedTssKey(t, &ct, contractId, "mainv1", Gen1PrimaryHex) // the successor createKey mints after folding
+
+	r := callKeyAction(t, &ct, contractId, owner, "createKey", []byte(""))
+	require.Empty(t, r.Err, "createKey should fold the legacy gen-0 then mint gen-1")
+
+	vaults, nextGen, activeGen := loadVaults(t, &ct, contractId)
+	require.Len(t, vaults, 2, "gen-0 folded + gen-1 minted (NOT a single divergent gen-0)")
+	require.Equal(t, uint32(0), vaults[0].Generation)
+	require.Equal(t, mapping.VaultStatusActive, vaults[0].Status, "folded gen-0 is active")
+	require.Equal(t, decodeHex(t, TestPrimaryPubKeyHex), string(vaults[0].Primary[:]), "gen-0 folded from the REAL legacy keys, not zeroed")
+	require.Equal(t, uint32(1), vaults[1].Generation)
+	require.Equal(t, mapping.VaultStatusPending, vaults[1].Status)
+	require.Equal(t, uint32(0), vaults[1].Predecessor, "gen-1 bound to the folded active gen-0")
+	require.Equal(t, uint32(2), nextGen)
+	require.Equal(t, uint32(0), activeGen)
+}
+
+// TestGenesisDiscardRemintFreshGen — A-1 fix: a discarded genesis re-mints to a FRESH
+// generation number / keyId, never reusing gen-0 / "main" (which would queue a
+// duplicate keygen for a keyId that may already be live).
+func TestGenesisDiscardRemintFreshGen(t *testing.T) {
+	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
+	contractId, owner := "mapping_contract", "hive:milo-hpr"
+	ct.RegisterContract(contractId, owner, ContractWasm)
+	seedTssKey(t, &ct, contractId, "main", TestPrimaryPubKeyHex)
+	seedTssKey(t, &ct, contractId, "mainv1", Gen1PrimaryHex)
+
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err)
+	vaults, nextGen, _ := loadVaults(t, &ct, contractId)
+	require.Equal(t, uint32(0), vaults[0].Generation)
+	require.Equal(t, uint32(1), nextGen)
+
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "discardPendingKey", []byte("")).Err)
+	vaults, nextGen, _ = loadVaults(t, &ct, contractId)
+	require.Len(t, vaults, 0)
+	require.Equal(t, uint32(1), nextGen, "nextGen not rolled back")
+
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err)
+	vaults, nextGen, _ = loadVaults(t, &ct, contractId)
+	require.Len(t, vaults, 1)
+	require.Equal(t, uint32(1), vaults[0].Generation, "genesis re-mint uses a FRESH gen number, never reuses gen-0/'main'")
+	require.Equal(t, mapping.VaultStatusPending, vaults[0].Status)
+	require.Equal(t, uint32(1), vaults[0].Predecessor, "genesis marker: predecessor == generation (self)")
+	require.Equal(t, uint32(2), nextGen)
+}
+
+// TestActivateRejectsUnattestedKey — D-1 fix: activation attests the registered
+// primary against the TSS ceremony output (TssGetKey). A key that doesn't match —
+// e.g. a self-generated key from a compromised owner — cannot be activated.
+func TestActivateRejectsUnattestedKey(t *testing.T) {
+	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
+	contractId, owner := "mapping_contract", "hive:milo-hpr"
+	ct.RegisterContract(contractId, owner, ContractWasm)
+	seedActiveGen0(t, &ct, contractId, owner) // seeds mainv1 -> Gen1PrimaryHex as the CEREMONY output
+
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err)
+	// Register a primary that does NOT match the ceremony output (a rogue key).
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "registerPublicKey", regKeyPayload(t, TestPrimaryPubKeyHex, TestBackupPubKeyHex)).Err)
+	r := callKeyAction(t, &ct, contractId, owner, "activateKey", []byte(""))
+	require.NotEmpty(t, r.Err, "activate must reject a primary that doesn't attest to the TSS ceremony (D-1)")
+	vaults, _, activeGen := loadVaults(t, &ct, contractId)
+	require.Equal(t, mapping.VaultStatusActive, vaults[0].Status, "gen-0 stays active after refused activation")
+	require.Equal(t, mapping.VaultStatusPending, vaults[1].Status, "gen-1 not activated with a rogue key")
+	require.Equal(t, uint32(0), activeGen)
+}
+
+// TestRegisterRejectsKeyOverwrite — D-1/E fix: a generation's key is set-once
+// immutable; a second registration with a DIFFERENT key is refused (re-submitting the
+// same key stays idempotent).
+func TestRegisterRejectsKeyOverwrite(t *testing.T) {
+	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
+	contractId, owner := "mapping_contract", "hive:milo-hpr"
+	ct.RegisterContract(contractId, owner, ContractWasm)
+	seedActiveGen0(t, &ct, contractId, owner)
+
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err)
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "registerPublicKey", regKeyPayload(t, Gen1PrimaryHex, "")).Err)
+	r := callKeyAction(t, &ct, contractId, owner, "registerPublicKey", regKeyPayload(t, TestPrimaryPubKeyHex, ""))
+	require.NotEmpty(t, r.Err, "overwriting an already-registered generation key must be refused (immutable)")
+	vaults, _, _ := loadVaults(t, &ct, contractId)
+	require.Equal(t, decodeHex(t, Gen1PrimaryHex), string(vaults[1].Primary[:]), "the original key is preserved")
+}
+
+// TestSeedBlocksReseedKeepsVersion — E-1 fix: seedBlocks must NOT jam
+// MigrateVersionKey forward on a deploy that already has a version set, or it would
+// permanently disable the pending migrations. It only sets the version when unset.
+func TestSeedBlocksReseedKeepsVersion(t *testing.T) {
+	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
+	contractId, owner := "mapping_contract", "hive:milo-hpr"
+	ct.RegisterContract(contractId, owner, ContractWasm)
+
+	// UPGRADED-but-unmigrated deploy: migrate version already at "1".
+	ct.StateSet(contractId, constants.MigrateVersionKey, "1")
+
+	payload, err := tinyjson.Marshal(blocklist.SeedBlocksParams{
+		BlockHeader: buildSeedHeader(t, time.Unix(0, 0)),
+		BlockHeight: 100,
+	})
+	require.NoError(t, err)
+	r := callKeyAction(t, &ct, contractId, owner, "seedBlocks", payload)
+	require.Empty(t, r.Err, "seedBlocks should succeed")
+
+	require.Equal(t, "1", ct.StateGet(contractId, constants.MigrateVersionKey),
+		"seedBlocks must not clobber an existing migrate version (E-1) — the v2 migration must still be runnable")
 }

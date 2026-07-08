@@ -57,6 +57,11 @@ func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) ([]Utxo, error) {
 				Amount:   txOut.Value,
 				PkScript: txOut.PkScript,
 				Tag:      ms.AddressRegistry[addr].Tag, // raw bytes, not hex
+				// S1.3 C-1: tag the deposit with the generation whose address it hit,
+				// so the spend path resolves the correct per-generation witness keys +
+				// TSS keyId. Without this, a post-rotation gen-1 deposit recorded as
+				// gen-0 would build an unspendable witness while the balance is deducted.
+				Generation: ms.AddressRegistry[addr].Generation,
 			}
 			outputsForVsc = append(outputsForVsc, utxo)
 		}

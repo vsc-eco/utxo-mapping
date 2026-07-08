@@ -89,8 +89,13 @@ func SeedBlocks(blockSeedInput *string) *string {
 		ce.CustomAbort(err)
 	}
 
-	// Fresh deployments start at the latest migration version so they skip all migrations.
-	sdk.StateSetObject(constants.MigrateVersionKey, constants.LatestMigrateVersion)
+	// Fresh deployments start at the latest migration version so they skip all
+	// migrations. Only set it when UNSET (a truly fresh deploy) — a reseed of an
+	// already-deployed (possibly upgraded-but-unmigrated) contract must NOT jam the
+	// version forward, or it would permanently disable the pending migrations (E-1).
+	if v := sdk.StateGetObject(constants.MigrateVersionKey); v == nil || *v == "" {
+		sdk.StateSetObject(constants.MigrateVersionKey, constants.LatestMigrateVersion)
+	}
 
 	outMsg := "last height: " + strconv.FormatUint(uint64(newLastHeight), 10)
 	return &outMsg
@@ -614,40 +619,18 @@ func Migrate(_ *string) *string {
 
 	// --- v2: S1 dual-generation vault state model. Fold the legacy single-slot
 	// key (pubkey/backupkey) into generation 0 of the append-only vault list.
-	// The legacy slots are KEPT readable (defense); nothing reads the vault list
-	// until S1.2, so this fold is inert + independently verifiable before anything
-	// depends on it. UTXO generation tagging is automatic: pre-S1 UTXO blobs read
-	// as Generation 0 (see UnmarshalUtxo), so no bulk re-encode is needed.
+	// The legacy slots are KEPT readable (defense). The fold is idempotent and
+	// fail-safe (never overwrites a populated list, never folds an absent/short
+	// key). It is EXTRACTED into mapping.FoldLegacyGen0IfNeeded so the key ceremony
+	// (createKey/etc.) runs the SAME fold before minting — that closes the B-1
+	// window where a createKey BEFORE migrate on an upgraded funded deploy would
+	// mint a divergent gen-0 and strand every legacy UTXO. UTXO generation tagging
+	// is automatic: pre-S1 UTXO blobs read as Generation 0 (see UnmarshalUtxo).
 	if curVer < 2 {
-		// FAIL-SAFE: only populate an EMPTY vault list. Never overwrite an existing
-		// one (guards against a re-run — e.g. the string-version compare misfiring
-		// at v10+ — clobbering a real rotation and stranding funds).
-		existingVault := sdk.StateGetObject(constants.VaultRegistryKey)
-		alreadyPopulated := existingVault != nil && len(*existingVault) > 0
-		if !alreadyPopulated {
-			primaryRaw := sdk.StateGetObject(constants.PrimaryPublicKeyStateKey)
-			backupRaw := sdk.StateGetObject(constants.BackupPublicKeyStateKey)
-			// Only fold a genuinely registered 33-byte key pair. A contract with no
-			// key yet gets its gen-0 on first registerPublicKey (S1.3); folding a
-			// bad/absent key would brick address derivation — create nothing instead.
-			if primaryRaw != nil && backupRaw != nil && len(*primaryRaw) == 33 && len(*backupRaw) == 33 {
-				var gen0 mapping.Vault
-				gen0.Generation = 0
-				copy(gen0.Primary[:], *primaryRaw)
-				copy(gen0.Backup[:], *backupRaw)
-				gen0.Status = mapping.VaultStatusActive
-				gen0.Predecessor = 0
-				// Heights left 0: gen-0 predates per-generation height tracking; the
-				// safety-critical RetiredHeight is set only at the retiring transition.
-				sdk.StateSetObject(constants.VaultRegistryKey, string(mapping.MarshalVaultRegistry(mapping.VaultRegistry{gen0})))
-				sdk.StateSetObject(constants.VaultNextGenKey, string([]byte{0, 0, 0, 1}))   // next gen to mint = 1
-				sdk.StateSetObject(constants.VaultActiveGenKey, string([]byte{0, 0, 0, 0})) // gen 0 receives deposits
-				sdk.Log("migrate|v=2|fold_gen0")
-			} else {
-				sdk.Log("migrate|v=2|no_key_skip_fold")
-			}
+		if mapping.FoldLegacyGen0IfNeeded() {
+			sdk.Log("migrate|v=2|fold_gen0")
 		} else {
-			sdk.Log("migrate|v=2|vault_already_populated_skip")
+			sdk.Log("migrate|v=2|no_fold")
 		}
 		sdk.StateSetObject(constants.MigrateVersionKey, "2")
 	}
@@ -724,17 +707,19 @@ func RegisterPublicKey(keyStr *string) *string {
 		backupPtr = &key
 	}
 
-	// S1.3: route the key(s) into the PENDING vault createKey minted. For the genesis
-	// generation this activates gen-0 once both keys are set. targetGen tells us which
-	// generation we filled: gen-0 also writes the legacy flat keys (back-compat / the
-	// empty-list fallback), a later generation leaves the flat gen-0 keys untouched
-	// (the spend path resolves per-generation keys from the vault list).
+	// S1.3: route the key(s) into the PENDING vault createKey minted. For a GENESIS
+	// vault (the bootstrap key, self-referential predecessor) this activates it once
+	// both keys are set + the primary attests to the TSS ceremony. isGenesis (not the
+	// gen NUMBER) tells us whether to also write the legacy flat keys (back-compat /
+	// the empty-list fallback): a rotation successor leaves the flat gen-0 keys
+	// untouched, so the spend path keeps resolving per-generation keys from the vault
+	// list. Keys are set-once immutable inside RegisterVaultKeys.
 	height, _ := blocklist.LastHeightFromState()
-	targetGen, hasPending, err := mapping.RegisterVaultKeys(primaryPtr, backupPtr, height)
+	targetGen, hasPending, isGenesis, err := mapping.RegisterVaultKeys(primaryPtr, backupPtr, height)
 	if err != nil {
 		ce.CustomAbort(err)
 	}
-	writeFlat := !hasPending || targetGen == 0
+	writeFlat := !hasPending || isGenesis
 
 	var resultBuilder strings.Builder
 
@@ -803,16 +788,21 @@ func RenewKey(_ *string) *string {
 		)
 	}
 
-	// S1.3: renew the ACTIVE generation's key (gen 0 -> "main", gen N -> "mainv<N>"),
-	// not always the legacy "main" — after a rotation "main" belongs to a retiring gen.
-	// On a pre-fold/legacy contract activeGen is 0, so this stays "main".
-	_, _, activeGen, err := mapping.LoadVaultState()
+	// S1.3 (D-2): renew EVERY non-purged generation's key — active AND retiring — so
+	// a retiring generation that still custodies unswept funds cannot have its TSS key
+	// expire out from under it (never-brick). On a pre-fold/legacy contract the vault
+	// list is empty, so fall back to renewing the legacy "main" key.
+	keyIds, err := mapping.NonPurgedVaultKeyIds()
 	if err != nil {
 		ce.CustomAbort(err)
 	}
-	keyId := mapping.VaultKeyId(activeGen)
-	sdk.TssRenewKey(keyId, 365)
-	return mapping.StrPtr("key \"" + keyId + "\" renewed")
+	if len(keyIds) == 0 {
+		keyIds = []string{constants.TssKeyName} // legacy / pre-fold contract
+	}
+	for _, keyId := range keyIds {
+		sdk.TssRenewKey(keyId, 365)
+	}
+	return mapping.StrPtr("renewed keys: " + strings.Join(keyIds, ","))
 }
 
 //go:wasmexport activateKey
