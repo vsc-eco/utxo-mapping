@@ -788,16 +788,15 @@ func RenewKey(_ *string) *string {
 		)
 	}
 
-	// S1.3 (D-2): renew EVERY non-purged generation's key — active AND retiring — so
+	// S1.3 (D-2): renew every fund-holding generation's key — active AND retiring — so
 	// a retiring generation that still custodies unswept funds cannot have its TSS key
-	// expire out from under it (never-brick). On a pre-fold/legacy contract the vault
-	// list is empty, so fall back to renewing the legacy "main" key.
-	keyIds, err := mapping.NonPurgedVaultKeyIds()
+	// expire out from under it (never-brick). RenewableVaultKeyIds filters to keys that
+	// are currently "active" (round-2 fix): sdk.TssRenewKey ABORTS THE WHOLE TX on any
+	// un-renewable key, so renewing a bad key would block renewing every OTHER key —
+	// including the live active one. It also folds an unmigrated legacy gen-0 first.
+	keyIds, err := mapping.RenewableVaultKeyIds()
 	if err != nil {
 		ce.CustomAbort(err)
-	}
-	if len(keyIds) == 0 {
-		keyIds = []string{constants.TssKeyName} // legacy / pre-fold contract
 	}
 	for _, keyId := range keyIds {
 		sdk.TssRenewKey(keyId, 365)

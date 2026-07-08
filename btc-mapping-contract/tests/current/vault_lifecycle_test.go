@@ -450,3 +450,30 @@ func TestSeedBlocksReseedKeepsVersion(t *testing.T) {
 	require.Equal(t, "1", ct.StateGet(contractId, constants.MigrateVersionKey),
 		"seedBlocks must not clobber an existing migrate version (E-1) — the v2 migration must still be runnable")
 }
+
+// TestRenewKeySkipsUnrenewableKey — round-2 fix: renewKey must isolate per-key
+// errors. sdk.TssRenewKey aborts the whole tx on an un-renewable key, so renewKey
+// only renews keys whose TSS status is "active". A poisoned (retired) retiring-gen
+// key is SKIPPED, and the live active gen-1 key is still renewed — one bad key can't
+// brick renewal of the fund-signing key.
+func TestRenewKeySkipsUnrenewableKey(t *testing.T) {
+	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
+	contractId, owner := "mapping_contract", "hive:milo-hpr"
+	ct.RegisterContract(contractId, owner, ContractWasm)
+	seedActiveGen0(t, &ct, contractId, owner)
+
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err)
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "registerPublicKey", regKeyPayload(t, Gen1PrimaryHex, Gen1BackupHex)).Err)
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "activateKey", []byte("")).Err)
+
+	// Poison the retiring gen-0 key: mark it RETIRED so TssRenewKey would trap on it.
+	require.NoError(t, ct.Tss.Keys.SetKey(tss.TssKey{
+		Id: contractId + "-main", Status: "retired", PublicKey: TestPrimaryPubKeyHex, Algo: tss.EcdsaType,
+	}))
+
+	r := callKeyAction(t, &ct, contractId, owner, "renewKey", []byte(""))
+	require.Empty(t, r.Err, "renewKey must NOT trap when one non-purged key is unrenewable")
+	require.Contains(t, r.Ret, "mainv1", "the active gen-1 key is still renewed")
+	require.NotContains(t, r.Ret, "main,", "the retired gen-0 key is skipped, not renewed")
+}

@@ -373,11 +373,27 @@ func DiscardPendingGeneration() (uint32, error) {
 	return discarded, nil
 }
 
-// NonPurgedVaultKeyIds returns the keyIds of every vault that still custodies or may
-// custody funds (active + retiring + draining) — i.e. every key that must stay
-// renewable. renewKey (D-2) renews all of these, so a RETIRING generation's key
-// cannot expire while it still holds unswept funds.
-func NonPurgedVaultKeyIds() ([]string, error) {
+// tssKeyIsActive reports whether the TSS key for keyId is currently status "active"
+// (the only state TssRenewKey renews without aborting). TssGetKey returns
+// "status,pubkey,algo" and never traps on a missing key (returns a non-"active"
+// status), so this is a safe pre-check.
+func tssKeyIsActive(keyId string) bool {
+	parts := strings.Split(sdk.TssGetKey(keyId), ",")
+	return len(parts) >= 1 && parts[0] == tssKeyActiveStatus
+}
+
+// RenewableVaultKeyIds returns the keyIds of every fund-holding vault (active +
+// retiring + draining) whose TSS key is currently "active" — i.e. exactly the set
+// renewKey can renew WITHOUT trapping. The status pre-check is the error-isolation
+// (round-2 H/I finding): sdk.TssRenewKey aborts the ENTIRE tx on any un-renewable
+// key (missing / retired / no-expiry), so without filtering, one bad key in ANY
+// generation would block renewing the active fund-signing key forever — the exact
+// never-brick violation D-2 exists to prevent. It also folds an unmigrated legacy
+// gen-0 first so a pre-fold contract's gen-0 is covered. A vault key is always
+// created with a lifespan (createKey epochs=365), so an "active" key always has a
+// nonzero expiry and is renewable.
+func RenewableVaultKeyIds() ([]string, error) {
+	FoldLegacyGen0IfNeeded()
 	vaults, _, _, err := LoadVaultState()
 	if err != nil {
 		return nil, err
@@ -386,7 +402,9 @@ func NonPurgedVaultKeyIds() ([]string, error) {
 	for i := range vaults {
 		switch vaults[i].Status {
 		case VaultStatusActive, VaultStatusRetiring, VaultStatusDraining:
-			ids = append(ids, VaultKeyId(vaults[i].Generation))
+			if keyId := VaultKeyId(vaults[i].Generation); tssKeyIsActive(keyId) {
+				ids = append(ids, keyId)
+			}
 		}
 	}
 	return ids, nil
