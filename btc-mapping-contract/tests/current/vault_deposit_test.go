@@ -43,7 +43,9 @@ func TestMigrateVaultSweepsRetiringGen(t *testing.T) {
 	t.Cleanup(func() { ct.DataLayer.Stop() })
 	contractId, owner := "mapping_contract", "hive:milo-hpr"
 	ct.RegisterContract(contractId, owner, ContractWasm)
-	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
+	// FeeSupply reserve seeded so the sweep's miner fee is funded from the reserve (X-2),
+	// not user principal.
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1, FeeSupply: 100000})))
 	ct.StateSet(contractId, constants.LastHeightKey, "100")
 	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
 	seedActiveGen0(t, &ct, contractId, owner)
@@ -178,6 +180,47 @@ func TestMigrateVaultRejectsExcessiveFee(t *testing.T) {
 	require.Equal(t, mapping.VaultStatusRetiring, vaults[0].Status, "gen-0 stays retiring after a rejected sweep")
 	reg, _ := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
 	require.Len(t, reg, 1, "the input UTXO is NOT deleted on a rejected sweep (atomic fail-safe)")
+}
+
+// TestMigrateVaultRejectsWithoutFeeReserve — X-2 fix: a sweep whose miner fee cannot be
+// funded from FeeSupply is rejected (fail-safe), never eroding user principal. The gen
+// keeps its UTXOs and ActiveSupply is untouched (solvency preserved).
+func TestMigrateVaultRejectsWithoutFeeReserve(t *testing.T) {
+	const instruction = "deposit_to=hive:milo-hpr"
+	const amount = int64(100000)
+	const blockHeight = uint32(100)
+	fixture := buildMapFixture(t, instruction, amount, blockHeight)
+
+	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
+	contractId, owner := "mapping_contract", "hive:milo-hpr"
+	ct.RegisterContract(contractId, owner, ContractWasm)
+	// FeeSupply reserve = 0 → the sweep fee cannot be funded.
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
+	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
+	seedActiveGen0(t, &ct, contractId, owner)
+
+	params := mapping.MapParams{TxData: &mapping.VerificationRequest{
+		BlockHeight: blockHeight, RawTxHex: fixture.RawTxHex,
+		MerkleProofHex: fixture.MerkleProofHex, TxIndex: fixture.TxIndex}, Instructions: []string{instruction}}
+	payload, err := tinyjson.Marshal(params)
+	require.NoError(t, err)
+	require.True(t, ct.Call(stateEngine.TxVscCallContract{
+		Self: stateEngine.TxSelf{TxId: "map-dep", BlockId: "block:map", Index: 70, OpIndex: 0,
+			Timestamp: "2025-10-14T00:00:00", RequiredAuths: []string{owner}, RequiredPostingAuths: []string{}},
+		ContractId: contractId, Action: "map", Payload: payload, RcLimit: 100000000, Intents: []contracts.Intent{}, Caller: owner}).Success)
+
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err)
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "registerPublicKey", regKeyPayload(t, Gen1PrimaryHex, "")).Err)
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "activateKey", []byte("")).Err)
+
+	r := callKeyAction(t, &ct, contractId, owner, "migrateVault", []byte(""))
+	require.NotEmpty(t, r.Err, "migrate must reject when FeeSupply can't fund the sweep fee (X-2)")
+	vaults, _, _ := loadVaults(t, &ct, contractId)
+	require.Equal(t, mapping.VaultStatusRetiring, vaults[0].Status, "gen-0 stays retiring after a rejected sweep")
+	reg, _ := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
+	require.Len(t, reg, 1, "input UTXO not deleted (atomic)")
 }
 
 // TestMapCreditsRetiringGenDeposit is the S1.4 end-to-end proof (NR-4 / C-2). After a

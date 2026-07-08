@@ -268,24 +268,25 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 	sdk.StateSetObject(constants.TxSpendsPrefix+txId, string(signingBytes))
 	cs.TxSpendsList = append(cs.TxSpendsList, txId)
 
-	// The miner fee is the only real value loss — the rest is a Supply-neutral internal
-	// move (retiring-gen UTXOs → successor-gen UTXO). Decrement ActiveSupply by the fee;
-	// UserSupply/FeeSupply are unchanged (no user balance moved, no vsc fee for an
-	// internal sweep). NOTE (V5-4 / X-2, tracked for S2.4): repeated tranche fees erode
-	// the ActiveSupply−UserSupply buffer — a migration-fee ceiling + coverage cap belong
-	// there; a reorg-reversal of this internal transfer is U-10 (S2.4).
-	newActive, err := safeSubtract64(cs.Supply.ActiveSupply, btcFee)
+	// X-2 fix (S2-close money-math + trust-boundary): fund the migration miner fee from
+	// FeeSupply (the protocol reserve accrued from unmap vscFees), NOT from ActiveSupply,
+	// so the internal sweep is exactly Supply-neutral to USER backing and can NEVER erode
+	// the solvency relation ActiveSupply ≥ UserSupply. The invariant Σ(UTXO) == ActiveSupply
+	// + FeeSupply is preserved (Σ(UTXO) drops by btcFee via the sweep; FeeSupply drops by
+	// btcFee here). If the reserve can't cover the fee, ABORT (fail-safe: the gen keeps its
+	// UTXOs, recoverable) rather than socialize a principal loss onto the last withdrawer —
+	// accumulate fees / subsidize the reserve first. safeSubtract64 catches int64 wrap; the
+	// explicit < 0 check catches below-zero (money-math F-2). (A rotation fee charged to
+	// users, or an explicit reserve subsidy, is the fuller coverage model; this is the
+	// minimal solvency-PRESERVING version — it never lets the books lie.)
+	newFee, err := safeSubtract64(cs.Supply.FeeSupply, btcFee)
 	if err != nil {
 		return "", ce.WrapContractError(ce.ErrArithmetic, err, "migration fee arithmetic")
 	}
-	// safeSubtract64 only catches int64 wraparound, NOT below-zero (S2-close money-math
-	// F-2) — guard explicitly so a fee > ActiveSupply aborts rather than silently going
-	// negative. (The tighter ActiveSupply≥UserSupply coverage guard is the X-2 fix,
-	// deferred with the migration-fee funding model.)
-	if newActive < 0 {
-		return "", ce.NewContractError(ce.ErrBalance, "migration fee exceeds active supply")
+	if newFee < 0 {
+		return "", ce.NewContractError(ce.ErrBalance, "insufficient fee reserve to fund the migration sweep")
 	}
-	cs.Supply.ActiveSupply = newActive
+	cs.Supply.FeeSupply = newFee
 
 	// First tranche: retiring → draining (a sweep is now in flight). Idempotent for a gen
 	// already draining. Never touches keys or any other generation.
