@@ -53,6 +53,11 @@ type Utxo struct {
 	Amount   int64
 	PkScript []byte
 	Tag      []byte // raw tag bytes (32 bytes for deposits, empty for change)
+	// Generation is the vault generation whose address locked this UTXO (S1 dual-gen).
+	// Appended to the blob; pre-S1 blobs lack it and read as 0 (all pre-existing
+	// UTXOs belong to generation 0). Used at spend time to pick the right gen's
+	// pubkey + keyId for the witness/signature.
+	Generation uint32
 }
 
 // UtxoRegistryEntry holds a uint16 pool ID and a 6-byte amount for one UTXO.
@@ -67,6 +72,53 @@ type UtxoRegistryEntry struct {
 
 // UtxoRegistry is the in-memory UTXO list, serialised as packed binary.
 type UtxoRegistry []UtxoRegistryEntry
+
+// VaultStatus is the lifecycle state of a vault generation (S1-DESIGN.md §3).
+// S1 drives PENDING→ACTIVE→RETIRING; S2/S5 drive DRAINING→INACTIVE→PURGED.
+type VaultStatus uint8
+
+const (
+	VaultStatusPending  VaultStatus = 0
+	VaultStatusActive   VaultStatus = 1
+	VaultStatusRetiring VaultStatus = 2
+	VaultStatusDraining VaultStatus = 3
+	VaultStatusInactive VaultStatus = 4
+	VaultStatusPurged   VaultStatus = 5
+)
+
+// VaultEntrySize is the fixed packed-binary width of one Vault entry in the "v"
+// registry blob: 4 gen + 33 primary + 33 backup + 1 status + 4 predecessor +
+// 4*3 heights = 87 bytes.
+const VaultEntrySize = 87
+
+// Vault is one generation of the BTC vault key set. Vaults form an append-only
+// list (state key "v"): minting a generation appends a PENDING entry; existing
+// entries only STATUS-transition — their pubkeys are NEVER mutated, preserving
+// the mainnet key-immutability property. See S1-DESIGN.md.
+//
+// Binary layout (VaultEntrySize = 87 bytes/entry, big-endian):
+//   [0:4]   Generation
+//   [4:37]  Primary  (33-byte compressed pubkey)
+//   [37:70] Backup   (33-byte compressed pubkey)
+//   [70]    Status
+//   [71:75] Predecessor      (generation this one succeeds; gen 0 = 0)
+//   [75:79] CreatedHeight
+//   [79:83] ActivatedHeight
+//   [83:87] RetiredHeight
+type Vault struct {
+	Generation      uint32
+	Primary         CompressedPubKey
+	Backup          CompressedPubKey
+	Status          VaultStatus
+	Predecessor     uint32
+	CreatedHeight   uint32
+	ActivatedHeight uint32
+	RetiredHeight   uint32
+}
+
+// VaultRegistry is the in-memory append-only vault-generation list, serialised as
+// packed binary (state key "v").
+type VaultRegistry []Vault
 
 // TxSpendsRegistry is the in-memory list of pending spend-tx IDs (display hex).
 // Serialised as packed binary: 32 raw bytes per entry.
@@ -118,6 +170,11 @@ type ContractState struct {
 	Supply            SystemSupply
 	PublicKeys        PublicKeys
 	NetworkParams     *chaincfg.Params
+
+	// S1 dual-generation vault state model (empty until the gen-0 fold migration).
+	Vaults    VaultRegistry
+	NextGen   uint32 // next generation number to mint
+	ActiveGen uint32 // generation currently receiving new deposits
 }
 
 type MappingState struct {

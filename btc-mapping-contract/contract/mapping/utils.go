@@ -178,6 +178,74 @@ func UnmarshalUtxoRegistry(data []byte) (UtxoRegistry, error) {
 }
 
 // ---------------------------------------------------------------------------
+// Vault registry binary encoding (VaultEntrySize=87 bytes/entry) — S1 dual-gen.
+// Mirrors the UtxoRegistry packed-blob idiom. See types.go Vault for the layout.
+// ---------------------------------------------------------------------------
+
+func MarshalVaultRegistry(v VaultRegistry) []byte {
+	buf := make([]byte, len(v)*VaultEntrySize)
+	for i := range v {
+		off := i * VaultEntrySize
+		e := &v[i]
+		binary.BigEndian.PutUint32(buf[off:], e.Generation)
+		copy(buf[off+4:off+37], e.Primary[:])
+		copy(buf[off+37:off+70], e.Backup[:])
+		buf[off+70] = byte(e.Status)
+		binary.BigEndian.PutUint32(buf[off+71:], e.Predecessor)
+		binary.BigEndian.PutUint32(buf[off+75:], e.CreatedHeight)
+		binary.BigEndian.PutUint32(buf[off+79:], e.ActivatedHeight)
+		binary.BigEndian.PutUint32(buf[off+83:], e.RetiredHeight)
+	}
+	return buf
+}
+
+func UnmarshalVaultRegistry(data []byte) (VaultRegistry, error) {
+	if len(data)%VaultEntrySize != 0 {
+		return nil, errors.New("invalid vault registry: length not a multiple of VaultEntrySize")
+	}
+	out := make(VaultRegistry, len(data)/VaultEntrySize)
+	for i := range out {
+		off := i * VaultEntrySize
+		out[i].Generation = binary.BigEndian.Uint32(data[off:])
+		copy(out[i].Primary[:], data[off+4:off+37])
+		copy(out[i].Backup[:], data[off+37:off+70])
+		out[i].Status = VaultStatus(data[off+70])
+		out[i].Predecessor = binary.BigEndian.Uint32(data[off+71:])
+		out[i].CreatedHeight = binary.BigEndian.Uint32(data[off+75:])
+		out[i].ActivatedHeight = binary.BigEndian.Uint32(data[off+79:])
+		out[i].RetiredHeight = binary.BigEndian.Uint32(data[off+83:])
+	}
+	return out, nil
+}
+
+// vaultKeyId returns the TSS keyId for a vault generation. Generation 0 keeps the
+// legacy "main" id (backward-compatible with the live deployed key); generation N
+// uses "main-v<N>". The node prefixes the contract id and its isBtcVaultKey gate
+// prefix-matches every generation.
+func vaultKeyId(gen uint32) string {
+	if gen == 0 {
+		return constants.TssKeyName
+	}
+	return constants.TssKeyName + "-v" + strconv.FormatUint(uint64(gen), 10)
+}
+
+// vaultKeysForGeneration returns the primary+backup pubkeys of the given vault
+// generation from the loaded vault list, and whether the generation was FOUND.
+// The caller MUST check `found`: falling back to cs.PublicKeys is only safe when
+// the vault list is empty (pre-fold — everything is gen-0/legacy). For a missing
+// generation in a POPULATED list the caller must ABORT, because vaultKeyId does
+// NOT fall back (it returns "main-v<N>") — a silent key-fallback would build a
+// witness the signature cannot satisfy → an unspendable tx (council F2, 3-lens).
+func (cs *ContractState) vaultKeysForGeneration(gen uint32) (CompressedPubKey, CompressedPubKey, bool) {
+	for i := range cs.Vaults {
+		if cs.Vaults[i].Generation == gen {
+			return cs.Vaults[i].Primary, cs.Vaults[i].Backup, true
+		}
+	}
+	return cs.PublicKeys.Primary, cs.PublicKeys.Backup, false
+}
+
+// ---------------------------------------------------------------------------
 // Individual UTXO binary encoding
 //
 // Layout:
@@ -188,6 +256,7 @@ func UnmarshalUtxoRegistry(data []byte) (UtxoRegistry, error) {
 //   [N]  PkScript
 //   [1]  len(Tag)
 //   [M]  Tag
+//   [4]  Generation  (uint32 BE; S1 dual-gen; absent in pre-S1 blobs → read as 0)
 // ---------------------------------------------------------------------------
 
 func MarshalUtxo(u *Utxo) []byte {
@@ -195,7 +264,7 @@ func MarshalUtxo(u *Utxo) []byte {
 	if err != nil || len(txIdBytes) != 32 {
 		return nil
 	}
-	total := 32 + 4 + 8 + 1 + len(u.PkScript) + 1 + len(u.Tag)
+	total := 32 + 4 + 8 + 1 + len(u.PkScript) + 1 + len(u.Tag) + 4 // +4: Generation (S1 dual-gen)
 	buf := make([]byte, total)
 	off := 0
 	copy(buf[off:], txIdBytes)
@@ -211,6 +280,8 @@ func MarshalUtxo(u *Utxo) []byte {
 	buf[off] = byte(len(u.Tag))
 	off++
 	copy(buf[off:], u.Tag)
+	off += len(u.Tag)
+	binary.BigEndian.PutUint32(buf[off:], u.Generation)
 	return buf
 }
 
@@ -245,6 +316,12 @@ func UnmarshalUtxo(data []byte) (*Utxo, error) {
 	}
 	u.Tag = make([]byte, tagLen)
 	copy(u.Tag, data[off:off+tagLen])
+	off += tagLen
+	// S1 dual-gen: Generation (4 bytes BE) is appended. Pre-S1 blobs lack it →
+	// read as 0 (all pre-existing UTXOs belong to generation 0). Backward-compatible.
+	if off+4 <= len(data) {
+		u.Generation = binary.BigEndian.Uint32(data[off:])
+	}
 	return u, nil
 }
 

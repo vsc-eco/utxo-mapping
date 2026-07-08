@@ -31,6 +31,15 @@ const TxSpendsRegistryKey = "p"
 const TxSpendsPrefix = "d" + DirPathDelimiter
 const SupplyKey = "s"
 
+// Vault registry (S1 dual-generation vault state model — see S1-DESIGN.md).
+// Append-only list of key generations; a new generation appends a PENDING entry
+// and existing entries only status-transition (pubkeys NEVER mutated → preserves
+// the mainnet key-immutability property). The SDK has no prefix-scan, so this
+// mirrors the r/i packed-blob-plus-counter idiom: one blob holds the whole list.
+const VaultRegistryKey = "v"    // packed VaultEntrySize-byte entries (whole list)
+const VaultNextGenKey = "vn"    // 4-byte BE: next generation number to mint
+const VaultActiveGenKey = "va"  // 4-byte BE: generation currently receiving new deposits
+
 const LastHeightKey = "h"
 const SeedHeightKey = "sh"
 const PruneFloorKey = "pf" // lowest unpruned block height, updated during pruning
@@ -61,7 +70,7 @@ const MigrateVersionKey = "mv" // current migration version (decimal string)
 
 // LatestMigrateVersion is the newest migration version. Set this in init/seed
 // so freshly deployed contracts skip all migrations.
-const LatestMigrateVersion = "1"
+const LatestMigrateVersion = "2"
 
 // Old format constants (pre-migration)
 const (

@@ -68,7 +68,27 @@ func IntializeContractState(publicKeys PublicKeys, networkMode string) (*Contrac
 		supply = *s
 	}
 
-	return &ContractState{
+	// Load vault registry (S1 dual-generation vault list — VaultEntrySize bytes/entry).
+	// Empty on any contract not yet folded (S1.1); tolerant of absent keys.
+	var vaults VaultRegistry
+	vaultState := sdk.StateGetObject(constants.VaultRegistryKey)
+	if len(*vaultState) > 0 {
+		var err error
+		vaults, err = UnmarshalVaultRegistry([]byte(*vaultState))
+		if err != nil {
+			return nil, ce.NewContractError(ce.ErrStateAccess, "error decoding vault registry: "+err.Error())
+		}
+	}
+	// Load vault generation counters (4 bytes BE each; absent → 0).
+	var nextGen, activeGen uint32
+	if s := sdk.StateGetObject(constants.VaultNextGenKey); len(*s) == 4 {
+		nextGen = binary.BigEndian.Uint32([]byte(*s))
+	}
+	if s := sdk.StateGetObject(constants.VaultActiveGenKey); len(*s) == 4 {
+		activeGen = binary.BigEndian.Uint32([]byte(*s))
+	}
+
+	cs := &ContractState{
 		UtxoList:          utxos,
 		ConfirmedNextId:   confirmedNextId,
 		UnconfirmedNextId: unconfirmedNextId,
@@ -76,7 +96,22 @@ func IntializeContractState(publicKeys PublicKeys, networkMode string) (*Contrac
 		Supply:            supply,
 		PublicKeys:        publicKeys,
 		NetworkParams:     networkParams,
-	}, nil
+		Vaults:            vaults,
+		NextGen:           nextGen,
+		ActiveGen:         activeGen,
+	}
+	// S1.2: the ACTIVE generation's keys are the source of truth for deposit/change
+	// address derivation. Resolve cs.PublicKeys from the vault list. FAIL-SAFE: if the
+	// vault list is empty (pre-fold / fresh deploy) keep the legacy single-slot keys
+	// (the passed publicKeys). While only gen-0 exists, the active vault's keys ==
+	// the legacy keys (the fold copied them), so this is byte-identical to today.
+	for i := range cs.Vaults {
+		if cs.Vaults[i].Generation == cs.ActiveGen {
+			cs.PublicKeys = PublicKeys{Primary: cs.Vaults[i].Primary, Backup: cs.Vaults[i].Backup}
+			break
+		}
+	}
+	return cs, nil
 }
 
 func InitializeMappingState(
@@ -92,7 +127,10 @@ func InitializeMappingState(
 	var registry map[string]*AddressMetadata
 	if len(instructions) > 0 {
 		var err error
-		registry, err = contractState.parseInstructions(publicKeys, instructions, contractState.NetworkParams)
+		// S1.2: derive deposit addresses from the resolved ACTIVE-generation keys
+		// (contractState.PublicKeys), not the raw passed-in legacy pair. (S1.4 will
+		// extend this to match ALL non-purged generations' addresses for NR-4.)
+		registry, err = contractState.parseInstructions(contractState.PublicKeys, instructions, contractState.NetworkParams)
 		if err != nil {
 			return nil, ce.WrapContractError(ce.ErrStateAccess, err, "error unmarshalling address registry")
 		}
@@ -188,6 +226,14 @@ func (cs *ContractState) SaveToState() error {
 
 	// Supply (binary)
 	sdk.StateSetObject(constants.SupplyKey, string(MarshalSupply(&cs.Supply)))
+
+	// Vault registry + generation counters (S1 dual-generation vault list, binary).
+	sdk.StateSetObject(constants.VaultRegistryKey, string(MarshalVaultRegistry(cs.Vaults)))
+	var nextGenBuf, activeGenBuf [4]byte
+	binary.BigEndian.PutUint32(nextGenBuf[:], cs.NextGen)
+	binary.BigEndian.PutUint32(activeGenBuf[:], cs.ActiveGen)
+	sdk.StateSetObject(constants.VaultNextGenKey, string(nextGenBuf[:]))
+	sdk.StateSetObject(constants.VaultActiveGenKey, string(activeGenBuf[:]))
 
 	return nil
 }

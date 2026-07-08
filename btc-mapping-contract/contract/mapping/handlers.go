@@ -198,7 +198,7 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		return ce.WrapContractError(ce.ErrTransaction, err, "error signing spend transaction")
 	}
 
-	unconfirmedUtxos, err := indexUnconfimedOutputs(tx, changeAddress, cs.NetworkParams)
+	unconfirmedUtxos, err := indexUnconfimedOutputs(tx, changeAddress, cs.NetworkParams, cs.ActiveGen)
 	if err != nil {
 		return err
 	}

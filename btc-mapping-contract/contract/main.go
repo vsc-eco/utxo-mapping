@@ -528,13 +528,19 @@ func Migrate(_ *string) *string {
 	if versionPtr != nil {
 		version = *versionPtr
 	}
+	// Compare migration versions NUMERICALLY (council F3, 4-lens). A lexicographic
+	// string compare (`version < "2"`) misfires at v10+ ("10" < "2" is TRUE) → it
+	// re-enters an already-applied migration block and REGRESSES the version counter,
+	// which would re-run the NON-IDEMPOTENT v1 registry re-key → fund corruption.
+	// Empty/invalid → 0 (an un-migrated contract runs v1 then v2).
+	curVer, _ := strconv.Atoi(version)
 
 	// --- v1: migrate UTXO registry from 9-byte (uint8 ID + int64) to 8-byte
 	// (uint16 ID + uint48) entries, and counter from 2 bytes to 4 bytes.
 	// Old confirmed pool: 64–255 → new: 1024–65535 (offset +960).
 	// Old unconfirmed pool: 0–63 → unchanged (0–1023 range, same IDs).
 	// Individual UTXO blobs (u-<id>) are re-keyed to match the new hex IDs.
-	if version < "1" {
+	if curVer < 1 {
 		// Read old-format registry (9 bytes/entry: 1-byte ID + 8-byte amount BE)
 		regRaw := sdk.StateGetObject(constants.UtxoRegistryKey)
 		if regRaw != nil && len(*regRaw) > 0 {
@@ -596,7 +602,45 @@ func Migrate(_ *string) *string {
 		sdk.Log("migrate|v=1")
 	}
 
-	// --- future migrations go here ---
+	// --- v2: S1 dual-generation vault state model. Fold the legacy single-slot
+	// key (pubkey/backupkey) into generation 0 of the append-only vault list.
+	// The legacy slots are KEPT readable (defense); nothing reads the vault list
+	// until S1.2, so this fold is inert + independently verifiable before anything
+	// depends on it. UTXO generation tagging is automatic: pre-S1 UTXO blobs read
+	// as Generation 0 (see UnmarshalUtxo), so no bulk re-encode is needed.
+	if curVer < 2 {
+		// FAIL-SAFE: only populate an EMPTY vault list. Never overwrite an existing
+		// one (guards against a re-run — e.g. the string-version compare misfiring
+		// at v10+ — clobbering a real rotation and stranding funds).
+		existingVault := sdk.StateGetObject(constants.VaultRegistryKey)
+		alreadyPopulated := existingVault != nil && len(*existingVault) > 0
+		if !alreadyPopulated {
+			primaryRaw := sdk.StateGetObject(constants.PrimaryPublicKeyStateKey)
+			backupRaw := sdk.StateGetObject(constants.BackupPublicKeyStateKey)
+			// Only fold a genuinely registered 33-byte key pair. A contract with no
+			// key yet gets its gen-0 on first registerPublicKey (S1.3); folding a
+			// bad/absent key would brick address derivation — create nothing instead.
+			if primaryRaw != nil && backupRaw != nil && len(*primaryRaw) == 33 && len(*backupRaw) == 33 {
+				var gen0 mapping.Vault
+				gen0.Generation = 0
+				copy(gen0.Primary[:], *primaryRaw)
+				copy(gen0.Backup[:], *backupRaw)
+				gen0.Status = mapping.VaultStatusActive
+				gen0.Predecessor = 0
+				// Heights left 0: gen-0 predates per-generation height tracking; the
+				// safety-critical RetiredHeight is set only at the retiring transition.
+				sdk.StateSetObject(constants.VaultRegistryKey, string(mapping.MarshalVaultRegistry(mapping.VaultRegistry{gen0})))
+				sdk.StateSetObject(constants.VaultNextGenKey, string([]byte{0, 0, 0, 1}))  // next gen to mint = 1
+				sdk.StateSetObject(constants.VaultActiveGenKey, string([]byte{0, 0, 0, 0})) // gen 0 receives deposits
+				sdk.Log("migrate|v=2|fold_gen0")
+			} else {
+				sdk.Log("migrate|v=2|no_key_skip_fold")
+			}
+		} else {
+			sdk.Log("migrate|v=2|vault_already_populated_skip")
+		}
+		sdk.StateSetObject(constants.MigrateVersionKey, "2")
+	}
 
 	result := "migrated to v" + *sdk.StateGetObject(constants.MigrateVersionKey)
 	return &result

@@ -252,9 +252,21 @@ func (cs *ContractState) buildSpendTransaction(
 		txIn := wire.NewTxIn(outPoint, nil, nil)
 		tx.AddTxIn(txIn)
 
+		// S1.2: build the witness with the pubkeys of the generation that LOCKED this
+		// input (not just the active gen), so a mixed-generation spend / migration
+		// sweep signs each input against its OWN vault's script.
+		inPrimary, inBackup, genFound := cs.vaultKeysForGeneration(utxo.Generation)
+		// Council F2 (3-lens): the keys fall back but the keyId (vaultKeyId) does NOT,
+		// so a UTXO whose generation is absent from a POPULATED vault list would get a
+		// witness from the wrong gen + a signature from "main-v<N>" → an unsatisfiable,
+		// unspendable tx. ABORT instead. Fallback is only safe when the list is empty
+		// (pre-fold — every UTXO is gen-0/legacy).
+		if !genFound && len(cs.Vaults) > 0 {
+			return nil, nil, 0, ce.NewContractError(ce.ErrTransaction, "utxo references a vault generation not in the vault list")
+		}
 		_, witnessScript, err := createP2WSHAddressWithBackup(
-			cs.PublicKeys.Primary,
-			cs.PublicKeys.Backup,
+			inPrimary,
+			inBackup,
 			utxo.Tag, // already []byte
 			cs.NetworkParams,
 		)
@@ -375,7 +387,10 @@ func signSpendTransaction(tx *wire.MsgTx, inputs []*Utxo, witnessScripts map[int
 			return nil, err
 		}
 
-		sdk.TssSignKey(constants.TssKeyName, sigHash)
+		// S1.2: sign each input with the keyId of the generation that locked it
+		// (gen 0 → "main", gen N → "main-v<N>"), so the retiring-gen inputs of a
+		// migration sweep are signed by the retiring gen's key.
+		sdk.TssSignKey(vaultKeyId(utxo.Generation), sigHash)
 
 		unsignedSigHashes[i] = UnsignedSigHash{
 			Index:         uint32(i),
@@ -396,7 +411,7 @@ func signSpendTransaction(tx *wire.MsgTx, inputs []*Utxo, witnessScripts map[int
 	}, nil
 }
 
-func indexUnconfimedOutputs(tx *wire.MsgTx, changeAddress string, network *chaincfg.Params) ([]*Utxo, error) {
+func indexUnconfimedOutputs(tx *wire.MsgTx, changeAddress string, network *chaincfg.Params, activeGen uint32) ([]*Utxo, error) {
 	// 1 output will be to the destination, the others will be to change address
 	utxos := make([]*Utxo, len(tx.TxOut)-1)
 
@@ -417,6 +432,11 @@ func indexUnconfimedOutputs(tx *wire.MsgTx, changeAddress string, network *chain
 				Amount:   txOut.Value,
 				PkScript: txOut.PkScript,
 				Tag:      nil, // change outputs have no tag
+				// Council F1/F5 (3-lens, HIGH→CRIT at S1.3): tag change with the ACTIVE
+				// generation. changeAddress is derived from the active gen's keys
+				// (HandleUnmap), so the change UTXO must resolve to the active gen at
+				// spend — else post-rotation change is locked (Generation=0 → gen-0 keys).
+				Generation: activeGen,
 			}
 			if i < len(utxos) {
 				utxos[i] = &utxo
