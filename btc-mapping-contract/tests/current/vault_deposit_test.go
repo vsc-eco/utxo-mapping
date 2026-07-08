@@ -61,7 +61,7 @@ func TestMapCreditsRetiringGenDeposit(t *testing.T) {
 
 	// Rotate: mint gen-1 → register its keys → activate. gen-0 → RETIRING, gen-1 → ACTIVE.
 	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err)
-	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "registerPublicKey", regKeyPayload(t, Gen1PrimaryHex, Gen1BackupHex)).Err)
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "registerPublicKey", regKeyPayload(t, Gen1PrimaryHex, "")).Err)
 	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "activateKey", []byte("")).Err)
 	vaults, _, activeGen := loadVaults(t, &ct, contractId)
 	require.Equal(t, uint32(1), activeGen, "gen-1 must be active after rotation")

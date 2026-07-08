@@ -199,6 +199,7 @@ func MintNextGeneration(height uint32) (uint32, string, error) {
 
 	gen := nextGen // monotonic: never reused, even across a discarded genesis
 	var predecessor uint32
+	var successorBackup CompressedPubKey // zero for genesis; pinned to the predecessor's for a rotation (F1)
 	if len(vaults) == 0 {
 		// GENESIS: no ancestor. Self-referential predecessor marks it.
 		predecessor = gen
@@ -209,10 +210,24 @@ func MintNextGeneration(height uint32) (uint32, string, error) {
 				"cannot mint a successor: expected exactly one active vault to rotate from")
 		}
 		predecessor = activeGen
+		// F1 (S1-close trust-boundary, HIGH): PIN the successor's BACKUP to the active
+		// predecessor's backup. The backup is an operator CSV-recovery key, NOT a TSS
+		// ceremony output, so activation can't attest it the way it attests the primary.
+		// Left owner-chosen, a rotation could introduce an owner-controlled backup (the
+		// real attested primary + a malicious backup); the owner could then `pause` to
+		// block the committee's primary-path evacuation and, after the CSV window, drain
+		// all post-rotation deposits via the backup branch. Carrying the predecessor's
+		// backup forward makes it lineage-immutable (it traces to the genesis backup);
+		// RegisterVaultKeys' set-once guard then REJECTS any different backup a
+		// registerPublicKey would try to set. (Genesis keeps its owner-set backup = the
+		// accepted deployer-trust residual G-1. A deliberate backup rotation must be a
+		// separate operator-authenticated path — not owner-alone — out of scope here.)
+		successorBackup = vaults[firstVaultWithStatus(vaults, VaultStatusActive)].Backup
 	}
 
 	vaults = append(vaults, Vault{
 		Generation:    gen,
+		Backup:        successorBackup,
 		Status:        VaultStatusPending,
 		Predecessor:   predecessor,
 		CreatedHeight: height,
@@ -433,24 +448,31 @@ func tssKeyIsRenewable(keyId string) bool {
 // to prevent. Including "deprecated" restores renewal of an EXPIRED fund-holding key
 // (R3-1). It also folds an unmigrated legacy gen-0 first so a pre-fold contract's
 // gen-0 is covered.
-func RenewableVaultKeyIds() ([]string, error) {
+func RenewableVaultKeyIds() (renewable []string, skipped []string, err error) {
 	FoldLegacyGen0IfNeeded()
-	vaults, _, _, err := LoadVaultState()
-	if err != nil {
-		return nil, err
+	vaults, _, _, lerr := LoadVaultState()
+	if lerr != nil {
+		return nil, nil, lerr
 	}
-	var ids []string
 	for i := range vaults {
 		// Same fund-holding STATUS set as S1.4 deposit matching (isFundHoldingStatus),
-		// then further filtered by tssKeyIsRenewable below — so the renewable set is a
-		// SUBSET of the deposit-matchable set (see isFundHoldingStatus: a matched gen's
-		// funds stay recoverable via a renew-kept primary key or the CSV backup path,
-		// NOT because the two sets are identical — they are not).
-		if isFundHoldingStatus(vaults[i].Status) {
-			if keyId := VaultKeyId(vaults[i].Generation); tssKeyIsRenewable(keyId) {
-				ids = append(ids, keyId)
-			}
+		// then further filtered by tssKeyIsRenewable — so the renewable set is a SUBSET
+		// of the deposit-matchable set (see isFundHoldingStatus: a matched gen's funds
+		// stay recoverable via a renew-kept primary key or the CSV backup path, NOT
+		// because the two sets are identical — they are not).
+		if !isFundHoldingStatus(vaults[i].Status) {
+			continue
+		}
+		keyId := VaultKeyId(vaults[i].Generation)
+		if tssKeyIsRenewable(keyId) {
+			renewable = append(renewable, keyId)
+		} else {
+			// L-1 (S1-close lifecycle): a fund-holding gen whose TSS key can't be renewed
+			// (aged to `retired`/missing) is SKIPPED and RETURNED so the caller can surface
+			// it — the never-brick #1 precursor (a retiring gen's primary about to die,
+			// leaving its funds CSV-backup-only) must be visible, not a silent success.
+			skipped = append(skipped, keyId)
 		}
 	}
-	return ids, nil
+	return renewable, skipped, nil
 }

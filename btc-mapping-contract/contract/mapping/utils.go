@@ -336,10 +336,16 @@ func UnmarshalUtxo(data []byte) (*Utxo, error) {
 	u.Tag = make([]byte, tagLen)
 	copy(u.Tag, data[off:off+tagLen])
 	off += tagLen
-	// S1 dual-gen: Generation (4 bytes BE) is appended. Pre-S1 blobs lack it →
-	// read as 0 (all pre-existing UTXOs belong to generation 0). Backward-compatible.
-	if off+4 <= len(data) {
+	// S1 dual-gen: Generation (4 bytes BE) is appended. A pre-S1 blob ends here (no
+	// tail → gen 0); an S1 blob has EXACTLY 4 trailing bytes. Any other remainder is a
+	// corrupt/truncated blob → fail closed (D-CLOSE-1), matching the pkscript/tag length
+	// checks above, rather than silently reading gen 0.
+	switch rem := len(data) - off; rem {
+	case 0: // pre-S1 blob — generation stays 0
+	case 4:
 		u.Generation = binary.BigEndian.Uint32(data[off:])
+	default:
+		return nil, errors.New("utxo data has a malformed generation tail")
 	}
 	return u, nil
 }

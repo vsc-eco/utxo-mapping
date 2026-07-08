@@ -794,14 +794,22 @@ func RenewKey(_ *string) *string {
 	// are currently "active" (round-2 fix): sdk.TssRenewKey ABORTS THE WHOLE TX on any
 	// un-renewable key, so renewing a bad key would block renewing every OTHER key —
 	// including the live active one. It also folds an unmigrated legacy gen-0 first.
-	keyIds, err := mapping.RenewableVaultKeyIds()
+	keyIds, skipped, err := mapping.RenewableVaultKeyIds()
 	if err != nil {
 		ce.CustomAbort(err)
 	}
 	for _, keyId := range keyIds {
 		sdk.TssRenewKey(keyId, 365)
 	}
-	return mapping.StrPtr("renewed keys: " + strings.Join(keyIds, ","))
+	result := "renewed keys: " + strings.Join(keyIds, ",")
+	if len(skipped) > 0 {
+		// L-1: surface fund-holding gens whose key could NOT be renewed (retired/missing)
+		// — a never-brick #1 warning, not a silent success. Space-separated so the
+		// renewed (comma-joined) list stays unambiguous.
+		sdk.Log("warn|renew-skipped|" + strings.Join(skipped, " "))
+		result += "; skipped (unrenewable, fund-holding): " + strings.Join(skipped, " ")
+	}
+	return mapping.StrPtr(result)
 }
 
 //go:wasmexport activateKey

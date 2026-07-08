@@ -426,6 +426,13 @@ func indexUnconfimedOutputs(tx *wire.MsgTx, changeAddress string, network *chain
 			return nil, ce.NewContractError(ce.ErrTransaction, "incorrect number of addresses for transaction output")
 		}
 		if addrs[0].EncodeAddress() == changeAddress {
+			// Money-math L-1 (S1-close): cap change like the deposit path (mapping.go). The
+			// registry stores Amount as uint48 while the blob stores int64; an uncapped
+			// change ≥ 2^48 (reachable once S2 consolidates many inputs into one output)
+			// would truncate the registry and diverge from the blob → reject.
+			if txOut.Value > constants.MaxUtxoAmount {
+				return nil, ce.NewContractError(ce.ErrTransaction, "change output amount exceeds maximum utxo amount")
+			}
 			utxo := Utxo{
 				TxId:     tx.TxID(),
 				Vout:     uint32(index),

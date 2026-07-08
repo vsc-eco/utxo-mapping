@@ -183,7 +183,7 @@ func TestRotationMintActivateRetire(t *testing.T) {
 	require.Equal(t, uint32(0), activeGen, "active gen unchanged during keygen")
 	require.Equal(t, mapping.VaultStatusActive, vaults[0].Status, "gen-0 still active while gen-1 pending")
 
-	r = callKeyAction(t, &ct, contractId, owner, "registerPublicKey", regKeyPayload(t, Gen1PrimaryHex, Gen1BackupHex))
+	r = callKeyAction(t, &ct, contractId, owner, "registerPublicKey", regKeyPayload(t, Gen1PrimaryHex, ""))
 	require.Empty(t, r.Err)
 	vaults, _, activeGen = loadVaults(t, &ct, contractId)
 	require.Equal(t, mapping.VaultStatusPending, vaults[1].Status, "gen-1 stays pending until explicit activate")
@@ -198,6 +198,38 @@ func TestRotationMintActivateRetire(t *testing.T) {
 	require.Equal(t, mapping.VaultStatusActive, vaults[1].Status)
 	require.Equal(t, uint32(1), activeGen)
 	require.Equal(t, decodeHex(t, TestPrimaryPubKeyHex), string(vaults[0].Primary[:]), "retiring gen-0 STILL holds its keys (can still sweep)")
+}
+
+// TestRotationSuccessorBackupPinnedToPredecessor — S1-close F1 fix (HIGH): a rotation
+// successor INHERITS the active predecessor's backup key (an operator CSV-recovery key
+// that activation can't attest). Left owner-chosen, a compromised owner could register
+// an owner-controlled backup, then pause to block the committee's primary-path
+// evacuation and drain post-rotation deposits via the CSV branch. Minting pins the
+// backup; the set-once guard then REJECTS any different backup. Reverting the mint-time
+// pin lets the rogue backup register (this test then fails).
+func TestRotationSuccessorBackupPinnedToPredecessor(t *testing.T) {
+	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
+	contractId, owner := "mapping_contract", "hive:milo-hpr"
+	ct.RegisterContract(contractId, owner, ContractWasm)
+	seedActiveGen0(t, &ct, contractId, owner)
+
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err)
+	// The minted successor already carries the predecessor's (gen-0) backup.
+	vaults, _, _ := loadVaults(t, &ct, contractId)
+	require.Equal(t, decodeHex(t, TestBackupPubKeyHex), string(vaults[1].Backup[:]),
+		"successor inherits the predecessor's backup at mint (F1)")
+
+	// registerPublicKey trying to set a DIFFERENT (owner-chosen) backup must be REJECTED.
+	r := callKeyAction(t, &ct, contractId, owner, "registerPublicKey", regKeyPayload(t, Gen1PrimaryHex, Gen1BackupHex))
+	require.NotEmpty(t, r.Err, "owner cannot register a different backup on a rotation successor (F1)")
+
+	// Registering only the primary succeeds; the inherited backup is preserved.
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "registerPublicKey", regKeyPayload(t, Gen1PrimaryHex, "")).Err)
+	vaults, _, _ = loadVaults(t, &ct, contractId)
+	require.Equal(t, decodeHex(t, Gen1PrimaryHex), string(vaults[1].Primary[:]))
+	require.Equal(t, decodeHex(t, TestBackupPubKeyHex), string(vaults[1].Backup[:]),
+		"backup stays the predecessor's, not owner-chosen")
 }
 
 // TestMintRefusesSecondPending — at most one keygen in flight: a second createKey
@@ -318,7 +350,7 @@ func TestRenewKeyUsesActiveGen(t *testing.T) {
 	seedActiveGen0(t, &ct, contractId, owner)
 
 	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err)
-	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "registerPublicKey", regKeyPayload(t, Gen1PrimaryHex, Gen1BackupHex)).Err)
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "registerPublicKey", regKeyPayload(t, Gen1PrimaryHex, "")).Err)
 	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "activateKey", []byte("")).Err)
 
 	r := callKeyAction(t, &ct, contractId, owner, "renewKey", []byte(""))
@@ -464,7 +496,7 @@ func TestRenewKeySkipsUnrenewableKey(t *testing.T) {
 	seedActiveGen0(t, &ct, contractId, owner)
 
 	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err)
-	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "registerPublicKey", regKeyPayload(t, Gen1PrimaryHex, Gen1BackupHex)).Err)
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "registerPublicKey", regKeyPayload(t, Gen1PrimaryHex, "")).Err)
 	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "activateKey", []byte("")).Err)
 
 	// Poison the retiring gen-0 key: mark it RETIRED so TssRenewKey would trap on it.
@@ -490,7 +522,7 @@ func TestRenewKeyRevivesDeprecatedKey(t *testing.T) {
 	seedActiveGen0(t, &ct, contractId, owner)
 
 	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err)
-	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "registerPublicKey", regKeyPayload(t, Gen1PrimaryHex, Gen1BackupHex)).Err)
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "registerPublicKey", regKeyPayload(t, Gen1PrimaryHex, "")).Err)
 	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "activateKey", []byte("")).Err)
 
 	// Retiring gen-0 key EXPIRED -> deprecated (still custodies unswept funds).
