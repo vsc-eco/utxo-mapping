@@ -358,3 +358,27 @@ func TestChangeOutputTaggedWithActiveGen(t *testing.T) {
 		t.Fatal("expected a change UTXO to be indexed and tagged with the active generation")
 	}
 }
+
+// TestCheckSigVerified — BRK-2 (f): the attestPrimaryKey check-signature gate.
+// A v2-off node returns a 3-field TssGetKey (no requirement — inert / pre-v2); a
+// v2-on node appends the flag, and only "1" clears activation (fail closed on any
+// other value).
+func TestCheckSigVerified(t *testing.T) {
+	cases := []struct {
+		name  string
+		parts []string
+		want  bool
+	}{
+		{"v2 off: 3-field, no requirement", []string{"active", "02ab", "ecdsa"}, true},
+		{"v2 off: status-only", []string{"active"}, true},
+		{"v2 on: flag=1 -> verified", []string{"active", "02ab", "ecdsa", "1"}, true},
+		{"v2 on: flag=0 -> not verified", []string{"active", "02ab", "ecdsa", "0"}, false},
+		{"v2 on: empty flag -> fail closed", []string{"active", "02ab", "ecdsa", ""}, false},
+		{"v2 on: junk flag -> fail closed", []string{"active", "02ab", "ecdsa", "true"}, false},
+	}
+	for _, tc := range cases {
+		if got := checkSigVerified(tc.parts); got != tc.want {
+			t.Fatalf("%s: checkSigVerified(%v) = %v, want %v", tc.name, tc.parts, got, tc.want)
+		}
+	}
+}

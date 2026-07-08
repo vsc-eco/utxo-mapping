@@ -409,9 +409,46 @@ func (cs *ContractState) buildSpendTransaction(
 	return tx, witnessScripts, fee, nil
 }
 
+// assertInputsSignable is the BRK-2 contract-side defense-in-depth guard: never
+// REQUEST a real spend-signature for a generation that is not fund-holding (e.g.
+// a Pending gen — which holds no UTXOs and whose key is only permitted to sign
+// the check-message M; the node's scopeCheckSig would refuse a real sighash for
+// it anyway). Inputs are always selected from fund-holding gens (unmap:
+// active-only per D-1; migration: retiring/draining), so this only ever fires on
+// a bug/corruption. Inert-safe: an ABSENT vault registry (pre-fold / pre-v2,
+// legacy gen-0-only) is a no-op; a gen NOT present in a populated registry is
+// left to the node gate (not aborted here, to avoid bricking on an
+// unexpected-but-benign state); ONLY an input whose gen IS present AND NOT
+// fund-holding aborts the spend.
+func assertInputsSignable(inputs []*Utxo) error {
+	vaults, _, _, err := LoadVaultState()
+	if err != nil {
+		return err
+	}
+	if len(vaults) == 0 {
+		return nil // legacy pre-fold path — unchanged
+	}
+	statusByGen := make(map[uint32]VaultStatus, len(vaults))
+	for i := range vaults {
+		statusByGen[vaults[i].Generation] = vaults[i].Status
+	}
+	for _, u := range inputs {
+		if st, ok := statusByGen[u.Generation]; ok && !isFundHoldingStatus(st) {
+			return ce.NewContractError(ce.ErrTransaction,
+				"refusing to sign a spend for a non-fund-holding generation (BRK-2 defense-in-depth)")
+		}
+	}
+	return nil
+}
+
 // signSpendTransaction computes witness sighashes and requests TSS signing
 // for each input. Call this only after all validation checks have passed.
 func signSpendTransaction(tx *wire.MsgTx, inputs []*Utxo, witnessScripts map[int][]byte) (*SigningData, error) {
+	// BRK-2 defense-in-depth: never request a real spend-sign for a
+	// non-fund-holding (e.g. Pending) generation. See assertInputsSignable.
+	if err := assertInputsSignable(inputs); err != nil {
+		return nil, err
+	}
 	unsignedSigHashes := make([]UnsignedSigHash, len(inputs))
 	for i, utxo := range inputs {
 		witnessScript := witnessScripts[i]

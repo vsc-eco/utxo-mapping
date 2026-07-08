@@ -172,7 +172,37 @@ func attestPrimaryKey(gen uint32, primary CompressedPubKey) error {
 				"generation primary key does not match the TSS ceremony output (attestation failed)")
 		}
 	}
+	// BRK-2 (check-SIGNATURE-before-activate, brick council FS3-1): agreement on a
+	// pubkey (attested above) is NOT proof the fresh committee can SIGN with it.
+	// When vault-rotation-v2 is chain-active the node appends a 4th field to
+	// TssGetKey — the SignatureVerified flag ("1" iff a consensus-verified
+	// check-signature with this key has landed). REQUIRE it: activating an
+	// agreed-but-unsignable key would route funds into a vault only the single CSV
+	// backup can spend. Gated by field PRESENCE (backward-compatible): when v2 is
+	// off the node returns the legacy 3-field string and this is a no-op — which,
+	// together with the gen-0 fold activating directly (never through attest),
+	// leaves the inert / pre-v2 path unchanged. A genesis activation under an
+	// active v2 chain is gated too (it also flows through attest) — acceptable: the
+	// genesis key simply check-signs first (fresh deploy, zero funds at risk).
+	if !checkSigVerified(parts) {
+		return ce.NewContractError(ce.ErrTransaction,
+			"cannot activate generation: its TSS key has not produced a verified check-signature yet (BRK-2)")
+	}
 	return nil
+}
+
+// checkSigVerified reports whether a split TssGetKey response
+// ("status,pubkey,algo[,flag]") carries a verified BRK-2 check-signature. When
+// the node has vault-rotation-v2 chain-active it appends the flag as a 4th field
+// ("1" iff a consensus-verified check-signature with this key has landed); when
+// off it returns 3 fields and this returns true — no requirement (pre-v2 / inert
+// path; the contract deploy + node flag are the real gate). A present-but-not-"1"
+// flag fails closed (activation refused).
+func checkSigVerified(parts []string) bool {
+	if len(parts) < 4 {
+		return true // legacy 3-field (v2 off): no check-sig requirement
+	}
+	return parts[3] == "1"
 }
 
 // MintNextGeneration appends a new PENDING vault — the successor whose TSS key the
