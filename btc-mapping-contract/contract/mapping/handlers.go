@@ -229,6 +229,8 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		InputIds:      inputUtxoIds,
 		ChangeAddress: changeAddress,
 		ChangeGen:     cs.ActiveGen,
+		BtcFee:        btcFee,             // L7-01: true miner fee this tx pays (re-drive delta basis)
+		BuildHeight:   currentLastHeight(), // L7-01: re-drive staleness clock
 	}
 	sdk.StateSetObject(constants.PendingUnmapPrefix+txId, string(MarshalPendingUnmap(unmapRecord)))
 	for _, inputId := range inputUtxoIds {

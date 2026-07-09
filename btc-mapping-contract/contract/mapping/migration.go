@@ -351,6 +351,7 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 		BtcFee:           btcFee,
 		SuccessorAddress: successorAddress,
 		SuccessorGen:     successorGen,
+		BuildHeight:      currentLastHeight(), // L7-01: re-drive staleness clock
 	}
 	sdk.StateSetObject(constants.MigrationSweepPrefix+txId, string(MarshalMigrationSweep(sweepRecord)))
 	// Dedicated migration-sweep index (BRK-1 council A-1): paired 1:1 with the "ms-"

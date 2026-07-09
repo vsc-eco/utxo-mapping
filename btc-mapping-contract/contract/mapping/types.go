@@ -151,6 +151,10 @@ type MigrationSweep struct {
 	BtcFee           int64
 	SuccessorAddress string
 	SuccessorGen     uint32
+	// BuildHeight (L7-01) is the LastHeight at which this sweep tx was built — the
+	// deterministic clock for the re-drive staleness gate (RedriveStaleBlocks). 0 on a
+	// legacy record predating L7-01 (this whole version is unreleased, so none exist).
+	BuildHeight uint32
 }
 
 // PendingUnmap is the per-unmap record (state key "us-"+txId) that Guard 1's
@@ -167,6 +171,25 @@ type PendingUnmap struct {
 	InputIds      []uint16
 	ChangeAddress string
 	ChangeGen     uint32
+	// BtcFee (L7-01) is the miner fee THIS unmap tx pays (build-time true fee, or a
+	// re-driven replacement's bumped fee). Stored so a re-drive can compute the fee
+	// delta and so settle can refund the unused re-drive charge back to FeeSupply. It is
+	// NOT used for a settle-time fee-equality assert (that would brick a legitimate
+	// no-change / dust-burn unmap — see settleUnmap).
+	BtcFee int64
+	// BuildHeight (L7-01) — see MigrationSweep.BuildHeight (the re-drive staleness clock).
+	BuildHeight uint32
+}
+
+// SpendGroup (state key "g-"+<minInputId>) is the L7-01 re-drive spend group: the txids
+// that all spend the identical reserved input set (original + RBF replacements), plus the
+// HIGHEST fee committed across the group. Written lazily on the first re-drive; absent ⇒ a
+// group-of-one. HighestFee tracks how much FeeSupply the re-drives have charged for the
+// bump so settle can refund the unused portion when a CHEAPER member (e.g. the original)
+// confirms instead of the priciest replacement. Hand-packed binary (MarshalSpendGroup).
+type SpendGroup struct {
+	Members    []string // txids (64-char hex), each with a live "us-"/"ms-" record
+	HighestFee int64    // max BtcFee committed across Members (the FeeSupply charge basis)
 }
 
 type MappingType string

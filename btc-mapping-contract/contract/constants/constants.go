@@ -84,6 +84,15 @@ const ReservedUtxoPrefix = "ru" + DirPathDelimiter
 // delete the swept inputs, debit the reserved miner fee) under the sweep's SPV proof.
 const MigrationSweepPrefix = "ms" + DirPathDelimiter
 
+// SpendGroupPrefix ("g-"+<minInputId>) keys the L7-01 re-drive SPEND GROUP: the set of
+// txids that all spend the IDENTICAL reserved input set (an original stuck spend + its
+// RBF fee-bumped replacements). Keyed by the minimum input id in the set — deterministic,
+// stable across the group (every member reuses the identical inputs), and unique (a UTXO is
+// reserved by at most one live spend). Written lazily (only once a spend is first re-driven);
+// absent ⇒ a group-of-one. On settle of ANY member, the whole member list is cleared
+// atomically so a dangling record can never re-arm the NN#3 freeze (spec v2 D1-B / H2).
+const SpendGroupPrefix = "g" + DirPathDelimiter
+
 // MigrationSweepRegistryKey holds the packed list of pending migration-sweep txids
 // (32 bytes/entry, same encoding as TxSpendsRegistryKey). It is the DEDICATED index of
 // in-flight "ms-" records, written ONLY by the owner-only migrateVault path and cleared

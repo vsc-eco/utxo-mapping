@@ -448,11 +448,13 @@ func UnmarshalTxSpendsRegistry(data []byte) (TxSpendsRegistry, error) {
 
 func MarshalMigrationSweep(r *MigrationSweep) []byte {
 	n := len(r.InputIds)
-	buf := make([]byte, 8+4+2+n*2+len(r.SuccessorAddress))
+	buf := make([]byte, 8+4+4+2+n*2+len(r.SuccessorAddress))
 	off := 0
 	binary.BigEndian.PutUint64(buf[off:], uint64(r.BtcFee))
 	off += 8
 	binary.BigEndian.PutUint32(buf[off:], r.SuccessorGen)
+	off += 4
+	binary.BigEndian.PutUint32(buf[off:], r.BuildHeight) // L7-01
 	off += 4
 	binary.BigEndian.PutUint16(buf[off:], uint16(n))
 	off += 2
@@ -465,7 +467,7 @@ func MarshalMigrationSweep(r *MigrationSweep) []byte {
 }
 
 func UnmarshalMigrationSweep(data []byte) (*MigrationSweep, error) {
-	const minLen = 8 + 4 + 2
+	const minLen = 8 + 4 + 4 + 2
 	if len(data) < minLen {
 		return nil, errors.New("migration sweep record too short")
 	}
@@ -474,6 +476,8 @@ func UnmarshalMigrationSweep(data []byte) (*MigrationSweep, error) {
 	r.BtcFee = int64(binary.BigEndian.Uint64(data[off:]))
 	off += 8
 	r.SuccessorGen = binary.BigEndian.Uint32(data[off:])
+	off += 4
+	r.BuildHeight = binary.BigEndian.Uint32(data[off:]) // L7-01
 	off += 4
 	n := int(binary.BigEndian.Uint16(data[off:]))
 	off += 2
@@ -500,9 +504,13 @@ func UnmarshalMigrationSweep(data []byte) (*MigrationSweep, error) {
 
 func MarshalPendingUnmap(r *PendingUnmap) []byte {
 	n := len(r.InputIds)
-	buf := make([]byte, 4+2+n*2+len(r.ChangeAddress))
+	buf := make([]byte, 4+8+4+2+n*2+len(r.ChangeAddress))
 	off := 0
 	binary.BigEndian.PutUint32(buf[off:], r.ChangeGen)
+	off += 4
+	binary.BigEndian.PutUint64(buf[off:], uint64(r.BtcFee)) // L7-01
+	off += 8
+	binary.BigEndian.PutUint32(buf[off:], r.BuildHeight) // L7-01
 	off += 4
 	binary.BigEndian.PutUint16(buf[off:], uint16(n))
 	off += 2
@@ -515,13 +523,17 @@ func MarshalPendingUnmap(r *PendingUnmap) []byte {
 }
 
 func UnmarshalPendingUnmap(data []byte) (*PendingUnmap, error) {
-	const minLen = 4 + 2
+	const minLen = 4 + 8 + 4 + 2
 	if len(data) < minLen {
 		return nil, errors.New("pending unmap record too short")
 	}
 	r := &PendingUnmap{}
 	off := 0
 	r.ChangeGen = binary.BigEndian.Uint32(data[off:])
+	off += 4
+	r.BtcFee = int64(binary.BigEndian.Uint64(data[off:])) // L7-01
+	off += 8
+	r.BuildHeight = binary.BigEndian.Uint32(data[off:]) // L7-01
 	off += 4
 	n := int(binary.BigEndian.Uint16(data[off:]))
 	off += 2
@@ -535,6 +547,82 @@ func UnmarshalPendingUnmap(data []byte) (*PendingUnmap, error) {
 	}
 	r.ChangeAddress = string(data[off:])
 	return r, nil
+}
+
+// ---------------------------------------------------------------------------
+// SpendGroup record ("g-"+<minInputId>) — L7-01 re-drive spend group. Layout:
+//
+//	[8]    HighestFee     (int64 BE)
+//	[2]    len(Members)   (uint16 BE)
+//	[64*K] Members        (64-char hex txids, fixed width, no delimiters)
+// ---------------------------------------------------------------------------
+
+const txidHexLen = 64
+
+func MarshalSpendGroup(g *SpendGroup) []byte {
+	k := len(g.Members)
+	buf := make([]byte, 8+2+k*txidHexLen)
+	off := 0
+	binary.BigEndian.PutUint64(buf[off:], uint64(g.HighestFee))
+	off += 8
+	binary.BigEndian.PutUint16(buf[off:], uint16(k))
+	off += 2
+	for _, m := range g.Members {
+		copy(buf[off:off+txidHexLen], m) // txids are always 64 hex chars
+		off += txidHexLen
+	}
+	return buf
+}
+
+func UnmarshalSpendGroup(data []byte) (*SpendGroup, error) {
+	const minLen = 8 + 2
+	if len(data) < minLen {
+		return nil, errors.New("spend group record too short")
+	}
+	g := &SpendGroup{}
+	off := 0
+	g.HighestFee = int64(binary.BigEndian.Uint64(data[off:]))
+	off += 8
+	k := int(binary.BigEndian.Uint16(data[off:]))
+	off += 2
+	if off+k*txidHexLen != len(data) {
+		return nil, errors.New("spend group record truncated (members)")
+	}
+	g.Members = make([]string, k)
+	for i := 0; i < k; i++ {
+		g.Members[i] = string(data[off : off+txidHexLen])
+		off += txidHexLen
+	}
+	return g, nil
+}
+
+// spendGroupKey derives the L7-01 spend-group state key from a spend's reserved input
+// set: "g-"+<minInputId>. Deterministic and stable across an original spend and its
+// re-driven replacements (they reuse the IDENTICAL inputs), and unique because a UTXO is
+// reserved by at most one live spend. Panics on an empty set — callers always have ≥1 input.
+func spendGroupKey(inputIds []uint16) string {
+	min := inputIds[0]
+	for _, id := range inputIds[1:] {
+		if id < min {
+			min = id
+		}
+	}
+	return constants.SpendGroupPrefix + strconv.FormatUint(uint64(min), 10)
+}
+
+// currentLastHeight reads the deterministic LastHeight ("h") — the same value the
+// blocklist package writes at addBlocks/seedBlocks — for the L7-01 record BuildHeight and
+// re-drive staleness gate. 0 if unset (pre-genesis) or unparseable, treated as "oldest".
+func currentLastHeight() uint32 {
+	raw := sdk.StateGetObject(constants.LastHeightKey)
+	if raw == nil || *raw == "" {
+		return 0
+	}
+	h, err := strconv.ParseUint(*raw, 10, 32)
+	if err != nil {
+		return 0
+	}
+	return uint32(h)
 }
 
 // ---------------------------------------------------------------------------
