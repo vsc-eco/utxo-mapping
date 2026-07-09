@@ -544,6 +544,9 @@ func (cs *ContractState) HandleRedriveUnmap(txId string) (string, error) {
 			prevHighestFee = g.HighestFee
 		}
 	}
+	if group != nil && len(group.Members) >= constants.MaxSpendGroupMembers {
+		return "", ce.NewContractError(ce.ErrTransaction, "unmap spend group has reached the re-drive member cap (cold-scan B)")
+	}
 
 	// Read the ORIGINAL tx (its user-destination output is not in the "us-" record).
 	sdRaw := sdk.StateGetObject(constants.TxSpendsPrefix + txId)
@@ -568,6 +571,14 @@ func (cs *ContractState) HandleRedriveUnmap(txId string) (string, error) {
 		total, err = safeAdd64(total, u.Amount)
 		if err != nil {
 			return "", ce.WrapContractError(ce.ErrArithmetic, err, "unmap re-drive input total overflow")
+		}
+		// D-1 mirror (cold-scan A): an unmap re-drive re-signs the inputs for the USER
+		// destination, which only an ACTIVE-gen key may do — the node output-scopes a
+		// retiring/draining gen's keysign to its successor. If the active gen rotated while this
+		// unmap was pending, the inputs are now superseded → the replacement could never be
+		// signed. Refuse BEFORE charging/signing (else a wasted re-drive + transient over-charge).
+		if u.Generation != cs.ActiveGen {
+			return "", ce.NewContractError(ce.ErrTransaction, "stuck unmap's inputs are no longer on the active generation (rotated) — cannot re-drive as a withdrawal")
 		}
 	}
 
@@ -613,7 +624,10 @@ func (cs *ContractState) HandleRedriveUnmap(txId string) (string, error) {
 		return "", err
 	}
 	rate := clampedFeeRate(cs.Supply.BaseFeeRate)
-	minBump := constants.RedriveIncRelayFeeRate * (oracleFee / rate)
+	minBump, mErr := safeMultiply64(constants.RedriveIncRelayFeeRate, oracleFee/rate) // cold-scan F
+	if mErr != nil {
+		return "", ce.WrapContractError(ce.ErrArithmetic, mErr, "unmap re-drive minBump overflow")
+	}
 	if minBump < 1 {
 		minBump = 1
 	}
@@ -658,6 +672,11 @@ func (cs *ContractState) HandleRedriveUnmap(txId string) (string, error) {
 	actualFee, err := safeSubtract64(total, newOutTotal)
 	if err != nil || actualFee < 0 {
 		return "", ce.NewContractError(ce.ErrTransaction, "unmap re-drive: negative actual fee")
+	}
+	// Fee ceiling (cold-scan C, mirrors the sweep's V5-4): a re-drive must not burn more than
+	// half the inputs on miner fee — bounds a rogue-owner change-burn and a runaway bump.
+	if actualFee > total/2 {
+		return "", ce.NewContractError(ce.ErrTransaction, "unmap re-drive fee would exceed half the inputs — refused")
 	}
 	minAcceptable, err := safeAdd64(prevHighestFee, minBump)
 	if err != nil {

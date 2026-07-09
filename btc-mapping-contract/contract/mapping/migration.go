@@ -185,7 +185,10 @@ func (cs *ContractState) buildMigrationTransaction(inputs []*Utxo, totalInputs i
 	// (floor forces the bump). Normal migrate passes prevFee=0 → no floor → byte-identical.
 	if prevFee > 0 {
 		rate := clampedFeeRate(cs.Supply.BaseFeeRate)
-		minBump := constants.RedriveIncRelayFeeRate * (fee / rate)
+		minBump, mErr := safeMultiply64(constants.RedriveIncRelayFeeRate, fee/rate) // cold-scan F
+		if mErr != nil {
+			return nil, nil, 0, ce.WrapContractError(ce.ErrArithmetic, mErr, "re-drive minBump overflow")
+		}
 		if minBump < 1 {
 			minBump = 1
 		}
@@ -448,6 +451,9 @@ func (cs *ContractState) HandleRedriveSweep(txId string) (string, error) {
 		if g.HighestFee > prevHighestFee {
 			prevHighestFee = g.HighestFee
 		}
+	}
+	if group != nil && len(group.Members) >= constants.MaxSpendGroupMembers {
+		return "", ce.NewContractError(ce.ErrTransaction, "sweep spend group has reached the re-drive member cap (cold-scan B)")
 	}
 
 	// Rebuild over EXACTLY the recorded inputs (never the selectors — those exclude reserved

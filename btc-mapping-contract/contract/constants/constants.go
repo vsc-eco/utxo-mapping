@@ -28,9 +28,18 @@ const RbfSequence uint32 = 0xfffffffd
 // replacement must pay ABOVE the stuck original — so minBump = RedriveIncRelayFeeRate *
 // vSize. 2 (> the 1 sat/vByte default) gives margin so the replacement reliably relays.
 const (
-	RedriveStaleBlocks      uint32 = 12
-	RedriveIncRelayFeeRate  int64  = 2
+	RedriveStaleBlocks     uint32 = 12
+	RedriveIncRelayFeeRate int64  = 2
 )
+
+// MaxSpendGroupMembers caps the members of an L7-01 spend group (original + RBF
+// replacements). Re-drives are owner-gated and each bump raises the fee ≥ 2 sat/vByte
+// under a totalInputs/2 ceiling, so an honest operator needs only a handful before a
+// stuck tx confirms — 64 is far above any real need. The cap prevents a rogue-owner
+// re-drive storm from (a) overflowing the uint16 member-count length prefix past 65535
+// (cold-scan B1 → a decode failure that could dangle siblings) or (b) growing
+// clearSpendGroup's O(members) settle cost into an RC-limit brick (B2).
+const MaxSpendGroupMembers = 64
 
 // UTXO ID pool layout (uint16 ID, 65536 slots total).
 // IDs 0–1023   are the unconfirmed pool (change outputs pending confirmation).
