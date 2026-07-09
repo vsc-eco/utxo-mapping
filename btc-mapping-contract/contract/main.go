@@ -509,6 +509,50 @@ func ConfirmSpend(input *string) *string {
 	return mapping.StrPtr("0")
 }
 
+//go:wasmexport reportUnauthorizedSpend
+func ReportUnauthorizedSpend(input *string) *string {
+	// M1.1b (Build-Map §5b; THORChain SlashVault-derived): PERMISSIONLESS + NOT pause-gated
+	// (a theft during a pause must still halt; the op moves no funds — it only SPV-proves an
+	// unauthorised spend of a registered vault UTXO and, if so, trips the deterministic
+	// BtcTheftHaltKey the node's keysign gate reads). Reuses the confirmSpend params shape
+	// (tx_data + unused indices) so no new tinyjson marshaler is needed — only TxData is read.
+	var params mapping.ConfirmSpendParams
+	err := tinyjson.Unmarshal([]byte(*input), &params)
+	if err != nil {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
+	}
+	if params.TxData == nil || params.TxData.RawTxHex == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "tx_data.raw_tx_hex required"))
+	}
+	publicKeys, err := loadPublicKeys()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	contractState, err := mapping.IntializeContractState(publicKeys, NetworkMode)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	if err := contractState.HandleReportUnauthorizedSpend(params.TxData); err != nil {
+		ce.CustomAbort(err)
+	}
+	// The halt flag (if tripped) is written directly to state inside the handler; there is no
+	// cs mutation to persist, so no SaveToState (mirrors the direct-flag idiom of pause()).
+	return mapping.StrPtr("0")
+}
+
+//go:wasmexport clearTheftHalt
+func ClearTheftHalt(_ *string) *string {
+	// Owner-only (like pause/unpause): the M1.1b auto-trip is permissionless, but CLEARING it
+	// — resuming BTC keysign after a detected theft — is a deliberate governance action.
+	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
+		ce.CustomAbort(
+			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
+		)
+	}
+	sdk.StateDeleteObject(constants.BtcTheftHaltKey)
+	return mapping.StrPtr("theft halt cleared")
+}
+
 // Pauses all token operations (map, unmap, transfer, approve, confirmSpend).
 // Admin/owner operations remain available while paused.
 //

@@ -97,6 +97,15 @@ const AllowancePrefix = "q" + DirPathDelimiter
 const PausedKey = "paused"     // "1" when contract is paused, absent/empty when active
 const MigrateVersionKey = "mv" // current migration version (decimal string)
 
+// BtcTheftHaltKey (M1.1b) is the DETERMINISTIC BTC-keysign theft-halt flag: "1" once
+// reportUnauthorizedSpend has SPV-proven an unauthorised spend of a registered vault UTXO,
+// absent otherwise. Set by the permissionless auto-trip, cleared only by an owner
+// (clearTheftHalt) after the theft is resolved. The node's TSS solvency gate reads this
+// (alongside the M1.1a governance vsc.tss_halt) and freezes BTC keysign while it is set —
+// the THORChain SlashVault "detect-and-halt-on-unauthorised-outbound" pattern, made
+// deterministic here by Magi's SPV proof (a single honest report suffices; no 2/3 vote).
+const BtcTheftHaltKey = "th"
+
 // LatestMigrateVersion is the newest migration version. Set this in init/seed
 // so freshly deployed contracts skip all migrations.
 const LatestMigrateVersion = "2"
