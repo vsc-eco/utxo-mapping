@@ -1,6 +1,7 @@
 package current_test
 
 import (
+	"bytes"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	stateEngine "vsc-node/modules/state-processing"
 
 	"github.com/CosmWasm/tinyjson"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/stretchr/testify/require"
 )
 
@@ -123,4 +125,114 @@ func TestRedriveSweep_BumpsFeeAndSettlesEither(t *testing.T) {
 	require.Empty(t, ct.StateGet(contractId, constants.TxSpendsPrefix+sweepTxId), "original d- cleared")
 	require.Empty(t, ct.StateGet(contractId, constants.TxSpendsPrefix+newTxId), "replacement d- cleared")
 	require.Empty(t, ct.StateGet(contractId, groupKey), "group object cleared")
+
+	// The whole point of L7-01: the re-driven sweep having settled + drained gen-0, NN#3 no
+	// longer blocks rotation — createKey succeeds. This is the freeze actually lifting.
+	require.Empty(t, callKeyAction(t, &ct, contractId, owner, "createKey", []byte("")).Err,
+		"createKey unwedges after the RE-DRIVEN sweep settles and drains the gen (NN#3 — the freeze the fix closes)")
+}
+
+// txOutTotal sums the output values of a stored spend's serialized tx (from its "d-" record).
+func spendOutputs(t *testing.T, ct *test_utils.ContractTest, contractId, txId string) (total int64, hasVal map[int64]bool) {
+	t.Helper()
+	sdRaw := ct.StateGet(contractId, constants.TxSpendsPrefix+txId)
+	require.NotEmpty(t, sdRaw)
+	sd, err := mapping.UnmarshalSigningData([]byte(sdRaw))
+	require.NoError(t, err)
+	var tx wire.MsgTx
+	require.NoError(t, tx.Deserialize(bytes.NewReader(sd.Tx)))
+	hasVal = map[int64]bool{}
+	for _, o := range tx.TxOut {
+		total += o.Value
+		hasVal[o.Value] = true
+	}
+	return total, hasVal
+}
+
+// TestRedriveUnmap_BumpsFeeReducesChangeKeepsDest proves the L7-01 unmap re-drive: a stuck
+// withdrawal is re-driven into a higher-fee replacement over the SAME inputs that PRESERVES the
+// user's destination output byte-for-byte and reduces ONLY the change, with the fee bump charged
+// from FeeSupply (not user principal).
+func TestRedriveUnmap_BumpsFeeReducesChangeKeepsDest(t *testing.T) {
+	const instruction = "deposit_to=hive:milo-hpr"
+	const deposit = int64(100000)
+	const blockHeight = uint32(100)
+	const withdraw = int64(40000)
+	fixture := buildMapFixture(t, instruction, deposit, blockHeight)
+
+	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
+	contractId, owner := "mapping_contract", "hive:milo-hpr"
+	ct.RegisterContract(contractId, owner, ContractWasm)
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1, FeeSupply: 100000})))
+	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
+	seedActiveGen0(t, &ct, contractId, owner)
+
+	// Deposit → one confirmed gen-0 UTXO + credit the owner's balance.
+	mp, err := tinyjson.Marshal(mapping.MapParams{
+		TxData: &mapping.VerificationRequest{
+			BlockHeight: blockHeight, RawTxHex: fixture.RawTxHex,
+			MerkleProofHex: fixture.MerkleProofHex, TxIndex: fixture.TxIndex,
+		},
+		Instructions: []string{instruction},
+	})
+	require.NoError(t, err)
+	require.True(t, ct.Call(stateEngine.TxVscCallContract{
+		Self: stateEngine.TxSelf{TxId: "map-dep", BlockId: "block:map", Index: 70, OpIndex: 0,
+			Timestamp: "2025-10-14T00:00:00", RequiredAuths: []string{owner}, RequiredPostingAuths: []string{}},
+		ContractId: contractId, Action: "map", Payload: mp,
+		RcLimit: 100000000, Intents: []contracts.Intent{}, Caller: owner,
+	}).Success)
+
+	// Withdraw a partial amount → the built unmap has a DEST output (withdraw) + a CHANGE output.
+	up, err := tinyjson.Marshal(mapping.TransferParams{Amount: strconv.FormatInt(withdraw, 10), To: regtestDestAddress(t)})
+	require.NoError(t, err)
+	require.True(t, ct.Call(stateEngine.TxVscCallContract{
+		Self: stateEngine.TxSelf{TxId: "unmap-1", BlockId: "block:unmap", Index: 71, OpIndex: 0,
+			Timestamp: "2025-10-14T00:00:00", RequiredAuths: []string{owner}, RequiredPostingAuths: []string{}},
+		ContractId: contractId, Action: "unmap", Payload: up,
+		RcLimit: 100000000, Intents: []contracts.Intent{}, Caller: owner,
+	}).Success)
+
+	// The unmap txid = the sole pending spend.
+	txids, err := mapping.UnmarshalTxSpendsRegistry([]byte(ct.StateGet(contractId, constants.TxSpendsRegistryKey)))
+	require.NoError(t, err)
+	require.Len(t, txids, 1)
+	unmapTxId := txids[0]
+	origRec := readSweepUnmapFee(t, &ct, contractId, unmapTxId)
+	origOutTotal, origVals := spendOutputs(t, &ct, contractId, unmapTxId)
+	require.True(t, origVals[withdraw], "original unmap has the user destination output")
+
+	// Advance past staleness + re-drive.
+	ct.StateSet(contractId, constants.LastHeightKey, "120")
+	feeBefore := readFeeSupply(t, &ct, contractId)
+	rd := callKeyAction(t, &ct, contractId, owner, "redriveSpend", []byte(unmapTxId))
+	require.Empty(t, rd.Err, rd.ErrMsg)
+	newTxId := parseRedriveNewTxId(t, rd.Ret)
+
+	newRec := readSweepUnmapFee(t, &ct, contractId, newTxId)
+	require.Greater(t, newRec, origRec, "unmap re-drive bumps the fee")
+	newOutTotal, newVals := spendOutputs(t, &ct, contractId, newTxId)
+	require.True(t, newVals[withdraw], "user destination output PRESERVED byte-for-byte (never touched)")
+	require.Less(t, newOutTotal, origOutTotal, "only the change is reduced → total outputs shrink (fee up)")
+	// The fee bump is charged from FeeSupply (not user principal).
+	require.Less(t, readFeeSupply(t, &ct, contractId), feeBefore, "the fee bump is charged from FeeSupply")
+}
+
+// readSweepUnmapFee returns the BtcFee stored on a pending unmap ("us-") record.
+func readSweepUnmapFee(t *testing.T, ct *test_utils.ContractTest, contractId, txId string) int64 {
+	t.Helper()
+	raw := ct.StateGet(contractId, constants.PendingUnmapPrefix+txId)
+	require.NotEmpty(t, raw)
+	rec, err := mapping.UnmarshalPendingUnmap([]byte(raw))
+	require.NoError(t, err)
+	return rec.BtcFee
+}
+
+func readFeeSupply(t *testing.T, ct *test_utils.ContractTest, contractId string) int64 {
+	t.Helper()
+	s, err := mapping.UnmarshalSupply([]byte(ct.StateGet(contractId, constants.SupplyKey)))
+	require.NoError(t, err)
+	return s.FeeSupply
 }

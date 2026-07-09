@@ -5,6 +5,7 @@ import (
 	ce "btc-mapping-contract/contract/contracterrors"
 	"btc-mapping-contract/sdk"
 	"bytes"
+	"strconv"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -488,6 +489,226 @@ func assertInputsSignable(inputs []*Utxo) error {
 
 // signSpendTransaction computes witness sighashes and requests TSS signing
 // for each input. Call this only after all validation checks have passed.
+// HandleRedrive (L7-01) dispatches a stuck-spend re-drive to the sweep or unmap path by the
+// record type. Owner-gated + pause-gated at the entrypoint.
+func (cs *ContractState) HandleRedrive(txId string) (string, error) {
+	if ms := sdk.StateGetObject(constants.MigrationSweepPrefix + txId); ms != nil && *ms != "" {
+		return cs.HandleRedriveSweep(txId)
+	}
+	if us := sdk.StateGetObject(constants.PendingUnmapPrefix + txId); us != nil && *us != "" {
+		return cs.HandleRedriveUnmap(txId)
+	}
+	return "", ce.NewContractError(ce.ErrInput, "no in-flight spend for that txid (already settled, or not a vault spend)")
+}
+
+// HandleRedriveUnmap re-drives a STUCK, never-confirming withdrawal (L7-01). Unlike a sweep
+// (one successor output), an unmap has a USER destination output that must be preserved
+// byte-for-byte plus a change output — so it CLONES the original tx's outputs and reduces
+// ONLY the change (spec v2 RBF-2/H4), re-signing over the IDENTICAL inputs with a higher fee.
+// A stuck unmap strands only that user's own withdrawal (its inputs are active-gen, never
+// superseded → NN#3 is not triggered), so this is user-liveness, not the network freeze.
+//
+// Fee model (differs from the sweep): the unmap's original fee was DEBITED from the user at
+// build, so the bump is real vault BTC the operator covers — CHARGE FeeSupply the incremental
+// bump here (fail-closed), and REFUND the unused portion at settle if a cheaper member
+// confirms (H1/P2). Same identical-inputs ⇒ ≤1 confirms ⇒ no double-spend; group settle
+// clears all members (A2/H2).
+func (cs *ContractState) HandleRedriveUnmap(txId string) (string, error) {
+	raw := sdk.StateGetObject(constants.PendingUnmapPrefix + txId)
+	if raw == nil || *raw == "" {
+		return "", ce.NewContractError(ce.ErrInput, "no in-flight unmap for that txid")
+	}
+	rec, err := UnmarshalPendingUnmap([]byte(*raw))
+	if err != nil {
+		return "", ce.NewContractError(ce.ErrStateAccess, "error decoding pending unmap record: "+err.Error())
+	}
+
+	// Staleness gate (D3).
+	nowH := currentLastHeight()
+	if rec.BuildHeight == 0 || nowH < rec.BuildHeight || nowH-rec.BuildHeight < constants.RedriveStaleBlocks {
+		return "", ce.NewContractError(ce.ErrTransaction, "unmap not yet stale enough to re-drive")
+	}
+
+	// Fee to out-bid = the group's current highest committed fee (BIP-125 rule 3).
+	gk := spendGroupKey(rec.InputIds)
+	prevHighestFee := rec.BtcFee
+	var group *SpendGroup
+	if graw := sdk.StateGetObject(gk); graw != nil && *graw != "" {
+		if g, gerr := UnmarshalSpendGroup([]byte(*graw)); gerr == nil {
+			group = g
+			if g.HighestFee > prevHighestFee {
+				prevHighestFee = g.HighestFee
+			}
+		}
+	}
+
+	// Read the ORIGINAL tx (its user-destination output is not in the "us-" record).
+	sdRaw := sdk.StateGetObject(constants.TxSpendsPrefix + txId)
+	if sdRaw == nil || *sdRaw == "" {
+		return "", ce.NewContractError(ce.ErrStateAccess, "missing signing data for the stuck unmap")
+	}
+	sd, err := UnmarshalSigningData([]byte(*sdRaw))
+	if err != nil {
+		return "", ce.NewContractError(ce.ErrStateAccess, "error decoding unmap signing data: "+err.Error())
+	}
+	var origTx wire.MsgTx
+	if derr := origTx.Deserialize(bytes.NewReader(sd.Tx)); derr != nil {
+		return "", ce.WrapContractError(ce.ErrTransaction, derr, "error deserializing stuck unmap tx")
+	}
+
+	inputUtxos, err := getInputUtxos(rec.InputIds)
+	if err != nil {
+		return "", err
+	}
+	var total int64
+	for _, u := range inputUtxos {
+		total, err = safeAdd64(total, u.Amount)
+		if err != nil {
+			return "", ce.WrapContractError(ce.ErrArithmetic, err, "unmap re-drive input total overflow")
+		}
+	}
+
+	// Rebuild: RBF inputs (addInputsWithWitnesses) + a byte-for-byte CLONE of every original
+	// output. Identify the change output by its pkScript so ONLY it is reduced.
+	changeAddrObj, err := btcutil.DecodeAddress(rec.ChangeAddress, cs.NetworkParams)
+	if err != nil {
+		return "", ce.WrapContractError(ce.ErrInput, err, "error decoding change address")
+	}
+	changeScript, err := txscript.PayToAddrScript(changeAddrObj)
+	if err != nil {
+		return "", err
+	}
+	newTx := wire.NewMsgTx(wire.TxVersion)
+	witnessScripts, err := cs.addInputsWithWitnesses(newTx, inputUtxos)
+	if err != nil {
+		return "", err
+	}
+	changeIdx := -1
+	var origOutTotal int64
+	for _, out := range origTx.TxOut {
+		if changeIdx < 0 && bytes.Equal(out.PkScript, changeScript) {
+			changeIdx = len(newTx.TxOut)
+		}
+		script := make([]byte, len(out.PkScript))
+		copy(script, out.PkScript)
+		newTx.AddTxOut(wire.NewTxOut(out.Value, script))
+		origOutTotal, err = safeAdd64(origOutTotal, out.Value)
+		if err != nil {
+			return "", ce.WrapContractError(ce.ErrArithmetic, err, "unmap re-drive output total overflow")
+		}
+	}
+	if changeIdx < 0 {
+		// No change output to fund the bump (the original already burned its residual as fee) —
+		// un-re-drivable this way; the user output cannot be touched. Recoverable only if the
+		// original eventually confirms; not a network freeze (active-gen inputs).
+		return "", ce.NewContractError(ce.ErrTransaction, "stuck unmap has no change output to fund a fee bump — cannot re-drive")
+	}
+
+	// Target fee = max(current oracle fee, prevHighest + BIP-125 minBump).
+	oracleFee, err := cs.calculateSegwitFee(int64(newTx.SerializeSize()), witnessScripts)
+	if err != nil {
+		return "", err
+	}
+	rate := clampedFeeRate(cs.Supply.BaseFeeRate)
+	minBump := constants.RedriveIncRelayFeeRate * (oracleFee / rate)
+	if minBump < 1 {
+		minBump = 1
+	}
+	targetFee, err := safeAdd64(prevHighestFee, minBump)
+	if err != nil {
+		return "", ce.WrapContractError(ce.ErrArithmetic, err, "unmap re-drive target fee overflow")
+	}
+	if oracleFee > targetFee {
+		targetFee = oracleFee
+	}
+	origFee, err := safeSubtract64(total, origOutTotal)
+	if err != nil || origFee < 0 {
+		return "", ce.NewContractError(ce.ErrTransaction, "unmap re-drive: corrupt original fee")
+	}
+	deltaFee, err := safeSubtract64(targetFee, origFee)
+	if err != nil || deltaFee <= 0 {
+		return "", ce.NewContractError(ce.ErrTransaction, "unmap re-drive: no positive fee bump")
+	}
+
+	// Reduce ONLY the change output by deltaFee; if that takes it to/under dust, OMIT it (the
+	// residual becomes extra fee — RBF-3a, no loss). Never touch the user destination.
+	changeVal := newTx.TxOut[changeIdx].Value
+	newChangeVal, err := safeSubtract64(changeVal, deltaFee)
+	if err != nil {
+		return "", ce.WrapContractError(ce.ErrArithmetic, err, "unmap re-drive change arithmetic")
+	}
+	if newChangeVal > dustThreshold {
+		newTx.TxOut[changeIdx].Value = newChangeVal
+	} else {
+		newTx.TxOut = append(newTx.TxOut[:changeIdx], newTx.TxOut[changeIdx+1:]...)
+	}
+
+	// The ACTUAL fee this replacement pays = total inputs − remaining outputs (may exceed
+	// targetFee if the change was omitted). It MUST out-fee the group's highest by minBump.
+	var newOutTotal int64
+	for _, out := range newTx.TxOut {
+		newOutTotal, err = safeAdd64(newOutTotal, out.Value)
+		if err != nil {
+			return "", ce.WrapContractError(ce.ErrArithmetic, err, "unmap re-drive new output total overflow")
+		}
+	}
+	actualFee, err := safeSubtract64(total, newOutTotal)
+	if err != nil || actualFee < 0 {
+		return "", ce.NewContractError(ce.ErrTransaction, "unmap re-drive: negative actual fee")
+	}
+	minAcceptable, err := safeAdd64(prevHighestFee, minBump)
+	if err != nil {
+		return "", ce.WrapContractError(ce.ErrArithmetic, err, "unmap re-drive min-acceptable overflow")
+	}
+	if actualFee < minAcceptable {
+		return "", ce.NewContractError(ce.ErrBalance, "stuck unmap change too small to fund a sufficient fee bump — cannot re-drive")
+	}
+
+	// CHARGE FeeSupply the incremental bump above the group's prior highest (H1/P2); settle
+	// refunds the difference if a cheaper member confirms. Fail-safe: abort BEFORE signing.
+	charge, err := safeSubtract64(actualFee, prevHighestFee)
+	if err != nil {
+		return "", ce.WrapContractError(ce.ErrArithmetic, err, "unmap re-drive charge arithmetic")
+	}
+	if cs.Supply.FeeSupply < charge {
+		return "", ce.NewContractError(ce.ErrBalance, "insufficient fee reserve to cover the unmap re-drive fee bump")
+	}
+
+	signingData, err := signSpendTransaction(newTx, inputUtxos, witnessScripts)
+	if err != nil {
+		return "", ce.WrapContractError(ce.ErrTransaction, err, "error signing unmap re-drive")
+	}
+	signingBytes, err := MarshalSigningData(signingData)
+	if err != nil {
+		return "", ce.WrapContractError(ce.ErrJson, err, "error marshalling unmap re-drive signing data")
+	}
+	newTxId := newTx.TxID()
+	if newTxId == txId {
+		return "", ce.NewContractError(ce.ErrTransaction, "unmap re-drive produced an identical txid")
+	}
+
+	// Commit: charge the reserve, write the replacement records + group, node side unchanged.
+	cs.Supply.FeeSupply -= charge
+	sdk.StateSetObject(constants.TxSpendsPrefix+newTxId, string(signingBytes))
+	cs.TxSpendsList = append(cs.TxSpendsList, newTxId)
+	replRecord := &PendingUnmap{
+		InputIds:      rec.InputIds,
+		ChangeAddress: rec.ChangeAddress,
+		ChangeGen:     rec.ChangeGen,
+		BtcFee:        actualFee,
+		BuildHeight:   nowH,
+	}
+	sdk.StateSetObject(constants.PendingUnmapPrefix+newTxId, string(MarshalPendingUnmap(replRecord)))
+	if group == nil {
+		group = &SpendGroup{Members: []string{txId}}
+	}
+	group.Members = append(group.Members, newTxId)
+	group.HighestFee = actualFee
+	sdk.StateSetObject(gk, string(MarshalSpendGroup(group)))
+
+	return "redrive-unmap: old=" + txId + " new=" + newTxId + " fee=" + strconv.FormatInt(actualFee, 10), nil
+}
+
 func signSpendTransaction(tx *wire.MsgTx, inputs []*Utxo, witnessScripts map[int][]byte) (*SigningData, error) {
 	// BRK-2 defense-in-depth: never request a real spend-sign for a
 	// non-fund-holding (e.g. Pending) generation. See assertInputsSignable.

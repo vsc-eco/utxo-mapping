@@ -430,6 +430,21 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 			return err
 		}
 		settledInputs = rec.InputIds
+		// L7-01 unmap re-drive refund (H1/P2): a re-drive CHARGED FeeSupply down to the group's
+		// HighestFee (the priciest replacement); refund the difference vs the fee the ACTUALLY-
+		// confirmed member paid, so I1 holds whether the priciest replacement or a cheaper member
+		// (e.g. the original) confirms. Group-of-one (no re-drive) → no group → no refund
+		// (settleUnmap already balances). Only UNMAP re-drives charge at build; this branch runs
+		// only for an unmap confirm, so the group is always an unmap group (sweeps reserve+debit).
+		if graw := sdk.StateGetObject(spendGroupKey(rec.InputIds)); graw != nil && *graw != "" {
+			if g, gerr := UnmarshalSpendGroup([]byte(*graw)); gerr == nil && g.HighestFee > rec.BtcFee {
+				refunded, aerr := safeAdd64(cs.Supply.FeeSupply, g.HighestFee-rec.BtcFee)
+				if aerr != nil {
+					return ce.WrapContractError(ce.ErrArithmetic, aerr, "unmap re-drive fee refund overflow")
+				}
+				cs.Supply.FeeSupply = refunded
+			}
+		}
 	}
 
 	// L7-01 group-aware cleanup: clear the confirmed member AND every RBF replacement sharing

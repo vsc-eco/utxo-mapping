@@ -1011,7 +1011,7 @@ func RedriveSpend(input *string) *string {
 	if err != nil {
 		ce.CustomAbort(ce.Prepend(err, "error initializing contract state"))
 	}
-	result, err := contractState.HandleRedriveSweep(*input)
+	result, err := contractState.HandleRedrive(*input)
 	if err != nil {
 		ce.CustomAbort(err)
 	}
