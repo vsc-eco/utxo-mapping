@@ -456,6 +456,23 @@ func isFundHoldingStatus(s VaultStatus) bool {
 		s == VaultStatusDraining || s == VaultStatusInactive
 }
 
+// hasSupersededGen reports whether ANY superseded (non-active) fund-holding generation
+// currently exists — Retiring, Draining, or Inactive (isFundHoldingStatus minus Active).
+// This is the "rotation is live" signal (V-1 build-map §4/§7): a pre-rotation / single-
+// active-gen contract always returns false here, so any behavior gated on it (the
+// mapping.go indexOutputs min-deposit floor) is BYTE-IDENTICAL to pre-slice behavior until
+// the owner rotates for the first time — kept the deploy inert-until-rotation wherever
+// possible. Mirrors (but is intentionally independent of) the equivalent inline
+// computation in unmapping.go's getInputUtxoIds (D-1 unmap generation filter) — left
+// separate to keep this slice's blast radius to the new call site only, rather than
+// touching validated D-1 logic. MUST stay in lock-step with isFundHoldingStatus: if you
+// add a status there, reconsider whether it belongs here too.
+func hasSupersededGen(vaults VaultRegistry) bool {
+	return countVaultsWithStatus(vaults, VaultStatusRetiring)+
+		countVaultsWithStatus(vaults, VaultStatusDraining)+
+		countVaultsWithStatus(vaults, VaultStatusInactive) > 0
+}
+
 // tssKeyIsRenewable reports whether the TSS key for keyId can be renewed WITHOUT
 // aborting the tx. sdk.TssRenewKey traps on a retired key, a missing key, and an
 // "active" key with no expiry; it does NOT trap on "active" (with expiry — every

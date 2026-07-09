@@ -51,6 +51,18 @@ func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) ([]Utxo, error) {
 					strconv.FormatInt(txOut.Value, 10)+" > "+
 					strconv.FormatInt(constants.MaxUtxoAmount, 10)+")")
 			}
+			// V-1 dust-escape prevention (INERT-GATED): once rotation has happened at least
+			// once (a superseded generation exists), never credit a sub-MinDepositSats
+			// output — it can never be swept economically and, landed on a superseded gen,
+			// would permanently deadlock rotation (NN#3). A per-output SKIP, not a tx abort:
+			// a tx with one legit + one dust output must still credit the legit one. Gated on
+			// hasSupersededGen so a pre-rotation deploy's map behavior is BYTE-IDENTICAL to
+			// before this slice (see constants.MinDepositSats doc + BUILD-MAP §4/§7 — this is
+			// the one deliberately non-inert-once-rotated behavior change, by design).
+			if hasSupersededGen(ms.Vaults) && txOut.Value < constants.MinDepositSats {
+				sdk.Log("dust-skip|addr=" + addr + "|sats=" + strconv.FormatInt(txOut.Value, 10))
+				continue
+			}
 			utxo := Utxo{
 				TxId:     msgTx.TxID(),
 				Vout:     uint32(index),

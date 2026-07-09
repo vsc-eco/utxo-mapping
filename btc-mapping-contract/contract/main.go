@@ -1112,6 +1112,43 @@ func RetireVault(_ *string) *string {
 	return mapping.StrPtr(result)
 }
 
+//go:wasmexport writeOffDust
+func WriteOffDust(_ *string) *string {
+	checkOwner()
+
+	// V-1 dust-escape fix: force-retire a superseded generation's residual that is
+	// provably un-sweepable at the fixed minimum fee rate (see dust_writeoff.go). PAUSE-
+	// GATED (like migrateVault/retireVault): this op deletes registry UTXOs and debits
+	// Supply, exactly the kind of state mutation that must not proceed during an
+	// emergency pause.
+	checkNotPaused()
+
+	publicKeys, err := loadPublicKeys()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	contractState, err := mapping.IntializeContractState(publicKeys, NetworkMode)
+	if err != nil {
+		ce.CustomAbort(ce.Prepend(err, "error initializing contract state"))
+	}
+	// ABORT if the block height is unavailable (mirrors retireVault: fail loudly rather
+	// than proceed with an ambiguous height, even though this op's own logic does not
+	// consume height today — see HandleWriteOffDust's doc comment).
+	height, err := blocklist.LastHeightFromState()
+	if err != nil {
+		ce.CustomAbort(ce.Prepend(err, "writeOffDust: block height unavailable"))
+	}
+	result, err := contractState.HandleWriteOffDust(height)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	err = contractState.SaveToState()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	return mapping.StrPtr(result)
+}
+
 //go:wasmexport registerRouter
 func RegisterRouter(input *string) *string {
 	env := sdk.GetEnv()

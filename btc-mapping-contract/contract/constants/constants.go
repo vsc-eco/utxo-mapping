@@ -18,6 +18,22 @@ const (
 // 6 bytes (48 bits) supports up to ~2.81M BTC — far beyond any realistic deposit.
 const MaxUtxoAmount int64 = (1 << 48) - 1
 
+// MinDepositSats (V-1 dust-escape prevention) is the minimum satoshi value a single
+// output must carry to be credited by `map` (mapping.go indexOutputs). A deposit below
+// this floor can never be economically swept off a superseded generation and, once
+// registered, would permanently deadlock rotation (NN#3 / AnyFundedSupersededGen never
+// sees that generation empty) — so it is simply never credited (option (a) claw-back:
+// claw-back-by-never-crediting; see dust_writeoff.go). Fixed sat value, deliberately NOT
+// derived from the oracle's live BaseFeeRate (a fee-rate-scaled floor would let a
+// high/rogue oracle rate inflate the "dust" ceiling).
+//
+// Sweepability derivation at the FIXED protocol-minimum rate (1 sat/vbyte, the floor of
+// clampedFeeRate): a 1-input sweep is ~144 vbyte ⇒ ~144 sat fee at rate 1, so
+// 1000 − 144 = 856 > dustThreshold (546) — a single deposit at this floor is always
+// sweepable with margin at ANY fee rate ≥ 1. 1000 sats is a clean round value matching
+// THORChain's DustThreshold (~$0.60 at typical BTC prices).
+const MinDepositSats int64 = 1000
+
 const BalancePrefix = "a" + DirPathDelimiter
 
 // ObservedBlockPrefix stores the list of observed txid:vout pairs for a given
