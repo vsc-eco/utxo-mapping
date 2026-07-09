@@ -625,6 +625,58 @@ func currentLastHeight() uint32 {
 	return uint32(h)
 }
 
+// removeTxid swap-removes txId from a txid list (TxSpendsList / MigrationSweeps),
+// membership-only so order does not matter. Returns the (possibly shortened) slice.
+func removeTxid(list []string, txId string) []string {
+	for i, val := range list {
+		if val == txId {
+			list[i] = list[len(list)-1]
+			return list[:len(list)-1]
+		}
+	}
+	return list
+}
+
+// clearSpendGroup removes EVERY record of the L7-01 spend group that the just-settled
+// confirmedTxId belongs to — itself plus any RBF replacements sharing its reserved input
+// set — plus the group object, atomically in this committed tx. This is the H2 guarantee
+// (spec v2): a settle of ANY member clears the whole group, so a dangling sibling can never
+// keep an "ms-"/"d-" record + list entry live with its inputs already deleted (which would
+// inflate pendingMigrationState forever, re-arming the NN#3 freeze, and be uncleanable via
+// confirmSpend's fail-closed input guard). inputIds is the confirmed record's input set (the
+// group key). LAZY: with no re-drive the group object is absent → members == {confirmedTxId},
+// byte-identical to the pre-L7-01 single-txid cleanup. The confirmed member's own settle
+// already deleted the shared inputs + released reservations; this only deletes bookkeeping.
+func (cs *ContractState) clearSpendGroup(confirmedTxId string, inputIds []uint16) {
+	members := []string{confirmedTxId}
+	gk := spendGroupKey(inputIds)
+	if raw := sdk.StateGetObject(gk); raw != nil && *raw != "" {
+		if g, err := UnmarshalSpendGroup([]byte(*raw)); err == nil {
+			members = g.Members
+			// Defensive: a settle must always clear its OWN records even if a corrupt
+			// group object somehow omits the confirmed txid.
+			present := false
+			for _, m := range members {
+				if m == confirmedTxId {
+					present = true
+					break
+				}
+			}
+			if !present {
+				members = append(members, confirmedTxId)
+			}
+		}
+		sdk.StateDeleteObject(gk)
+	}
+	for _, m := range members {
+		sdk.StateDeleteObject(constants.PendingUnmapPrefix + m)   // us-<m> (no-op if a sweep)
+		sdk.StateDeleteObject(constants.MigrationSweepPrefix + m) // ms-<m> (no-op if an unmap)
+		sdk.StateDeleteObject(constants.TxSpendsPrefix + m)       // d-<m>
+		cs.TxSpendsList = removeTxid(cs.TxSpendsList, m)
+		cs.MigrationSweeps = removeTxid(cs.MigrationSweeps, m)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Reserved-UTXO markers ("ru-"+id) — Guard 1 delete-at-confirm in-flight exclusion.
 // A confirmed UTXO committed to an in-flight UNMAP stays in the registry until its tx

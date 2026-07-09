@@ -402,6 +402,10 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 	// so the promotion loop above is a no-op for it (they never touch the same UTXOs).
 	// A migration sweep is always in the TxSpends registry, so isPending==true above → this
 	// settle is pause-EXEMPT (BRK-4b): pausing must not strand an already-broadcast sweep.
+	// An unmap ("us-") and a migration sweep ("ms-") never share a txid, so at most one of
+	// the two settle paths fires. settledInputs captures the confirmed record's input set —
+	// the L7-01 spend-group key used for the group-aware cleanup below.
+	var settledInputs []uint16
 	if msRaw := sdk.StateGetObject(constants.MigrationSweepPrefix + txId); msRaw != nil && *msRaw != "" {
 		rec, err := UnmarshalMigrationSweep([]byte(*msRaw))
 		if err != nil {
@@ -410,25 +414,13 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 		if err := cs.settleMigrationSweep(&msgTx, rec, txData.BlockHeight); err != nil {
 			return err
 		}
-		sdk.StateDeleteObject(constants.MigrationSweepPrefix + txId)
-		// Drop this sweep from the dedicated migration-sweep index (BRK-1 council A-1),
-		// paired 1:1 with the "ms-" record delete above (same idiom as the TxSpendsList
-		// cleanup below). Swap-remove; order does not matter (membership-only scan).
-		for i, val := range cs.MigrationSweeps {
-			if val == txId {
-				cs.MigrationSweeps[i] = cs.MigrationSweeps[len(cs.MigrationSweeps)-1]
-				cs.MigrationSweeps = cs.MigrationSweeps[:len(cs.MigrationSweeps)-1]
-				break
-			}
-		}
+		settledInputs = rec.InputIds
 	}
 
 	// Guard 1 (delete-at-confirm unmap settle): if this confirmed tx has a "us-" record,
 	// perform the finish HandleUnmap deferred — index the change output(s) as confirmed, delete
-	// the swept inputs, clear their reservations — under the SPV proof verified above. An
-	// unmap ("us-") and a migration sweep ("ms-") never share a txid, so at most one of the two
-	// settle paths fires. Pause-EXEMPT (isPending is true for an in-flight unmap). Idempotent:
-	// a replay finds no "us-" record and skips (the "us-" delete below runs once).
+	// the swept inputs, clear their reservations — under the SPV proof verified above.
+	// Pause-EXEMPT (isPending is true for an in-flight unmap).
 	if usRaw := sdk.StateGetObject(constants.PendingUnmapPrefix + txId); usRaw != nil && *usRaw != "" {
 		rec, err := UnmarshalPendingUnmap([]byte(*usRaw))
 		if err != nil {
@@ -437,17 +429,20 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 		if err := cs.settleUnmap(&msgTx, rec, txData.BlockHeight); err != nil {
 			return err
 		}
-		sdk.StateDeleteObject(constants.PendingUnmapPrefix + txId)
+		settledInputs = rec.InputIds
 	}
 
-	// Clean up signing data for this tx if present.
-	sdk.StateDeleteObject(constants.TxSpendsPrefix + txId)
-	for i, val := range cs.TxSpendsList {
-		if val == txId {
-			cs.TxSpendsList[i] = cs.TxSpendsList[len(cs.TxSpendsList)-1]
-			cs.TxSpendsList = cs.TxSpendsList[:len(cs.TxSpendsList)-1]
-			break
-		}
+	// L7-01 group-aware cleanup: clear the confirmed member AND every RBF replacement sharing
+	// its reserved inputs (the spend group) + the group object, atomically — the H2 guarantee
+	// (a dangling sibling would re-arm the NN#3 freeze and be uncleanable). LAZY: with no
+	// re-drive the group object is absent → a group-of-one, byte-identical to the pre-L7-01
+	// per-txid cleanup. If NO pending record settled (idempotent replay / a confirm of a
+	// non-vault-spend tx) there is no group key → clean only this txid's stray signing data.
+	if len(settledInputs) > 0 {
+		cs.clearSpendGroup(txId, settledInputs)
+	} else {
+		sdk.StateDeleteObject(constants.TxSpendsPrefix + txId)
+		cs.TxSpendsList = removeTxid(cs.TxSpendsList, txId)
 	}
 
 	return nil
