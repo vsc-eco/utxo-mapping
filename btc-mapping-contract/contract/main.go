@@ -74,18 +74,6 @@ func checkNotPaused() {
 	}
 }
 
-// checkNotRagnarok (U-4) halts every user mutation and every NEW rotation once governance
-// has engaged Ragnarök. A SEPARATE axis from checkNotPaused (rg is never set/cleared by
-// pause/unpause and vice versa) — see RagnarokModeKey doc. Absent flag ⇒ no-op (byte-inert).
-func checkNotRagnarok() {
-	s := sdk.StateGetObject(constants.RagnarokModeKey)
-	if s != nil && *s == "1" {
-		ce.CustomAbort(
-			ce.NewContractError(ce.ErrTransaction, "contract is in ragnarok — only claimRagnarok is permitted"),
-		)
-	}
-}
-
 //go:wasmexport seedBlocks
 func SeedBlocks(blockSeedInput *string) *string {
 	checkAdmin()
@@ -251,7 +239,6 @@ func ReplaceBlocks(input *string) *string {
 //go:wasmexport map
 func Map(incomingTx *string) *string {
 	checkNotPaused()
-	checkNotRagnarok()
 	var mapInstructions mapping.MapParams
 	err := tinyjson.Unmarshal([]byte(*incomingTx), &mapInstructions)
 	if err != nil {
@@ -320,55 +307,8 @@ func UnmapFrom(tx *string) *string {
 	return mapping.StrPtr("0")
 }
 
-// Ragnarök-only (U-4) pull-based full-balance return path. Requires governance to have
-// set RagnarokModeKey via ragnarok(); the export gates on the flag (inverse of
-// checkNotRagnarok) so it is unreachable/inert until then. Self-serve: drains the
-// CALLER'S ENTIRE balance (no partial amount, no cursor, no exchange rate — mapped BTC is
-// a flat 1:1 balance) by delegating to the existing unmap-to-L1 path
-// (HandleClaimRagnarok -> HandleUnmap), inheriting the Guard-1 delete-at-confirm mechanics
-// (pending "us-" record, reserved inputs, settle-at-confirm) verbatim. Pause-EXEMPT: no
-// checkNotPaused here — Ragnarök supersedes pause for the return path (its settle at
-// confirmSpend is already pause-exempt for a live "us-" record, BRK-4b).
-//
-//go:wasmexport claimRagnarok
-func ClaimRagnarok(tx *string) *string {
-	if s := sdk.StateGetObject(constants.RagnarokModeKey); s == nil || *s != "1" {
-		ce.CustomAbort(ce.NewContractError(ce.ErrTransaction, "claimRagnarok only available in ragnarok mode"))
-	}
-
-	var p mapping.TransferParams
-	err := tinyjson.Unmarshal([]byte(*tx), &p)
-	if err != nil {
-		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
-	}
-	if len(p.To) < 26 {
-		ce.CustomAbort(
-			ce.NewContractError(ce.ErrInput, "invalid destination address ["+p.To+"]"),
-		)
-	}
-
-	publicKeys, err := loadPublicKeys()
-	if err != nil {
-		ce.CustomAbort(err)
-	}
-
-	contractState, err := mapping.IntializeContractState(publicKeys, NetworkMode)
-	if err != nil {
-		ce.CustomAbort(ce.Prepend(err, "error initializing contract state"))
-	}
-
-	if err := contractState.HandleClaimRagnarok(p.To); err != nil {
-		ce.CustomAbort(err)
-	}
-	if err := contractState.SaveToState(); err != nil {
-		ce.CustomAbort(err)
-	}
-	return mapping.StrPtr("0")
-}
-
 func doUnmap(instructions *mapping.TransferParams) {
 	checkNotPaused()
-	checkNotRagnarok()
 	if len(instructions.To) < 26 {
 		ce.CustomAbort(
 			ce.NewContractError(ce.ErrInput, "invalid destination address ["+instructions.To+"]"),
@@ -401,7 +341,6 @@ func doUnmap(instructions *mapping.TransferParams) {
 //go:wasmexport transfer
 func Transfer(tx *string) *string {
 	checkNotPaused()
-	checkNotRagnarok()
 	var transferInstructions mapping.TransferParams
 	err := tinyjson.Unmarshal([]byte(*tx), &transferInstructions)
 	if err != nil {
@@ -427,7 +366,6 @@ func Transfer(tx *string) *string {
 //go:wasmexport transferFrom
 func TransferFrom(tx *string) *string {
 	checkNotPaused()
-	checkNotRagnarok()
 	var drawInstructions mapping.TransferParams
 	err := tinyjson.Unmarshal([]byte(*tx), &drawInstructions)
 	if err != nil {
@@ -449,7 +387,6 @@ func TransferFrom(tx *string) *string {
 //go:wasmexport approve
 func Approve(input *string) *string {
 	checkNotPaused()
-	checkNotRagnarok()
 	env := sdk.GetEnv()
 	var params mapping.AllowanceParams
 	err := tinyjson.Unmarshal([]byte(*input), &params)
@@ -478,7 +415,6 @@ func Approve(input *string) *string {
 //go:wasmexport increaseAllowance
 func IncreaseAllowance(input *string) *string {
 	checkNotPaused()
-	checkNotRagnarok()
 	env := sdk.GetEnv()
 	var params mapping.AllowanceParams
 	err := tinyjson.Unmarshal([]byte(*input), &params)
@@ -507,7 +443,6 @@ func IncreaseAllowance(input *string) *string {
 //go:wasmexport decreaseAllowance
 func DecreaseAllowance(input *string) *string {
 	checkNotPaused()
-	checkNotRagnarok()
 	env := sdk.GetEnv()
 	var params mapping.AllowanceParams
 	err := tinyjson.Unmarshal([]byte(*input), &params)
@@ -671,24 +606,6 @@ func Unpause(_ *string) *string {
 	return mapping.StrPtr("contract unpaused")
 }
 
-// Engages Ragnarök (U-4): the MONOTONIC terminal wind-down trigger. Governance-gated —
-// the SAME authority as pause/unpause (checkOwner; on mainnet the owner is the
-// Hive-multisig governance account). Once set, every user mutation and every NEW
-// rotation is frozen (checkNotRagnarok), while claimRagnarok (the return path),
-// confirmSpend/topUpFeeReserve/migrateVault/renewKey (consolidate + settle) and the
-// oracle header path stay live so depositors can be made whole. Deliberately NO
-// un-setter and no code path anywhere deletes RagnarokModeKey — "no going back,"
-// mirroring THORChain's RagnarokInProgress. A second call is idempotent (re-sets "1").
-// A SEPARATE flag from PausedKey (orthogonal axes; this does NOT auto-unpause —
-// governance unpauses explicitly if needed, see build-map D-1).
-//
-//go:wasmexport ragnarok
-func Ragnarok(_ *string) *string {
-	checkOwner()
-	sdk.StateSetObject(constants.RagnarokModeKey, "1")
-	return mapping.StrPtr("ragnarok engaged — returning funds to depositors")
-}
-
 //go:wasmexport migrate
 func Migrate(_ *string) *string {
 	checkOwner()
@@ -845,7 +762,6 @@ func RegisterPublicKey(keyStr *string) *string {
 			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
 		)
 	}
-	checkNotRagnarok() // U-4: freeze rotation — no keys for a new pending gen during wind-down
 
 	var keys mapping.RegisterKeyParams
 	err := tinyjson.Unmarshal([]byte(*keyStr), &keys)
@@ -931,7 +847,6 @@ func CreateKey(_ *string) *string {
 			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
 		)
 	}
-	checkNotRagnarok() // U-4: freeze rotation — no new generation minted during wind-down
 
 	// NN#3 (S2-close completeness F-1): refuse a new key generation while any superseded
 	// (retiring/draining) generation still holds funds — else multiple funded old keys
@@ -1001,7 +916,6 @@ func ActivateKey(_ *string) *string {
 			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
 		)
 	}
-	checkNotRagnarok() // U-4: freeze rotation — no cutover during wind-down
 
 	// S1.3: cut over to the pending generation. Its predecessor moves to RETIRING
 	// (keeps keys + funds, still fully spendable); it is NEVER purged here (S5 purges
@@ -1027,10 +941,6 @@ func DiscardPendingKey(_ *string) *string {
 			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
 		)
 	}
-	// U-4 (build-map D-3, optional/cosmetic): gate for tidiness. Moves no funds either way
-	// (only a PENDING vault, which holds no funds, can be discarded) — Ragnarök is terminal
-	// so there is nothing to re-mint into once engaged.
-	checkNotRagnarok()
 
 	// S1.3 never-brick escape: drop a stalled/failed pending keygen so the owner can
 	// re-mint. Only ever removes a PENDING vault (which holds no funds); the
@@ -1158,8 +1068,6 @@ func RegisterRouter(input *string) *string {
 			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
 		)
 	}
-	// U-4 (build-map D-3, optional/cosmetic): gate for tidiness — no DEX reconfig in wind-down.
-	checkNotRagnarok()
 
 	var router mapping.RouterContract
 	err := tinyjson.Unmarshal([]byte(*input), &router)

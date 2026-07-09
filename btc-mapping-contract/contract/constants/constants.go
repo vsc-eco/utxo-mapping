@@ -132,14 +132,6 @@ const AllowancePrefix = "q" + DirPathDelimiter
 const PausedKey = "paused"     // "1" when contract is paused, absent/empty when active
 const MigrateVersionKey = "mv" // current migration version (decimal string)
 
-// RagnarokModeKey (U-4) is the MONOTONIC terminal wind-down flag: "1" once governance
-// triggers return-to-depositors, ABSENT otherwise. Set-once, NEVER deleted (there is no
-// un-Ragnarök — "no going back", mirroring THORChain RagnarokInProgress). While set: every
-// user mutation and every NEW rotation is frozen; only claimRagnarok (return path),
-// confirmSpend/topUpFeeReserve/migrateVault (consolidate + settle) and the oracle header
-// path stay live. Absent ⇒ every code path added for it is a no-op (byte-inert).
-const RagnarokModeKey = "rg"
-
 // BtcTheftHaltKey (M1.1b) is the DETERMINISTIC BTC-keysign theft-halt flag: "1" once
 // reportUnauthorizedSpend has SPV-proven an unauthorised spend of a registered vault UTXO,
 // absent otherwise. Set by the permissionless auto-trip, cleared only by an owner
