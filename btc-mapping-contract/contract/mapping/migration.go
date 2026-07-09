@@ -82,7 +82,14 @@ func AnyFundedSupersededGen() (bool, error) {
 	}
 	var superseded []uint32
 	for i := range vaults {
-		if vaults[i].Status == VaultStatusRetiring || vaults[i].Status == VaultStatusDraining {
+		// Every non-active fund-holding status (Retiring/Draining/INACTIVE). S5 added
+		// INACTIVE to the matchable set, so a late deposit can re-fund an emptied gen;
+		// the NN#3 "no new rotation while a superseded gen is funded" gate must SEE that
+		// gen (S5 council MED — else the owner could rotate while an INACTIVE gen holds
+		// funds, piling up funded old keys = the reconstruction surface NN#3 exists to
+		// prevent). Keep in lock-step with isFundHoldingStatus and the unmap hasSuperseded.
+		if vaults[i].Status == VaultStatusRetiring || vaults[i].Status == VaultStatusDraining ||
+			vaults[i].Status == VaultStatusInactive {
 			superseded = append(superseded, vaults[i].Generation)
 		}
 	}

@@ -214,11 +214,12 @@ func TestMigrateV2NumericVersionNoRegression(t *testing.T) {
 }
 
 // TestVaultRegistryRoundTripAllFields round-trips every Vault field incl. Predecessor
-// + the three heights (S5 grace data) that no other test asserts symmetric.
+// + the four heights (Created/Activated/Retired + the S5 InactiveHeight grace anchor)
+// that no other test asserts symmetric. Guards the VaultEntrySize 87→91 schema bump.
 func TestVaultRegistryRoundTripAllFields(t *testing.T) {
 	in := mapping.VaultRegistry{{
-		Generation: 7, Status: mapping.VaultStatusDraining, Predecessor: 6,
-		CreatedHeight: 111, ActivatedHeight: 222, RetiredHeight: 333,
+		Generation: 7, Status: mapping.VaultStatusInactive, Predecessor: 6,
+		CreatedHeight: 111, ActivatedHeight: 222, RetiredHeight: 333, InactiveHeight: 444,
 	}}
 	copy(in[0].Primary[:], decodeHex(t, TestPrimaryPubKeyHex))
 	copy(in[0].Backup[:], decodeHex(t, TestBackupPubKeyHex))

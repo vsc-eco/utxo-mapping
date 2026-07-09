@@ -178,7 +178,7 @@ func UnmarshalUtxoRegistry(data []byte) (UtxoRegistry, error) {
 }
 
 // ---------------------------------------------------------------------------
-// Vault registry binary encoding (VaultEntrySize=87 bytes/entry) — S1 dual-gen.
+// Vault registry binary encoding (VaultEntrySize=91 bytes/entry) — S1 dual-gen + S5 InactiveHeight.
 // Mirrors the UtxoRegistry packed-blob idiom. See types.go Vault for the layout.
 // ---------------------------------------------------------------------------
 
@@ -195,6 +195,7 @@ func MarshalVaultRegistry(v VaultRegistry) []byte {
 		binary.BigEndian.PutUint32(buf[off+75:], e.CreatedHeight)
 		binary.BigEndian.PutUint32(buf[off+79:], e.ActivatedHeight)
 		binary.BigEndian.PutUint32(buf[off+83:], e.RetiredHeight)
+		binary.BigEndian.PutUint32(buf[off+87:], e.InactiveHeight)
 	}
 	return buf
 }
@@ -214,6 +215,7 @@ func UnmarshalVaultRegistry(data []byte) (VaultRegistry, error) {
 		out[i].CreatedHeight = binary.BigEndian.Uint32(data[off+75:])
 		out[i].ActivatedHeight = binary.BigEndian.Uint32(data[off+79:])
 		out[i].RetiredHeight = binary.BigEndian.Uint32(data[off+83:])
+		out[i].InactiveHeight = binary.BigEndian.Uint32(data[off+87:])
 	}
 	return out, nil
 }

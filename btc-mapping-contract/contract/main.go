@@ -910,6 +910,40 @@ func MigrateVault(_ *string) *string {
 	return mapping.StrPtr(result)
 }
 
+//go:wasmexport retireVault
+func RetireVault(_ *string) *string {
+	// leave this as owner always
+	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
+		ce.CustomAbort(
+			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
+		)
+	}
+
+	// S5.0: reconcile the superseded-generation lifecycle tail (DRAINING→INACTIVE→PURGED)
+	// against the live UTXO registry + BTC height. PAUSE-GATED (like migrateVault): a purge
+	// retires a gen's address out of the deposit-matchable set and — via S5.1 — signals TSS
+	// share destruction, exactly the irreversible actions that must NOT proceed during an
+	// emergency pause. This op performs NO key destruction itself; it only drives contract
+	// status. Idempotent: a call with nothing to transition writes the (unchanged) registry
+	// and returns "no generation transitions".
+	checkNotPaused()
+	// ABORT (do not proceed at height 0) if the block height is unavailable. height=0
+	// would anchor a DRAINING→INACTIVE transition at InactiveHeight=0, which the
+	// canPurgeGen fail-closed guard then treats as "never inactivated" — permanently
+	// stranding that gen (safe-but-stuck). Fail loudly instead of relying on a guard in
+	// another function (S5 council L-1, flagged by 3 lenses). A real DRAINING gen cannot
+	// coexist with height==0 (S2 requires seeded blocks), so this never fires in practice.
+	height, err := blocklist.LastHeightFromState()
+	if err != nil {
+		ce.CustomAbort(ce.Prepend(err, "retireVault: block height unavailable"))
+	}
+	result, err := mapping.ReconcileRetiringVaults(height)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	return mapping.StrPtr(result)
+}
+
 //go:wasmexport registerRouter
 func RegisterRouter(input *string) *string {
 	env := sdk.GetEnv()

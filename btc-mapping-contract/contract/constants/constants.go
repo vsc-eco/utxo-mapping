@@ -56,6 +56,19 @@ const VaultRegistryKey = "v"    // packed VaultEntrySize-byte entries (whole lis
 const VaultNextGenKey = "vn"    // 4-byte BE: next generation number to mint
 const VaultActiveGenKey = "va"  // 4-byte BE: generation currently receiving new deposits
 
+// VaultPurgeGraceBlocks (S5) is the BTC-block grace an emptied (INACTIVE) generation
+// must wait, measured from its InactiveHeight, before it may transition INACTIVE→PURGED.
+// It is the "grace ≥ max BTC reorg depth" safety leg (S5 gate leg (c) / G14): a deep
+// reorg could re-introduce a swept UTXO, so purging (which retires the address out of
+// the deposit-matchable set) must wait long enough that any such reorg — and any
+// still-in-flight late deposit — is first observed and credited (reverting the gen to
+// DRAINING). 144 blocks (~24h) is far beyond any reorg Bitcoin mainnet has ever seen
+// (deepest ever a handful of blocks) yet keeps a retired key from lingering more than a
+// day past emptiness. Measured in the same BTC-height units as the vault height fields.
+// NOTE: this alone is NOT sufficient to DESTROY keys — key destruction (S5.1) additionally
+// requires the independent zero-balance attestation (leg (d)); purge only STOPS matching.
+const VaultPurgeGraceBlocks = 144
+
 const LastHeightKey = "h"
 const SeedHeightKey = "sh"
 const PruneFloorKey = "pf" // lowest unpruned block height, updated during pruning

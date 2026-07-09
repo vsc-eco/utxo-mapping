@@ -150,8 +150,17 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint16, int64, error) 
 	// pre/post-rotation case (single active gen) skips it, so the hot path and
 	// pre-vault (gen-0-only, no Vaults) behaviour are byte-identical.
 	activeIdx := firstVaultWithStatus(cs.Vaults, VaultStatusActive)
+	// This set MUST equal isFundHoldingStatus MINUS Active — every non-active
+	// fund-holding generation whose UTXOs a user unmap must NOT select (its key is
+	// output-scoped to migration sweeps only, S3/D-1). S5 added INACTIVE to
+	// isFundHoldingStatus (a late deposit keeps an emptied gen matchable); the S5
+	// council found this predicate had NOT moved with it — reopening the D-1 silent
+	// debit-without-delivery hole for an INACTIVE gen in the normal post-rotation
+	// state (active + inactive, no retiring/draining). If you add a status to
+	// isFundHoldingStatus, add it here AND in AnyFundedSupersededGen (NN#3).
 	hasSuperseded := countVaultsWithStatus(cs.Vaults, VaultStatusRetiring)+
-		countVaultsWithStatus(cs.Vaults, VaultStatusDraining) > 0
+		countVaultsWithStatus(cs.Vaults, VaultStatusDraining)+
+		countVaultsWithStatus(cs.Vaults, VaultStatusInactive) > 0
 	// The filter must engage whenever a superseded fund-holding generation
 	// exists, INDEPENDENT of whether an Active gen is present. The earlier
 	// `activeIdx >= 0 && ...` silently disabled it in a corrupt 0-Active state,

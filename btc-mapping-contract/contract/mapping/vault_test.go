@@ -170,16 +170,20 @@ func TestDepositTaggedWithGeneration(t *testing.T) {
 }
 
 // TestIsFundHoldingStatusSet pins the deposit-matchable ≡ renewable set to exactly
-// {active, retiring, draining}. Both S1.4 deposit matching and RenewableVaultKeyIds
-// route through isFundHoldingStatus, so widening/narrowing either side (which would
-// break the "credited ⇒ renewable ⇒ signable" coupling) fails here.
+// {active, retiring, draining, INACTIVE}. Both S1.4 deposit matching and
+// RenewableVaultKeyIds route through isFundHoldingStatus. S5 re-includes INACTIVE
+// (match-until-purged): an emptied-but-unpurged gen must stay matchable so a late
+// deposit is credited AND its key stays renewable/signable so that deposit can be
+// swept once the retire op reverts the gen to DRAINING. Only PENDING (no keys) and
+// PURGED (address retired) are out. Widening/narrowing either side — which would break
+// the "credited ⇒ renewable ⇒ signable" coupling — fails here.
 func TestIsFundHoldingStatusSet(t *testing.T) {
 	want := map[VaultStatus]bool{
 		VaultStatusPending:  false,
 		VaultStatusActive:   true,
 		VaultStatusRetiring: true,
 		VaultStatusDraining: true,
-		VaultStatusInactive: false,
+		VaultStatusInactive: true,
 		VaultStatusPurged:   false,
 	}
 	for s, exp := range want {
@@ -226,29 +230,35 @@ func TestDepositAddressGenerationsMultiGen(t *testing.T) {
 }
 
 // TestDepositAddressGenerationsExcludesAndFallsBack proves the matchable set is
-// exactly the fund-holding, keyed generations (draining INCLUDED; pending / inactive
-// / purged EXCLUDED) and the pre-fold / fresh-deploy fail-safe fallback.
+// exactly the fund-holding, keyed generations (draining + INACTIVE INCLUDED — S5
+// match-until-purged; pending / purged EXCLUDED) and the pre-fold / fresh-deploy
+// fail-safe fallback.
 func TestDepositAddressGenerationsExcludesAndFallsBack(t *testing.T) {
 	act, actb := pk(0x51), pk(0x52)
 	cs := &ContractState{
 		Vaults: VaultRegistry{
 			{Generation: 5, Primary: act, Backup: actb, Status: VaultStatusActive},
 			{Generation: 2, Primary: pk(0x91), Backup: pk(0x92), Status: VaultStatusDraining}, // fund-holding → included
-			{Generation: 4, Primary: pk(0x61), Backup: pk(0x62), Status: VaultStatusInactive}, // excluded
-			{Generation: 3, Primary: pk(0x71), Backup: pk(0x72), Status: VaultStatusPurged},   // excluded
-			{Generation: 6, Primary: pk(0x81), Backup: pk(0x82), Status: VaultStatusPending},  // excluded
+			{Generation: 4, Primary: pk(0x61), Backup: pk(0x62), Status: VaultStatusInactive}, // S5: matchable until purged → included
+			{Generation: 3, Primary: pk(0x71), Backup: pk(0x72), Status: VaultStatusPurged},   // excluded (address retired)
+			{Generation: 6, Primary: pk(0x81), Backup: pk(0x82), Status: VaultStatusPending},  // excluded (no keys)
 		},
 		ActiveGen: 5,
 	}
 	got := cs.depositAddressGenerations()
-	if len(got) != 2 {
-		t.Fatalf("want active gen 5 + draining gen 2 only, got %d entries", len(got))
+	if len(got) != 3 {
+		t.Fatalf("want active gen 5 + draining gen 2 + inactive gen 4, got %d entries", len(got))
 	}
 	if got[0].generation != 5 {
 		t.Fatalf("active gen 5 must be first, got gen %d", got[0].generation)
 	}
+	// Non-active fund-holding gens follow in vault-list order: draining gen 2, then
+	// inactive gen 4 (S5 match-until-purged keeps an emptied gen matchable).
 	if got[1].generation != 2 {
 		t.Fatalf("draining gen 2 must be matched (fund-holding), got gen %d", got[1].generation)
+	}
+	if got[2].generation != 4 {
+		t.Fatalf("inactive gen 4 must be matched (S5 match-until-purged), got gen %d", got[2].generation)
 	}
 
 	// A PENDING active-gen with ZERO keys (fresh-deploy genesis pre-activation) must

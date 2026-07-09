@@ -88,15 +88,21 @@ const (
 
 // VaultEntrySize is the fixed packed-binary width of one Vault entry in the "v"
 // registry blob: 4 gen + 33 primary + 33 backup + 1 status + 4 predecessor +
-// 4*3 heights = 87 bytes.
-const VaultEntrySize = 87
+// 4*4 heights = 91 bytes.
+//
+// SCHEMA NOTE (S5): grew 87→91 to carry InactiveHeight (the DRAINING→INACTIVE
+// grace anchor). Safe: the "v" registry is S1 rotation machinery, never written
+// on any deployed (mainnet) contract — this whole branch is pre-pin and inert
+// behind the node deploy gate, so there is no live 87-byte blob to migrate.
+// Marshal/Unmarshal (utils.go) MUST move in lock-step with this constant.
+const VaultEntrySize = 91
 
 // Vault is one generation of the BTC vault key set. Vaults form an append-only
 // list (state key "v"): minting a generation appends a PENDING entry; existing
 // entries only STATUS-transition — their pubkeys are NEVER mutated, preserving
 // the mainnet key-immutability property. See S1-DESIGN.md.
 //
-// Binary layout (VaultEntrySize = 87 bytes/entry, big-endian):
+// Binary layout (VaultEntrySize = 91 bytes/entry, big-endian):
 //
 //	[0:4]   Generation
 //	[4:37]  Primary  (33-byte compressed pubkey)
@@ -105,7 +111,8 @@ const VaultEntrySize = 87
 //	[71:75] Predecessor      (generation this one succeeds; gen 0 = 0)
 //	[75:79] CreatedHeight
 //	[79:83] ActivatedHeight
-//	[83:87] RetiredHeight
+//	[83:87] RetiredHeight    (BTC height it went ACTIVE→RETIRING)
+//	[87:91] InactiveHeight   (BTC height it went DRAINING→INACTIVE; S5 purge-grace anchor, 0 until then)
 type Vault struct {
 	Generation      uint32
 	Primary         CompressedPubKey
@@ -115,6 +122,12 @@ type Vault struct {
 	CreatedHeight   uint32
 	ActivatedHeight uint32
 	RetiredHeight   uint32
+	// InactiveHeight is the BTC block height at which this gen was reconciled
+	// DRAINING→INACTIVE (registry-empty). It is the anchor for the purge grace
+	// (Inactive→Purged requires height ≥ InactiveHeight + VaultPurgeGraceBlocks).
+	// 0 for any gen that has not been reconciled to INACTIVE — and a 0 value is a
+	// hard fail-closed guard in the purge gate (never purge a gen with no anchor).
+	InactiveHeight uint32
 }
 
 // VaultRegistry is the in-memory append-only vault-generation list, serialised as

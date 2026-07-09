@@ -6,6 +6,7 @@ import (
 	"btc-mapping-contract/sdk"
 	"encoding/binary"
 	"encoding/hex"
+	"strconv"
 	"strings"
 )
 
@@ -441,16 +442,18 @@ func DiscardPendingGeneration() (uint32, error) {
 // late deposit is always strictly better than dropping it (dropped = uncredited
 // loss; matched = credited + at-least-backup-recoverable).
 //
-// EXCLUSIONS: Pending (no keys yet) is excluded. Inactive and Purged are excluded
-// ONLY because S1 never produces them (S1 drives Pending→Active→Retiring only) — NOT
-// because an Inactive gen is safe to ignore. S1-DESIGN §5a-#4 requires addresses stay
-// matchable UNTIL PURGED (a late deposit to an emptied-but-unpurged gen must still
-// credit + revert it to Draining). ★ S5 MUST re-include Inactive here (paired with
-// revert-on-late-deposit) when it builds the Inactive→Purged flow, or it reopens the
-// C-2/NR-4 fund-loss. Purged stays excluded (shares destroyed → unspendable → its
-// address must not be advertised).
+// EXCLUSIONS: Pending (no keys yet) is excluded. Purged is excluded (shares destroyed
+// → unspendable → its address must not be advertised). Inactive is INCLUDED (S5): an
+// emptied-but-unpurged gen stays deposit-matchable so a late/in-flight deposit to its
+// address is still credited (S1-DESIGN §5a-#4, the C-2/NR-4 fund-loss guard). Because
+// Inactive is matchable, such a deposit re-tags a UTXO to the gen; the retire op
+// (ReconcileRetiringVaults) then observes the gen is registry-non-empty and REVERTS it
+// INACTIVE→DRAINING so the sweep re-engages ("match-until-purged" + revert-on-late-
+// deposit). A gen only leaves the matchable set at PURGE, which is gated on registry-
+// emptiness + grace, so no matchable gen can be purged out from under a live deposit.
 func isFundHoldingStatus(s VaultStatus) bool {
-	return s == VaultStatusActive || s == VaultStatusRetiring || s == VaultStatusDraining
+	return s == VaultStatusActive || s == VaultStatusRetiring ||
+		s == VaultStatusDraining || s == VaultStatusInactive
 }
 
 // tssKeyIsRenewable reports whether the TSS key for keyId can be renewed WITHOUT
@@ -505,4 +508,172 @@ func RenewableVaultKeyIds() (renewable []string, skipped []string, err error) {
 		}
 	}
 	return renewable, skipped, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// S5 — fund-gated retirement tail (DRAINING → INACTIVE → PURGED).
+//
+// S1 owns Pending→Active→Retiring; S2 owns Retiring→Draining (on a completed,
+// confirmed sweep). This is the S5 consumer that migration.go deliberately left
+// unbuilt ("producing INACTIVE in S2 — before this consumer exists — would drop the
+// gen out of isFundHoldingStatus and reopen the C-2/NR-4 late-deposit loss"). It is
+// invoked by the owner-only, pause-gated retireVault op.
+//
+// ★ S5.0 (this file): the CONTRACT state machine only. It performs NO TSS key
+// destruction — a PURGED gen's shares still exist. Purging only removes the gen from
+// the deposit-matchable set (address retired). S5.1 (node side) reads the PURGED status
+// as the signal to destroy shares, and gates that destroy on leg (d) (the independent
+// zero-balance attestation) — the one irreversible, permanent-loss-capable step.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ReconcileRetiringVaults reconciles every superseded generation's STATUS against the
+// live UTXO registry + BTC block height. Owner-only, pause-gated (caller). Idempotent and
+// deterministic: slice scans + keyed loads; the funded-gen set is a map used ONLY for
+// lookups (never ranged), so every consensus-re-executing node computes the identical
+// transitions at a given height.
+//
+// Per generation, at most ONE transition fires (mutually exclusive on current status):
+//
+//	DRAINING & registry-non-empty              -> stays DRAINING   (still funded; the sweep owns it)
+//	DRAINING & registry-EMPTY                  -> INACTIVE          [leg (a): all known UTXOs swept+confirmed]
+//	                                              (records InactiveHeight = height → the grace anchor)
+//	INACTIVE & registry-non-empty              -> DRAINING (REVERT) [match-until-purged: a late deposit re-funded it]
+//	INACTIVE & registry-EMPTY & canPurgeGen    -> PURGED            [legs (a)+(c)+(d); (b) = purge retires the address]
+//	INACTIVE & registry-EMPTY & !canPurgeGen   -> stays INACTIVE    (grace not yet elapsed / attestation absent)
+//
+// SAFETY — a registry-funded gen can NEVER be purged: the purge branch requires
+// registry-EMPTY, and because INACTIVE is in isFundHoldingStatus, a late deposit to an
+// emptied gen re-tags a UTXO to it (registry-non-empty) → the REVERT branch fires first →
+// back to DRAINING → swept. So funds ever credited to a gen are never destroyed by a purge.
+// PENDING/ACTIVE/RETIRING/PURGED gens are untouched here (Retiring→Draining is S2's job).
+func ReconcileRetiringVaults(height uint32) (string, error) {
+	FoldLegacyGen0IfNeeded()
+	vaults, nextGen, activeGen, err := LoadVaultState()
+	if err != nil {
+		return "", err
+	}
+	funded, err := fundedGenerations()
+	if err != nil {
+		return "", err
+	}
+	var toInactive, toDraining, toPurged []uint32
+	for i := range vaults {
+		v := &vaults[i]
+		switch v.Status {
+		case VaultStatusDraining:
+			if !funded[v.Generation] {
+				v.Status = VaultStatusInactive
+				v.InactiveHeight = height
+				toInactive = append(toInactive, v.Generation)
+			}
+		case VaultStatusInactive:
+			if funded[v.Generation] {
+				// A late/reorg deposit re-funded an emptied gen — revert so the sweep
+				// re-engages (AnyFundedSupersededGen / HandleMigrateVault only act on
+				// RETIRING|DRAINING). Reset the grace anchor: a fresh emptying must restart
+				// the full grace clock before this gen can be purged again.
+				v.Status = VaultStatusDraining
+				v.InactiveHeight = 0
+				toDraining = append(toDraining, v.Generation)
+			} else if canPurgeGen(v, height) {
+				v.Status = VaultStatusPurged
+				toPurged = append(toPurged, v.Generation)
+			}
+		}
+	}
+	// Always persist (matches every other lifecycle op; also persists any fold). The
+	// active-gen / next-gen counters are passed through unchanged — retire never touches
+	// the ACTIVE generation (it is never DRAINING/INACTIVE).
+	SaveVaultState(vaults, nextGen, activeGen)
+	return retireResultString(toInactive, toDraining, toPurged), nil
+}
+
+// fundedGenerations returns the set of vault generations that currently hold at least one
+// UTXO in the registry. The returned map is for keyed LOOKUPS only (never ranged) →
+// determinism-safe. Mirrors AnyFundedSupersededGen's scan (loadUtxo per registry entry).
+// An empty/absent registry → empty set (every superseded gen is then registry-empty).
+func fundedGenerations() (map[uint32]bool, error) {
+	funded := make(map[uint32]bool)
+	utxoState := sdk.StateGetObject(constants.UtxoRegistryKey)
+	if utxoState == nil || len(*utxoState) == 0 {
+		return funded, nil
+	}
+	utxos, err := UnmarshalUtxoRegistry([]byte(*utxoState))
+	if err != nil {
+		return nil, ce.NewContractError(ce.ErrStateAccess, "error decoding utxo registry: "+err.Error())
+	}
+	for i := range utxos {
+		u, lerr := loadUtxo(utxos[i].Id)
+		if lerr != nil {
+			return nil, lerr
+		}
+		funded[u.Generation] = true
+	}
+	return funded, nil
+}
+
+// canPurgeGen reports whether an emptied INACTIVE gen may transition to PURGED. A purge
+// retires the gen's address out of the deposit-matchable set, so it must be provably safe:
+//
+//	(c) grace ≥ reorg depth — height ≥ InactiveHeight + VaultPurgeGraceBlocks. Guarded by a
+//	    hard fail-closed check that InactiveHeight is set (non-zero): never purge a gen that
+//	    did not pass DRAINING→INACTIVE under this op. Overflow-safe (subtract after the ≥).
+//	(d) zero-balance attestation — zeroBalanceAttested (TRACKED; see its doc).
+//
+// (a) registry-emptiness is the caller's precondition (the INACTIVE&&!funded branch); (b)
+// address-retirement is intrinsic to the PURGE transition itself (Purged ∉ isFundHoldingStatus).
+func canPurgeGen(v *Vault, height uint32) bool {
+	if v.InactiveHeight == 0 {
+		return false // fail-closed: no grace anchor recorded
+	}
+	if height < v.InactiveHeight || height-v.InactiveHeight < constants.VaultPurgeGraceBlocks {
+		return false // grace window not yet elapsed
+	}
+	return zeroBalanceAttested(v)
+}
+
+// zeroBalanceAttested is S5 gate leg (d): an INDEPENDENT attestation that the gen's vault
+// address holds ZERO L1 balance. SPV proves a tx is IN a block but CANNOT prove the ABSENCE
+// of UTXOs at an address, so a genuine zero-balance proof needs an external oracle (same
+// class as the M1.1b solvency-observation oracle). That oracle is NOT built yet — this is
+// the TRACKED leg (user directive: "build (a)+(b)+(c) now, track (d)").
+//
+// ★ INTENTIONAL PERMISSIVE STUB (returns true). It keeps the DRAINING→INACTIVE→PURGED state
+// machine reachable so the full rotation cycle can be devnet-proven now. SAFE pre-pin because:
+//  1. the whole rotation feature is inert behind the node deploy gate;
+//  2. S5.0 purge only STOPS matching — it destroys NO keys (S5.1 does, and S5.1 will gate the
+//     real, irreversible destroy on this attestation); and
+//  3. the HARD DEPLOY GATE forbids pinning the rotation activation height until leg (d) is
+//     genuinely built + devnet-proven (project memory / node params.go pin-gate (m2)).
+//
+// When the oracle lands, replace this body with the real attestation read — nothing else changes.
+func zeroBalanceAttested(_ *Vault) bool {
+	return true // TODO(S5-leg-d): read the independent zero-balance oracle attestation.
+}
+
+// retireResultString renders a deterministic human-readable summary of the transitions a
+// single retireVault call performed (vault-index order). Purely informational return value.
+func retireResultString(toInactive, toDraining, toPurged []uint32) string {
+	if len(toInactive) == 0 && len(toDraining) == 0 && len(toPurged) == 0 {
+		return "retire: no generation transitions"
+	}
+	result := "retire:"
+	if len(toInactive) > 0 {
+		result += " inactivated=" + joinGens(toInactive)
+	}
+	if len(toDraining) > 0 {
+		result += " reverted-to-draining=" + joinGens(toDraining)
+	}
+	if len(toPurged) > 0 {
+		result += " purged=" + joinGens(toPurged)
+	}
+	return result
+}
+
+func joinGens(gens []uint32) string {
+	parts := make([]string, len(gens))
+	for i, g := range gens {
+		parts[i] = strconv.FormatUint(uint64(g), 10)
+	}
+	return strings.Join(parts, ",")
 }
