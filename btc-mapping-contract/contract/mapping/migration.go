@@ -152,7 +152,7 @@ func assertOutputsPaySuccessor(tx *wire.MsgTx, successorScript []byte) error {
 // buildMigrationTransaction builds a sweep spending `inputs` (all of the retiring gen)
 // and paying the entire value, minus the miner fee, to a single output at
 // successorAddress (the active generation's vault address). Does NOT request signing.
-func (cs *ContractState) buildMigrationTransaction(inputs []*Utxo, totalInputs int64, successorAddress string) (*wire.MsgTx, map[int][]byte, int64, error) {
+func (cs *ContractState) buildMigrationTransaction(inputs []*Utxo, totalInputs int64, successorAddress string, prevFee int64) (*wire.MsgTx, map[int][]byte, int64, error) {
 	tx := wire.NewMsgTx(wire.TxVersion)
 	witnessScripts, err := cs.addInputsWithWitnesses(tx, inputs)
 	if err != nil {
@@ -177,12 +177,31 @@ func (cs *ContractState) buildMigrationTransaction(inputs []*Utxo, totalInputs i
 	if err != nil {
 		return nil, nil, 0, err
 	}
+	// L7-01 re-drive floor: when re-building a STUCK sweep (prevFee>0), the replacement must
+	// out-fee the original by at least the BIP-125 rule-4 incremental relay fee, else mempools
+	// reject the replacement. minBump = RedriveIncRelayFeeRate * vSize (vSize = fee/rate, exact
+	// since calculateSegwitFee returns vSize*rate). newFee = max(current oracle fee, prevFee +
+	// minBump) so it works whether the fee spike persists (oracle fee already high) or eased
+	// (floor forces the bump). Normal migrate passes prevFee=0 → no floor → byte-identical.
+	if prevFee > 0 {
+		rate := clampedFeeRate(cs.Supply.BaseFeeRate)
+		minBump := constants.RedriveIncRelayFeeRate * (fee / rate)
+		if minBump < 1 {
+			minBump = 1
+		}
+		minReplaceFee, aerr := safeAdd64(prevFee, minBump)
+		if aerr != nil {
+			return nil, nil, 0, ce.WrapContractError(ce.ErrArithmetic, aerr, "re-drive min replacement fee overflow")
+		}
+		if fee < minReplaceFee {
+			fee = minReplaceFee
+		}
+	}
 	// V5-4 (migration-fee sanity ceiling): a rogue/glitched oracle BaseFeeRate (already
 	// clamped to MaxBaseFeeRate) must not burn most of a tranche on miner fees. Reject a
 	// sweep whose fee exceeds half the tranche value — fail-safe (the gen keeps these
-	// UTXOs, recoverable; abort leaves no state change). A tighter economical-fraction
-	// ceiling + a dust-burn / reserve-subsidy escape (V-1) for a genuinely un-sweepable
-	// dust residual is deferred (S2.4-refinement / S5).
+	// UTXOs, recoverable; abort leaves no state change). For a re-drive this is ALSO the
+	// affordability gate: a bump that can't fit under the ceiling routes to the dust residual.
 	if fee > totalInputs/2 {
 		return nil, nil, 0, ce.NewContractError(ce.ErrTransaction, "migration fee exceeds half the tranche value — sweep deferred")
 	}
@@ -281,7 +300,7 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	tx, witnessScripts, btcFee, err := cs.buildMigrationTransaction(inputUtxos, total, successorAddress)
+	tx, witnessScripts, btcFee, err := cs.buildMigrationTransaction(inputUtxos, total, successorAddress, 0)
 	if err != nil && usingCanary {
 		// F1 (canary council, MEDIUM): the small canary cap can make the FIRST tranche too
 		// small to cover its own sweep fee (fee>half, or below the dust floor) at a high fee
@@ -294,7 +313,7 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 		if err == nil && len(inputIds) > 0 {
 			inputUtxos, err = getInputUtxos(inputIds)
 			if err == nil {
-				tx, witnessScripts, btcFee, err = cs.buildMigrationTransaction(inputUtxos, total, successorAddress)
+				tx, witnessScripts, btcFee, err = cs.buildMigrationTransaction(inputUtxos, total, successorAddress, 0)
 			}
 		}
 	}
@@ -388,7 +407,13 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 // loads, no map ranging.
 func (cs *ContractState) pendingMigrationState() (map[uint16]struct{}, int64, error) {
 	excluded := make(map[uint16]struct{})
-	var feeSum int64
+	// L7-01 D6: a re-driven sweep and its stuck original are DIFFERENT txids over the SAME
+	// inputs (one spend group), each with its own "ms-" record + BtcFee — but only ONE can
+	// ever confirm. Reserve ONE fee per group (the MAX committed, since a later member always
+	// bumps higher), not the sum of members, else the reserve double-counts and over-holds
+	// FeeSupply → wedges other migrations. Keyed by the shared spend-group key (min input id);
+	// a group-of-one (no re-drive) reserves exactly its own fee, unchanged.
+	groupMaxFee := make(map[string]int64)
 	for _, txId := range cs.MigrationSweeps {
 		raw := sdk.StateGetObject(constants.MigrationSweepPrefix + txId)
 		if raw == nil || *raw == "" {
@@ -401,7 +426,15 @@ func (cs *ContractState) pendingMigrationState() (map[uint16]struct{}, int64, er
 		for _, id := range rec.InputIds {
 			excluded[id] = struct{}{}
 		}
-		feeSum, err = safeAdd64(feeSum, rec.BtcFee)
+		gk := spendGroupKey(rec.InputIds)
+		if rec.BtcFee > groupMaxFee[gk] {
+			groupMaxFee[gk] = rec.BtcFee
+		}
+	}
+	var feeSum int64
+	for _, f := range groupMaxFee {
+		var err error
+		feeSum, err = safeAdd64(feeSum, f) // order-independent: sum of bounded non-negatives
 		if err != nil {
 			return nil, 0, ce.WrapContractError(ce.ErrArithmetic, err, "pending migration fee sum overflow")
 		}

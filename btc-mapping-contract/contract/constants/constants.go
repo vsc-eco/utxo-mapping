@@ -16,6 +16,22 @@ const RouterContractIdKey = "routerid"
 // rather than assuming a default — the node side is unchanged.
 const RbfSequence uint32 = 0xfffffffd
 
+// L7-01 re-drive tuning (spec v2 D3/RBF-1).
+//
+// RedriveStaleBlocks: minimum L1 blocks since a spend's BuildHeight before it may be
+// re-driven — long enough that we never race a tx about to confirm (the oracle submits
+// headers at ~2 confirmations). Staleness is hygiene, NOT safety: identical inputs ⇒
+// Bitcoin confirms ≤1 of {original, replacements}, and a late replacement over an
+// already-confirmed original is simply network-rejected. Set > the accepted reorg depth.
+//
+// RedriveIncRelayFeeRate: the BIP-125 rule-4 incremental relay fee (sat/vByte) the
+// replacement must pay ABOVE the stuck original — so minBump = RedriveIncRelayFeeRate *
+// vSize. 2 (> the 1 sat/vByte default) gives margin so the replacement reliably relays.
+const (
+	RedriveStaleBlocks      uint32 = 12
+	RedriveIncRelayFeeRate  int64  = 2
+)
+
 // UTXO ID pool layout (uint16 ID, 65536 slots total).
 // IDs 0–1023   are the unconfirmed pool (change outputs pending confirmation).
 // IDs 1024–65535 are the confirmed pool (active mapped UTXOs ready to spend).
