@@ -405,6 +405,130 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 // that cannot be decoded aborts the whole scan (never silently drop an exclusion or
 // under-count the reserved fee). Deterministic: iterates the slice in order + keyed
 // loads, no map ranging.
+// HandleRedriveSweep re-drives a STUCK, never-confirming migration sweep (L7-01): it
+// re-signs a REPLACEMENT over the sweep's EXACT reserved inputs (spec v2 H4) with a higher
+// BIP-125 fee, so a fee-spiked / mempool-evicted sweep can finally confirm instead of
+// wedging rotation forever (NN#3). Owner-gated + pause-gated at the entrypoint (D2/D5).
+//
+// Fund-safety: the replacement spends the IDENTICAL inputs, so Bitcoin confirms AT MOST ONE
+// of {original, replacements} — no double-spend is physically possible. The replacement and
+// original form one SPEND GROUP; a settle of EITHER clears the whole group atomically
+// (clearSpendGroup, H2). The bumped fee is covered by the FeeSupply reserve checked here and
+// debited only at settle for whichever member confirms (per-txid BtcFee → H3/P1).
+func (cs *ContractState) HandleRedriveSweep(txId string) (string, error) {
+	raw := sdk.StateGetObject(constants.MigrationSweepPrefix + txId)
+	if raw == nil || *raw == "" {
+		return "", ce.NewContractError(ce.ErrInput, "no in-flight migration sweep for that txid (already settled, or not a sweep)")
+	}
+	rec, err := UnmarshalMigrationSweep([]byte(*raw))
+	if err != nil {
+		return "", ce.NewContractError(ce.ErrStateAccess, "error decoding migration sweep record: "+err.Error())
+	}
+
+	// Staleness gate (D3): only re-drive a sweep that has genuinely failed to confirm for
+	// RedriveStaleBlocks, so we never race a tx about to confirm. Hygiene, not safety.
+	nowH := currentLastHeight()
+	if rec.BuildHeight == 0 || nowH < rec.BuildHeight || nowH-rec.BuildHeight < constants.RedriveStaleBlocks {
+		return "", ce.NewContractError(ce.ErrTransaction, "sweep not yet stale enough to re-drive")
+	}
+
+	// Fee to out-bid = the group's current HIGHEST committed fee (BIP-125 rule 3 must beat
+	// every live mempool version, not only the passed txid). Group-of-one ⇒ this record's fee.
+	gk := spendGroupKey(rec.InputIds)
+	prevHighestFee := rec.BtcFee
+	var group *SpendGroup
+	if graw := sdk.StateGetObject(gk); graw != nil && *graw != "" {
+		if g, gerr := UnmarshalSpendGroup([]byte(*graw)); gerr == nil {
+			group = g
+			if g.HighestFee > prevHighestFee {
+				prevHighestFee = g.HighestFee
+			}
+		}
+	}
+
+	// Rebuild over EXACTLY the recorded inputs (never the selectors — those exclude reserved
+	// inputs → a non-conflicting tx → real double-spend) reusing the recorded successor (H4).
+	inputUtxos, err := getInputUtxos(rec.InputIds)
+	if err != nil {
+		return "", err
+	}
+	var total int64
+	for _, u := range inputUtxos {
+		total, err = safeAdd64(total, u.Amount)
+		if err != nil {
+			return "", ce.WrapContractError(ce.ErrArithmetic, err, "re-drive input total overflow")
+		}
+	}
+	tx, witnessScripts, newFee, err := cs.buildMigrationTransaction(inputUtxos, total, rec.SuccessorAddress, prevHighestFee)
+	if err != nil {
+		// fee ceiling / dust: the bumped fee cannot fit under totalInputs/2 — the genuinely
+		// un-re-drivable dust residual (spec v2 §3f) is a separate owner op; surface it here.
+		return "", ce.Prepend(err, "cannot re-drive sweep (bumped fee exceeds the ceiling or leaves dust)")
+	}
+
+	// Reserve check (H1/D6): raising THIS group's reserve from prevHighestFee to newFee must
+	// keep FeeSupply >= Σ(per-group max fees), so settleMigrationSweep's DEFERRED debit of the
+	// confirmed member's newFee can never underflow (a post-L1 brick). pendingMigrationState
+	// already counts this group at prevHighestFee; add only the delta. Fail-safe: abort BEFORE
+	// signing (no state change; the gen keeps its UTXOs, the original stays settle-able).
+	_, pendingFeeSum, err := cs.pendingMigrationState()
+	if err != nil {
+		return "", err
+	}
+	feeDelta, err := safeSubtract64(newFee, prevHighestFee)
+	if err != nil {
+		return "", ce.WrapContractError(ce.ErrArithmetic, err, "re-drive fee delta arithmetic")
+	}
+	feeNeeded, err := safeAdd64(pendingFeeSum, feeDelta)
+	if err != nil {
+		return "", ce.WrapContractError(ce.ErrArithmetic, err, "re-drive pending-fee sum overflow")
+	}
+	if cs.Supply.FeeSupply < feeNeeded {
+		return "", ce.NewContractError(ce.ErrBalance, "insufficient fee reserve to cover the re-drive fee bump")
+	}
+
+	signingData, err := signSpendTransaction(tx, inputUtxos, witnessScripts)
+	if err != nil {
+		return "", ce.WrapContractError(ce.ErrTransaction, err, "error signing re-drive sweep")
+	}
+	signingBytes, err := MarshalSigningData(signingData)
+	if err != nil {
+		return "", ce.WrapContractError(ce.ErrJson, err, "error marshalling re-drive signing data")
+	}
+	newTxId := tx.TxID()
+	if newTxId == txId {
+		// The higher fee lowers the sweep output → a different txid; identical would alias the
+		// original's records. Structurally unreachable, fail-closed anyway.
+		return "", ce.NewContractError(ce.ErrTransaction, "re-drive produced an identical txid")
+	}
+
+	// Node side UNCHANGED (BRK-1): the "d-"/TxSpends entry drives signing + broadcast.
+	sdk.StateSetObject(constants.TxSpendsPrefix+newTxId, string(signingBytes))
+	cs.TxSpendsList = append(cs.TxSpendsList, newTxId)
+
+	replRecord := &MigrationSweep{
+		InputIds:         rec.InputIds,
+		BtcFee:           newFee,
+		SuccessorAddress: rec.SuccessorAddress,
+		SuccessorGen:     rec.SuccessorGen,
+		BuildHeight:      nowH,
+	}
+	sdk.StateSetObject(constants.MigrationSweepPrefix+newTxId, string(MarshalMigrationSweep(replRecord)))
+	cs.MigrationSweeps = append(cs.MigrationSweeps, newTxId)
+
+	// Spend group (D1-B): a first re-drive seeds it with {original, replacement}; a subsequent
+	// one appends. HighestFee is the FeeSupply charge basis. O(1) — one group-object write, no
+	// sibling rewrites, so an incomplete cleanup can never re-arm the freeze (H2).
+	if group == nil {
+		group = &SpendGroup{Members: []string{txId}}
+	}
+	group.Members = append(group.Members, newTxId)
+	group.HighestFee = newFee
+	sdk.StateSetObject(gk, string(MarshalSpendGroup(group)))
+
+	return "redrive: old=" + txId + " new=" + newTxId + " fee=" + strconv.FormatInt(newFee, 10), nil
+}
+
 func (cs *ContractState) pendingMigrationState() (map[uint16]struct{}, int64, error) {
 	excluded := make(map[uint16]struct{})
 	// L7-01 D6: a re-driven sweep and its stuck original are DIFFERENT txids over the SAME

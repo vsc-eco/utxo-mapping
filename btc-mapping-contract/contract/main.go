@@ -988,6 +988,40 @@ func MigrateVault(_ *string) *string {
 	return mapping.StrPtr(result)
 }
 
+//go:wasmexport redriveSpend
+func RedriveSpend(input *string) *string {
+	// L7-01 owner-gated (spec v2 D2), like migrateVault.
+	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
+		ce.CustomAbort(
+			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
+		)
+	}
+	// PAUSE-GATED (spec v2 D5): a re-drive SIGNS a new replacement spend + adjusts the fee
+	// reserve — a NEW spend authorization, not a mere reconciliation, so a pause gates it
+	// (confirmSpend's settle stays pause-exempt). The owner controls both; unpause to re-drive.
+	checkNotPaused()
+	if input == nil || *input == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "redriveSpend requires the stuck txid"))
+	}
+	publicKeys, err := loadPublicKeys()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	contractState, err := mapping.IntializeContractState(publicKeys, NetworkMode)
+	if err != nil {
+		ce.CustomAbort(ce.Prepend(err, "error initializing contract state"))
+	}
+	result, err := contractState.HandleRedriveSweep(*input)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	err = contractState.SaveToState()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	return mapping.StrPtr(result)
+}
+
 //go:wasmexport retireVault
 func RetireVault(_ *string) *string {
 	// leave this as owner always
