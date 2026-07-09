@@ -534,11 +534,14 @@ func (cs *ContractState) HandleRedriveUnmap(txId string) (string, error) {
 	prevHighestFee := rec.BtcFee
 	var group *SpendGroup
 	if graw := sdk.StateGetObject(gk); graw != nil && *graw != "" {
-		if g, gerr := UnmarshalSpendGroup([]byte(*graw)); gerr == nil {
-			group = g
-			if g.HighestFee > prevHighestFee {
-				prevHighestFee = g.HighestFee
-			}
+		g, gerr := UnmarshalSpendGroup([]byte(*graw))
+		if gerr != nil {
+			// Fail CLOSED (build-council LOW): re-seeding here would DROP prior members → H2.
+			return "", ce.NewContractError(ce.ErrStateAccess, "corrupt spend-group object — refusing unmap re-drive")
+		}
+		group = g
+		if g.HighestFee > prevHighestFee {
+			prevHighestFee = g.HighestFee
 		}
 	}
 
@@ -670,8 +673,19 @@ func (cs *ContractState) HandleRedriveUnmap(txId string) (string, error) {
 	if err != nil {
 		return "", ce.WrapContractError(ce.ErrArithmetic, err, "unmap re-drive charge arithmetic")
 	}
-	if cs.Supply.FeeSupply < charge {
-		return "", ce.NewContractError(ce.ErrBalance, "insufficient fee reserve to cover the unmap re-drive fee bump")
+	// The charge must come from the FREE reserve — FeeSupply ABOVE what's already committed to
+	// pending migration-sweep fees — NOT the whole FeeSupply (build-council MEDIUM). Charging
+	// into the sweep reserve would later underflow settleMigrationSweep's deferred debit → a
+	// confirmed sweep can't settle → the superseded gen never drains → NN#3 freeze re-armed
+	// (the exact post-L1 brick the sweep reserve prevents). FeeSupply already nets prior unmap
+	// charges (they are debits), so freeReserve = FeeSupply − pendingSweepReserve.
+	_, pendingSweepReserve, perr := cs.pendingMigrationState()
+	if perr != nil {
+		return "", perr
+	}
+	freeReserve, ferr := safeSubtract64(cs.Supply.FeeSupply, pendingSweepReserve)
+	if ferr != nil || freeReserve < charge {
+		return "", ce.NewContractError(ce.ErrBalance, "insufficient FREE fee reserve to cover the unmap re-drive fee bump (migration-sweep reserve is protected)")
 	}
 
 	signingData, err := signSpendTransaction(newTx, inputUtxos, witnessScripts)

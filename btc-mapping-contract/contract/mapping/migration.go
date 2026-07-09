@@ -438,11 +438,15 @@ func (cs *ContractState) HandleRedriveSweep(txId string) (string, error) {
 	prevHighestFee := rec.BtcFee
 	var group *SpendGroup
 	if graw := sdk.StateGetObject(gk); graw != nil && *graw != "" {
-		if g, gerr := UnmarshalSpendGroup([]byte(*graw)); gerr == nil {
-			group = g
-			if g.HighestFee > prevHighestFee {
-				prevHighestFee = g.HighestFee
-			}
+		g, gerr := UnmarshalSpendGroup([]byte(*graw))
+		if gerr != nil {
+			// Fail CLOSED (build-council LOW): re-seeding a fresh group here would DROP the
+			// prior members, leaving them dangling → H2. Refuse rather than corrupt the group.
+			return "", ce.NewContractError(ce.ErrStateAccess, "corrupt spend-group object — refusing sweep re-drive")
+		}
+		group = g
+		if g.HighestFee > prevHighestFee {
+			prevHighestFee = g.HighestFee
 		}
 	}
 
