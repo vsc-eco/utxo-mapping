@@ -134,6 +134,20 @@ const MaxBaseFeeRate int64 = 1000
 // successive tranches. Conservative — the live vault holds only a handful of UTXOs.
 const MaxMigrationInputs = 100
 
+// MigrationCanaryValue (THORChain-derived, migration §5c) caps the value of a gen's FIRST
+// migration tranche — the "canary." When a newly-RETIRING gen is first swept, only up to this
+// much value moves; that tranche must CONFIRM (BRK-1 delete-at-confirm keeps its inputs
+// registered until then, and getMigrationInputs excludes in-flight inputs from the next
+// tranche) BEFORE the bulk (the larger DRAINING tranches, capped at MaxUtxoAmount) proceeds.
+// This bounds the exposure of the first move to a new/unproven successor vault and mirrors
+// THORChain's "small-first-then-ramp" churn migration — defense-in-depth on top of BRK-2
+// (which already proves the new key can SIGN before activation). 1,000,000 sats = 0.01 BTC:
+// a real test amount, small vs any funded vault. Governance-TUNABLE; set to MaxUtxoAmount to
+// disable the canary (first tranche then uses the normal cap). The new vault only RECEIVES
+// the canary — proving the new vault's own SPEND path end-to-end (the stronger variant) is a
+// tracked follow-up (needs a test-spend to avoid coupling migration liveness to unmap flow).
+const MigrationCanaryValue int64 = 1_000_000
+
 // MaxBlockRetention is the number of recent block headers to keep.
 // Older headers are pruned during addBlocks to prevent unbounded state growth.
 //

@@ -24,7 +24,7 @@ import (
 // the cap (so the caller drains it in successive tranches — the C-F brick fix). It is
 // confirmed-only (THORChain guard: unconfirmed change from an in-flight tranche is swept
 // once it confirms). Deterministic: iterates the registry (cs.UtxoList) in slice order.
-func (cs *ContractState) getMigrationInputs(gen uint32, excluded map[uint16]struct{}) (inputIds []uint16, total int64, moreRemain bool, err error) {
+func (cs *ContractState) getMigrationInputs(gen uint32, excluded map[uint16]struct{}, maxTrancheValue int64) (inputIds []uint16, total int64, moreRemain bool, err error) {
 	for i := range cs.UtxoList {
 		entry := cs.UtxoList[i]
 		if entry.Id < constants.UtxoConfirmedPoolStart {
@@ -56,7 +56,11 @@ func (cs *ContractState) getMigrationInputs(gen uint32, excluded map[uint16]stru
 		// index its own output → that generation could never drain (a brick). Each deposit
 		// is itself ≤ MaxUtxoAmount, so stopping here always leaves ≥1 input = a buildable
 		// tranche; the overflow input drains in the next tranche.
-		if len(inputIds) > 0 && total+entry.Amount > constants.MaxUtxoAmount {
+		// Value cap: MaxUtxoAmount for a normal tranche (so the consolidated output fits the
+		// uint48 registry), OR MigrationCanaryValue for a gen's FIRST (canary) tranche. The
+		// first input is always included (the len>0 guard) so a single UTXO above the cap
+		// still forms a buildable tranche; the overflow drains next.
+		if len(inputIds) > 0 && total+entry.Amount > maxTrancheValue {
 			moreRemain = true
 			break
 		}
@@ -227,7 +231,23 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 		return "", err
 	}
 
-	inputIds, total, moreRemain, err := cs.getMigrationInputs(targetGen, excluded)
+	// CANARY (THORChain small-first-then-ramp): a gen's FIRST tranche is taken while it is
+	// still RETIRING (this call transitions RETIRING→DRAINING below); cap it to
+	// MigrationCanaryValue so only a small "test" amount moves to the new successor vault
+	// first, bounding the exposure of the first move. Subsequent (DRAINING) tranches drain
+	// the bulk at MaxUtxoAmount. Defense-in-depth atop BRK-2's pre-activation sign proof + NN#1
+	// output-scoping. NOTE (canary council F2): the bulk is NOT contract-gated on the canary
+	// CONFIRMING — BRK-1 only excludes the canary's own inputs from later tranches; "wait for
+	// the canary to confirm before the bulk" is operator/driver discipline, not enforced here.
+	// A confirm-gate (serialise the canary before any DRAINING tranche) is a tracked stronger
+	// variant.
+	maxTrancheValue := constants.MaxUtxoAmount
+	usingCanary := false
+	if cs.Vaults[targetIdx].Status == VaultStatusRetiring && constants.MigrationCanaryValue < constants.MaxUtxoAmount {
+		maxTrancheValue = constants.MigrationCanaryValue
+		usingCanary = true
+	}
+	inputIds, total, moreRemain, err := cs.getMigrationInputs(targetGen, excluded, maxTrancheValue)
 	if err != nil {
 		return "", err
 	}
@@ -251,6 +271,22 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 		return "", err
 	}
 	tx, witnessScripts, btcFee, err := cs.buildMigrationTransaction(inputUtxos, total, successorAddress)
+	if err != nil && usingCanary {
+		// F1 (canary council, MEDIUM): the small canary cap can make the FIRST tranche too
+		// small to cover its own sweep fee (fee>half, or below the dust floor) at a high fee
+		// rate — a full tranche amortizes the fixed overhead and would build fine. Left
+		// unfixed, the gen would wedge RETIRING forever (re-selected + re-aborted every call →
+		// NN#3 blocks all future rotation). The canary is pure defense-in-depth and must NEVER
+		// block migration → FALL BACK to a normal full-cap tranche. If the full tranche ALSO
+		// can't build, that is the genuine V-1 dust residual → abort as before (unchanged).
+		inputIds, total, moreRemain, err = cs.getMigrationInputs(targetGen, excluded, constants.MaxUtxoAmount)
+		if err == nil && len(inputIds) > 0 {
+			inputUtxos, err = getInputUtxos(inputIds)
+			if err == nil {
+				tx, witnessScripts, btcFee, err = cs.buildMigrationTransaction(inputUtxos, total, successorAddress)
+			}
+		}
+	}
 	if err != nil {
 		return "", err
 	}
