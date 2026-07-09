@@ -490,6 +490,82 @@ func UnmarshalMigrationSweep(data []byte) (*MigrationSweep, error) {
 }
 
 // ---------------------------------------------------------------------------
+// PendingUnmap record ("us-"+txId) — Guard 1 delete-at-confirm. Layout:
+//
+//	[4]   ChangeGen     (uint32 BE)
+//	[2]   len(InputIds) (uint16 BE)
+//	[2*N] InputIds      (uint16 BE each)
+//	[M]   ChangeAddress (UTF-8, the record tail — no length prefix)
+// ---------------------------------------------------------------------------
+
+func MarshalPendingUnmap(r *PendingUnmap) []byte {
+	n := len(r.InputIds)
+	buf := make([]byte, 4+2+n*2+len(r.ChangeAddress))
+	off := 0
+	binary.BigEndian.PutUint32(buf[off:], r.ChangeGen)
+	off += 4
+	binary.BigEndian.PutUint16(buf[off:], uint16(n))
+	off += 2
+	for _, id := range r.InputIds {
+		binary.BigEndian.PutUint16(buf[off:], id)
+		off += 2
+	}
+	copy(buf[off:], r.ChangeAddress)
+	return buf
+}
+
+func UnmarshalPendingUnmap(data []byte) (*PendingUnmap, error) {
+	const minLen = 4 + 2
+	if len(data) < minLen {
+		return nil, errors.New("pending unmap record too short")
+	}
+	r := &PendingUnmap{}
+	off := 0
+	r.ChangeGen = binary.BigEndian.Uint32(data[off:])
+	off += 4
+	n := int(binary.BigEndian.Uint16(data[off:]))
+	off += 2
+	if off+n*2 > len(data) {
+		return nil, errors.New("pending unmap record truncated (input ids)")
+	}
+	r.InputIds = make([]uint16, n)
+	for i := 0; i < n; i++ {
+		r.InputIds[i] = binary.BigEndian.Uint16(data[off:])
+		off += 2
+	}
+	r.ChangeAddress = string(data[off:])
+	return r, nil
+}
+
+// ---------------------------------------------------------------------------
+// Reserved-UTXO markers ("ru-"+id) — Guard 1 delete-at-confirm in-flight exclusion.
+// A confirmed UTXO committed to an in-flight UNMAP stays in the registry until its tx
+// confirms (settleUnmap); this per-UTXO marker keeps it out of BOTH the next unmap's
+// selection and any migration sweep's selection meanwhile, so two in-flight spends can
+// never double-select the same input. A marker (not a scanned list) so the migration path
+// stays O(tranche candidates) — an unprivileged unmap flood can never gas-DoS rotation
+// (BRK-1 council A-1 preserved). Set at unmap build, checked per selection candidate,
+// deleted at settleUnmap paired with the UTXO delete.
+// ---------------------------------------------------------------------------
+
+func reservedUtxoKey(id uint16) string {
+	return constants.ReservedUtxoPrefix + strconv.FormatUint(uint64(id), 10)
+}
+
+func reserveUtxo(id uint16) {
+	sdk.StateSetObject(reservedUtxoKey(id), "1")
+}
+
+func unreserveUtxo(id uint16) {
+	sdk.StateDeleteObject(reservedUtxoKey(id))
+}
+
+func isUtxoReserved(id uint16) bool {
+	v := sdk.StateGetObject(reservedUtxoKey(id))
+	return v != nil && *v != ""
+}
+
+// ---------------------------------------------------------------------------
 // UTXO ID allocation with rollover and existence check
 // ---------------------------------------------------------------------------
 
@@ -803,6 +879,41 @@ func saveObservedList(blockHeight uint32, list []observedEntry) {
 		copy(buf[i*observedEntrySize:], e[:])
 	}
 	sdk.StateSetObject(observedBlockKey(blockHeight), string(buf))
+}
+
+// markOutpointsObserved records (txId, vout) pairs in a block's observed list (council D-1/C-1,
+// HIGH). The observed list is the single "already credited" ledger, but only `map` and
+// `topUpFeeReserve` wrote it — the settle paths (settleUnmap change, settleMigrationSweep sweep)
+// and the promotion loops turned on-chain outputs into confirmed vault UTXOs WITHOUT recording
+// them, so a later topUpFeeReserve of the SAME outpoint (it pays the identical untagged vault
+// address) could double-credit FeeSupply + double-index the outpoint (a phantom UTXO the
+// Σ==Active+Fee assert cannot catch, since both sides inflate). Every path that creates a
+// confirmed vault UTXO from an on-chain output must call this. Idempotent (skips entries already
+// present) and bounded (one list load/save per call). Ordering is deterministic (append order =
+// tx-output order at a deterministic call site), so the packed bytes match across nodes. The
+// observed list is pruned in lock-step with its block header, so an entry lives exactly as long
+// as the output stays SPV-provable — precisely the top-up attack window.
+func markOutpointsObserved(blockHeight uint32, txId string, vouts []uint32) error {
+	if len(vouts) == 0 {
+		return nil
+	}
+	list := loadObservedList(blockHeight)
+	changed := false
+	for _, vout := range vouts {
+		entry, err := makeObservedEntry(txId, vout)
+		if err != nil {
+			return ce.WrapContractError(ce.ErrInput, err, "error creating observed entry")
+		}
+		if isObserved(list, entry) {
+			continue
+		}
+		list = append(list, entry)
+		changed = true
+	}
+	if changed {
+		saveObservedList(blockHeight, list)
+	}
+	return nil
 }
 
 // DeleteObservedList removes the observed tx list for a block height.

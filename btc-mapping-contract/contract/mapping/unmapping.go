@@ -176,6 +176,21 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint16, int64, error) 
 		activeGen = cs.Vaults[activeIdx].Generation
 	}
 	isSelectable := func(id uint16) bool {
+		// Guard 1 (delete-at-confirm): never select a UTXO already committed to an in-flight
+		// unmap (kept registered + reserved until settleUnmap). UNCONDITIONAL — checked even in
+		// the common single-active-gen case where the generation filter is off — else two
+		// concurrent unmaps would both select the same still-registered input and double-spend
+		// it (one confirms, the other strands the debited withdrawal). This gates the fast path,
+		// the confirmed-accumulation loop, and the unconfirmed fallback (all route through here).
+		if isUtxoReserved(id) {
+			return false
+		}
+		// C-3 (council LOW, load-bearing seam): in-flight MIGRATION inputs are excluded from an
+		// unmap by the generation filter below (a sweep's inputs sit on a retiring/draining gen, so
+		// u.Generation != activeGen), NOT by the reservation check above — migration keeps its
+		// inputs registered via its "ms-" record rather than an "ru-" marker. So the double-spend
+		// safety for the unmap-vs-migration seam lives in filterGen; keep it in lock-step with
+		// isFundHoldingStatus / hasSuperseded (a superseded gen must always fail u.Generation==activeGen).
 		if !filterGen {
 			return true
 		}

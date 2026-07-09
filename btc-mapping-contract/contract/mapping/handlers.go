@@ -37,7 +37,7 @@ func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 	}
 
 	// removes this tx from utxo spends if present
-	if err := ms.updateUtxoSpends(msgTx.TxID()); err != nil {
+	if err := ms.updateUtxoSpends(msgTx.TxID(), txData.BlockHeight); err != nil {
 		return ce.Prepend(err, "error updating utxo spends")
 	}
 
@@ -131,6 +131,14 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	if err != nil {
 		return ce.WrapContractError(ce.ErrTransaction, err, "error creating change address")
 	}
+	// Guard 1: the destination must differ from the vault change address so settleUnmap can
+	// identify the change output(s) unambiguously by address at confirm. A To == changeAddress
+	// collision would index the user's own withdrawal output as change (the vault over-
+	// collateralises and the user donates the withdrawal) — self-harm, no theft, but cheap to
+	// reject outright and it removes the only conservation ambiguity at settle.
+	if instructions.To == changeAddress {
+		return ce.NewContractError(ce.ErrInput, "destination address must differ from the vault change address")
+	}
 	// When deduct_fee=true, estimate btcFee to derive the send amount so that
 	// vscFee + btcFee + sendAmount ≈ amount. The actual fee from
 	// createSpendTransaction may differ slightly; any discrepancy is absorbed
@@ -192,41 +200,41 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		return err
 	}
 
-	// All checks passed — now request TSS signing
+	// All checks passed — now request TSS signing (the node reads only the "d-" record +
+	// TxSpendsList entry written below; the "us-" record + reservations are contract-internal,
+	// so the node/broadcast side is UNCHANGED — exactly like BRK-1's migration "ms-" record).
 	signingData, err := signSpendTransaction(tx, inputUtxos, witnessScripts)
 	if err != nil {
 		return ce.WrapContractError(ce.ErrTransaction, err, "error signing spend transaction")
 	}
 
-	unconfirmedUtxos, err := indexUnconfimedOutputs(tx, changeAddress, cs.NetworkParams, cs.ActiveGen)
-	if err != nil {
-		return err
-	}
-	for _, utxo := range unconfirmedUtxos {
-		internalId, err := cs.allocateUnconfirmedId()
-		if err != nil {
-			return err
-		}
-		cs.UtxoList = append(cs.UtxoList, UtxoRegistryEntry{Id: internalId, Amount: utxo.Amount})
-		saveUtxo(internalId, utxo)
-	}
-
-	for _, inputId := range inputUtxoIds {
-		cs.UtxoList = slices.DeleteFunc(
-			cs.UtxoList,
-			func(entry UtxoRegistryEntry) bool { return entry.Id == inputId },
-		)
-		sdk.StateDeleteObject(getUtxoKey(inputId))
-	}
-
+	// Guard 1 (delete-at-confirm, BRK-1 mirror for the withdrawal path). DO NOT delete the
+	// input UTXOs and DO NOT index the change here. Keep the inputs registered + RESERVE them,
+	// store a "us-" pending record, and defer BOTH the input-delete and the (now confirmed)
+	// change-index to settleUnmap in HandleConfirmSpend under the tx's SPV proof. This makes a
+	// never-confirming unmap fund-safe (inputs stay tracked → recoverable, not stranded on L1)
+	// and closes M1.1b FN-3 (a rogue re-sign of a still-registered input is theft-detected).
+	// The balance debit + FeeSupply(vscFee) credit STAY at build (below): during the in-flight
+	// window Σ(UTXO) is unchanged while Supply is down, so the vault is temporarily OVER-
+	// collateralised (safe — never under, no false insolvency), rebalancing exactly at settle.
+	txId := tx.TxID()
 	signingDataBytes, err := MarshalSigningData(signingData)
 	if err != nil {
 		return ce.WrapContractError(ce.ErrJson, err, "error marshalling signing data")
 	}
+	sdk.StateSetObject(constants.TxSpendsPrefix+txId, string(signingDataBytes))
+	cs.TxSpendsList = append(cs.TxSpendsList, txId)
 
-	sdk.StateSetObject(constants.TxSpendsPrefix+tx.TxID(), string(signingDataBytes))
-	cs.TxSpendsList = append(cs.TxSpendsList, tx.TxID())
-	sdk.Log(createUnmapLog(tx.TxID(), from, instructions.To, finalAmt, sendAmount))
+	unmapRecord := &PendingUnmap{
+		InputIds:      inputUtxoIds,
+		ChangeAddress: changeAddress,
+		ChangeGen:     cs.ActiveGen,
+	}
+	sdk.StateSetObject(constants.PendingUnmapPrefix+txId, string(MarshalPendingUnmap(unmapRecord)))
+	for _, inputId := range inputUtxoIds {
+		reserveUtxo(inputId)
+	}
+	sdk.Log(createUnmapLog(txId, from, instructions.To, finalAmt, sendAmount))
 
 	// update supply
 	newActive, err := safeSubtract64(cs.Supply.ActiveSupply, finalAmt)
@@ -321,6 +329,15 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 			isPending = true
 		}
 	}
+	// Guard 1 (delete-at-confirm unmap): an in-flight unmap is ALSO pause-exempt while its
+	// "us-" record is live. Its txid normally stays in TxSpendsList (so isPending is already
+	// true), but check the record directly too — the pause-exempt guarantee for settling an
+	// already-broadcast withdrawal must not depend on any single list staying intact.
+	if !isPending {
+		if us := sdk.StateGetObject(constants.PendingUnmapPrefix + txId); us != nil && *us != "" {
+			isPending = true
+		}
+	}
 	if !isPending {
 		if p := sdk.StateGetObject(constants.PausedKey); p != nil && *p != "" {
 			return ce.NewContractError(ce.ErrTransaction, "contract is paused")
@@ -332,6 +349,7 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 		indexSet[idx] = struct{}{}
 	}
 
+	promotedVouts := []uint32{}
 	for i, entry := range cs.UtxoList {
 		if entry.Id >= constants.UtxoConfirmedPoolStart {
 			continue
@@ -346,6 +364,15 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 		if _, ok := indexSet[utxo.Vout]; !ok {
 			continue
 		}
+		// B-1 (council MED, HIGH ceiling): never re-id a UTXO reserved by an in-flight unmap.
+		// The unmap's "us-" record references this input by its CURRENT id; re-iding it here
+		// strands that unmap at settle (its recorded id vanishes) AND leaves the promoted id
+		// unreserved → a later unmap double-selects the outpoint (debit-without-delivery for an
+		// innocent user). Leave it unconfirmed + reserved; its own unmap deletes it at settleUnmap.
+		// (Only reachable on the upgrade path — a fresh Guard-1 deploy creates no unconfirmed UTXOs.)
+		if isUtxoReserved(cs.UtxoList[i].Id) {
+			continue
+		}
 		newId, err := cs.allocateConfirmedId()
 		if err != nil {
 			return err
@@ -353,6 +380,13 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 		saveUtxo(newId, utxo)
 		sdk.StateDeleteObject(getUtxoKey(cs.UtxoList[i].Id))
 		cs.UtxoList[i].Id = newId
+		promotedVouts = append(promotedVouts, utxo.Vout)
+	}
+	// D-1/C-1 (council HIGH): a promoted output belongs to this confirmed tx (txId) at this
+	// block; record it observed so topUp cannot double-credit a legacy unconfirmed change
+	// promoted on the upgrade path.
+	if err := markOutpointsObserved(txData.BlockHeight, txId, promotedVouts); err != nil {
+		return err
 	}
 
 	// BRK-1 (delete-at-confirm migration settle): if this confirmed tx is a migration
@@ -368,7 +402,7 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 		if err != nil {
 			return ce.NewContractError(ce.ErrStateAccess, "error decoding migration sweep record: "+err.Error())
 		}
-		if err := cs.settleMigrationSweep(&msgTx, rec); err != nil {
+		if err := cs.settleMigrationSweep(&msgTx, rec, txData.BlockHeight); err != nil {
 			return err
 		}
 		sdk.StateDeleteObject(constants.MigrationSweepPrefix + txId)
@@ -384,6 +418,23 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 		}
 	}
 
+	// Guard 1 (delete-at-confirm unmap settle): if this confirmed tx has a "us-" record,
+	// perform the finish HandleUnmap deferred — index the change output(s) as confirmed, delete
+	// the swept inputs, clear their reservations — under the SPV proof verified above. An
+	// unmap ("us-") and a migration sweep ("ms-") never share a txid, so at most one of the two
+	// settle paths fires. Pause-EXEMPT (isPending is true for an in-flight unmap). Idempotent:
+	// a replay finds no "us-" record and skips (the "us-" delete below runs once).
+	if usRaw := sdk.StateGetObject(constants.PendingUnmapPrefix + txId); usRaw != nil && *usRaw != "" {
+		rec, err := UnmarshalPendingUnmap([]byte(*usRaw))
+		if err != nil {
+			return ce.NewContractError(ce.ErrStateAccess, "error decoding pending unmap record: "+err.Error())
+		}
+		if err := cs.settleUnmap(&msgTx, rec, txData.BlockHeight); err != nil {
+			return err
+		}
+		sdk.StateDeleteObject(constants.PendingUnmapPrefix + txId)
+	}
+
 	// Clean up signing data for this tx if present.
 	sdk.StateDeleteObject(constants.TxSpendsPrefix + txId)
 	for i, val := range cs.TxSpendsList {
@@ -394,6 +445,96 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 		}
 	}
 
+	return nil
+}
+
+// settleUnmap performs the delete-at-confirm finish for an unmap (Guard 1), called from
+// HandleConfirmSpend under the tx's already-verified SPV proof: delete the swept inputs
+// (kept registered + reserved since build), index the change output(s) as CONFIRMED, and
+// clear the per-input reservations. NO Supply mutation — the balance debit + FeeSupply
+// (vscFee) credit already happened at BUILD (HandleUnmap); keeping the inputs registered
+// made the vault temporarily OVER-collateralised, and this step rebalances Σ(UTXO) exactly.
+// NO fee-equality assert (council F2): a no-change / dust-burn unmap legitimately has a real
+// miner fee larger than any recorded estimate, so an equality assert would brick a valid
+// withdrawal. Correctness rests on (1) the txid binds this SPV-proven tx to the record
+// (HandleConfirmSpend looked up "us-"+txId by the confirmed tx's OWN id), so its outputs are
+// exactly the ones we built; (2) the change is identified by the record's ChangeAddress
+// (To != ChangeAddress enforced at build), tagged ChangeGen so it stays spendable across a
+// rotation, capped at MaxUtxoAmount; (3) fail-closed if any recorded input already left the
+// registry (idempotent replay / corrupt state) BEFORE any mutation.
+func (cs *ContractState) settleUnmap(msgTx *wire.MsgTx, rec *PendingUnmap, blockHeight uint32) error {
+	// Idempotency / corruption guard: every recorded input still registered (fail-closed,
+	// before any mutation — never double-settle). Also sum the swept input amounts for the
+	// conservation sanity assert below (council B-2: the migration settle twin carries one).
+	var inputTotal int64
+	for _, id := range rec.InputIds {
+		found := false
+		for i := range cs.UtxoList {
+			if cs.UtxoList[i].Id == id {
+				var aerr error
+				inputTotal, aerr = safeAdd64(inputTotal, cs.UtxoList[i].Amount)
+				if aerr != nil {
+					return ce.WrapContractError(ce.ErrArithmetic, aerr, "unmap settle input total overflow")
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			return ce.NewContractError(ce.ErrStateAccess, "unmap settle input missing from registry")
+		}
+	}
+
+	// Index the change output(s) (paying ChangeAddress, tagged ChangeGen, capped at
+	// MaxUtxoAmount) as CONFIRMED. Reuses indexMigrationOutputs — identical shape (match one
+	// vault address, cap, tag a generation); the user destination output (To != ChangeAddress)
+	// is skipped, and a no-change unmap yields zero here (valid: everything went to
+	// destination + miner fee).
+	changeUtxos, err := indexMigrationOutputs(msgTx, rec.ChangeAddress, cs.NetworkParams, rec.ChangeGen)
+	if err != nil {
+		return err
+	}
+
+	// Conservation sanity (council B-2, defense-in-depth like settleMigrationSweep): the change
+	// returned to the vault can never exceed the swept inputs — the difference funds the user
+	// output + miner fee. Fail-closed on gross corruption. NOT an equality assert: a no-change /
+	// dust-burn unmap legitimately pays a miner fee larger than any recorded estimate (council
+	// F2), so equality would brick a valid withdrawal.
+	var changeTotal int64
+	for _, u := range changeUtxos {
+		changeTotal, err = safeAdd64(changeTotal, u.Amount)
+		if err != nil {
+			return ce.WrapContractError(ce.ErrArithmetic, err, "unmap settle change total overflow")
+		}
+	}
+	if changeTotal > inputTotal {
+		return ce.NewContractError(ce.ErrTransaction, "unmap settle change exceeds swept inputs")
+	}
+
+	observedVouts := make([]uint32, 0, len(changeUtxos))
+	for _, u := range changeUtxos {
+		newId, aerr := cs.allocateConfirmedId()
+		if aerr != nil {
+			return aerr
+		}
+		cs.UtxoList = append(cs.UtxoList, UtxoRegistryEntry{Id: newId, Amount: u.Amount})
+		saveUtxo(newId, u)
+		observedVouts = append(observedVouts, u.Vout)
+	}
+	// D-1/C-1 (council HIGH): record the indexed change output(s) in the observed list so a
+	// later topUpFeeReserve of the same outpoint cannot double-credit it (the change pays the
+	// untagged vault address, byte-identical to a fee-reserve deposit).
+	if err := markOutpointsObserved(blockHeight, msgTx.TxID(), observedVouts); err != nil {
+		return err
+	}
+
+	// Delete the swept inputs + clear their reservations (paired — so a later recycled
+	// confirmed id can never inherit a stale reservation).
+	for _, id := range rec.InputIds {
+		cs.UtxoList = slices.DeleteFunc(cs.UtxoList, func(e UtxoRegistryEntry) bool { return e.Id == id })
+		sdk.StateDeleteObject(getUtxoKey(id))
+		unreserveUtxo(id)
+	}
 	return nil
 }
 

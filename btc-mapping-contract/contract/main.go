@@ -553,6 +553,40 @@ func ClearTheftHalt(_ *string) *string {
 	return mapping.StrPtr("theft halt cleared")
 }
 
+//go:wasmexport topUpFeeReserve
+func TopUpFeeReserve(input *string) *string {
+	// Operator-funded migration fee reserve (council FeeSupply lens). PERMISSIONLESS +
+	// NOT pause-gated: it only SPV-proves a real BTC deposit to the active vault and
+	// credits FeeSupply by it (conservation-preserving; moves no funds OUT), so anyone may
+	// fund the reserve to un-wedge a fee-starved rotation, even during a pause. The
+	// migration fee-shortage abort writes no state, so a top-up lets the next migrateVault
+	// tranche continue automatically — migration can never terminally brick on fees. Reuses
+	// the confirmSpend params shape (tx_data + unused indices) so no new marshaler is needed.
+	var params mapping.ConfirmSpendParams
+	err := tinyjson.Unmarshal([]byte(*input), &params)
+	if err != nil {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
+	}
+	if params.TxData == nil || params.TxData.RawTxHex == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "tx_data.raw_tx_hex required"))
+	}
+	publicKeys, err := loadPublicKeys()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	contractState, err := mapping.IntializeContractState(publicKeys, NetworkMode)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	if err := contractState.HandleTopUpFeeReserve(params.TxData); err != nil {
+		ce.CustomAbort(err)
+	}
+	if err := contractState.SaveToState(); err != nil {
+		ce.CustomAbort(err)
+	}
+	return mapping.StrPtr("0")
+}
+
 // Pauses all token operations (map, unmap, transfer, approve, confirmSpend).
 // Admin/owner operations remain available while paused.
 //

@@ -153,6 +153,22 @@ type MigrationSweep struct {
 	SuccessorGen     uint32
 }
 
+// PendingUnmap is the per-unmap record (state key "us-"+txId) that Guard 1's
+// delete-at-confirm withdrawal path writes at BUILD and settles+deletes at CONFIRM. It
+// carries exactly what settleUnmap needs: the input UTXO ids to delete (kept registered +
+// reserved since build) and the change ADDRESS + GENERATION to index the confirmed change
+// output(s) to. No fee/amount field is stored — conservation is guaranteed by the
+// build-time balance debit plus BIP143 (the SPV-proven tx's inputs equal their registry
+// amounts), so no settle-time fee-equality assert is used (it would brick a legitimate
+// no-change / dust-burn unmap whose real fee exceeds any recorded estimate). ChangeGen (not
+// re-derived at confirm) keeps the change spendable if the vault rotated between build and
+// confirm. Hand-packed binary (MarshalPendingUnmap); ChangeAddress is the record tail.
+type PendingUnmap struct {
+	InputIds      []uint16
+	ChangeAddress string
+	ChangeGen     uint32
+}
+
 type MappingType string
 
 const (

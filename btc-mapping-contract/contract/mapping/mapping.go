@@ -74,7 +74,7 @@ func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) ([]Utxo, error) {
 // If so, it confirms matching unconfirmed UTXOs by transitioning them from the
 // unconfirmed pool (IDs 0–63) to the confirmed pool (IDs 64–255), and removes
 // the signing data entry.
-func (cs *ContractState) updateUtxoSpends(txId string) error {
+func (cs *ContractState) updateUtxoSpends(txId string, blockHeight uint32) error {
 	// BRK-1 (methodology M1/M4 S2-1): a MIGRATION sweep — one with a live "ms-" record —
 	// must be reconciled ONLY through confirmSpend's settle (index output → successor,
 	// delete inputs, debit fee), NEVER stripped here. If the permissionless `map` path
@@ -86,6 +86,19 @@ func (cs *ContractState) updateUtxoSpends(txId string) error {
 	// confirmSpend. (A migration sweep indexes no unconfirmed change, so there is nothing
 	// to promote here anyway.)
 	if ms := sdk.StateGetObject(constants.MigrationSweepPrefix + txId); ms != nil && *ms != "" {
+		return nil
+	}
+
+	// Guard 1 (delete-at-confirm unmap): an UNMAP with a live "us-" record must LIKEWISE be
+	// reconciled ONLY through confirmSpend's settleUnmap, NEVER stripped here. Its inputs
+	// stay registered (and reserved) until settle; if the permissionless `map` path stripped
+	// its "d-"/TxSpendsList entry while the inputs remain registered, the tx's txid would
+	// leave the authorised set (cs.TxSpendsList) while its inputs are still in the registry —
+	// exactly the state HandleReportUnauthorizedSpend trips on (spendsRegistered &&
+	// !authorized) → a permissionless false theft-halt of the whole vault (the identical
+	// landmine the reverted release-stale-sweep guard armed, council finding A1/F3). Leave the
+	// unmap fully intact for confirmSpend; its change is indexed by settleUnmap, not here.
+	if us := sdk.StateGetObject(constants.PendingUnmapPrefix + txId); us != nil && *us != "" {
 		return nil
 	}
 
@@ -117,9 +130,18 @@ func (cs *ContractState) updateUtxoSpends(txId string) error {
 		}
 	}
 
+	promotedVouts := []uint32{}
 	for _, sigHash := range utxoSpend.UnsignedSigHashes {
 		for _, unconfirmed := range unconfirmedEntries {
 			if txId == unconfirmed.utxo.TxId && sigHash.Index == unconfirmed.utxo.Vout {
+				// B-1 (council): never re-id a UTXO reserved by an in-flight unmap — its "us-"
+				// record references this input by its current id; re-iding it strands that unmap at
+				// settle and leaves the promoted id unreserved (double-select). Leave it unconfirmed +
+				// reserved; its unmap deletes it at settleUnmap. (Upgrade-path only; a fresh Guard-1
+				// deploy holds no unconfirmed UTXOs.)
+				if isUtxoReserved(cs.UtxoList[unconfirmed.indexInRegistry].Id) {
+					continue
+				}
 				// Promote to confirmed pool: allocate a new confirmed ID,
 				// write data at new key, delete old key, update registry.
 				newId, err := cs.allocateConfirmedId()
@@ -129,9 +151,16 @@ func (cs *ContractState) updateUtxoSpends(txId string) error {
 				saveUtxo(newId, unconfirmed.utxo)
 				sdk.StateDeleteObject(getUtxoKey(cs.UtxoList[unconfirmed.indexInRegistry].Id))
 				cs.UtxoList[unconfirmed.indexInRegistry].Id = newId
+				promotedVouts = append(promotedVouts, unconfirmed.utxo.Vout)
 				continue
 			}
 		}
+	}
+	// D-1/C-1 (council HIGH): a promoted output belongs to this confirmed tx (txId) at this
+	// block; record it observed so topUp cannot double-credit a legacy unconfirmed change
+	// promoted on the upgrade path.
+	if err := markOutpointsObserved(blockHeight, txId, promotedVouts); err != nil {
+		return err
 	}
 
 	sdk.StateDeleteObject(constants.TxSpendsPrefix + txId)

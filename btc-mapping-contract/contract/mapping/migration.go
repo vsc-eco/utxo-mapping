@@ -39,6 +39,17 @@ func (cs *ContractState) getMigrationInputs(gen uint32, excluded map[uint16]stru
 		if _, inflight := excluded[entry.Id]; inflight {
 			continue
 		}
+		// Guard 1 cross-path exclusion: also skip a UTXO reserved by an in-flight UNMAP. An
+		// unmap selects ACTIVE-gen inputs (D-1); if that generation RETIRES while the unmap is
+		// still unconfirmed, this now-superseded gen's migration must NOT sweep the reserved
+		// input — else the sweep and the still-pending unmap double-spend it (one confirms, the
+		// other strands: a user debit-without-delivery if the sweep wins, or a wedged sweep if
+		// the unmap wins). A per-candidate marker read (NOT a PendingUnmaps scan) keeps this
+		// O(tranche candidates) so an unprivileged unmap flood can never gas-DoS rotation
+		// (preserves the BRK-1 council A-1 bounded-scan property). settleUnmap clears it.
+		if isUtxoReserved(entry.Id) {
+			continue
+		}
 		utxo, lerr := loadUtxo(entry.Id)
 		if lerr != nil {
 			return nil, 0, false, lerr
@@ -411,7 +422,7 @@ func (cs *ContractState) pendingMigrationState() (map[uint16]struct{}, int64, er
 // "ms-" record and skips this call entirely. The "input missing from registry" guard
 // below is defense-in-depth for a CORRUPT state (an "ms-" record whose inputs were already
 // removed) — it fails closed before any mutation rather than double-settling.
-func (cs *ContractState) settleMigrationSweep(msgTx *wire.MsgTx, rec *MigrationSweep) error {
+func (cs *ContractState) settleMigrationSweep(msgTx *wire.MsgTx, rec *MigrationSweep, blockHeight uint32) error {
 	// Sum the swept input amounts from the registry (still present — delete-at-confirm).
 	// A missing input means the sweep already settled (idempotent replay) or the record is
 	// corrupt → fail closed BEFORE any mutation, never double-settle.
@@ -459,6 +470,7 @@ func (cs *ContractState) settleMigrationSweep(msgTx *wire.MsgTx, rec *MigrationS
 	}
 
 	// Index the sweep output(s) as CONFIRMED.
+	observedVouts := make([]uint32, 0, len(outUtxos))
 	for _, u := range outUtxos {
 		newId, aerr := cs.allocateConfirmedId()
 		if aerr != nil {
@@ -466,6 +478,13 @@ func (cs *ContractState) settleMigrationSweep(msgTx *wire.MsgTx, rec *MigrationS
 		}
 		cs.UtxoList = append(cs.UtxoList, UtxoRegistryEntry{Id: newId, Amount: u.Amount})
 		saveUtxo(newId, u)
+		observedVouts = append(observedVouts, u.Vout)
+	}
+	// D-1/C-1 (council HIGH): record the swept output(s) in the observed list so a later
+	// topUpFeeReserve of the same outpoint cannot double-credit it (the sweep pays the successor's
+	// untagged vault address, byte-identical to a fee-reserve deposit once that gen is active).
+	if err := markOutpointsObserved(blockHeight, msgTx.TxID(), observedVouts); err != nil {
+		return err
 	}
 
 	// Delete the swept inputs from the registry + state.

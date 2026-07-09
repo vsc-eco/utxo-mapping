@@ -31,6 +31,25 @@ const TxSpendsRegistryKey = "p"
 const TxSpendsPrefix = "d" + DirPathDelimiter
 const SupplyKey = "s"
 
+// PendingUnmapPrefix keys the per-unmap record (Guard 1 delete-at-confirm for the
+// withdrawal path — the BRK-1 mirror). Key: "us-"+txId. HandleUnmap writes it at BUILD
+// (deferring the settle); the swept inputs stay registered and the change stays UN-indexed
+// until HandleConfirmSpend's settleUnmap consumes+deletes this record and performs the
+// atomic finish (index the change output, delete the swept inputs, clear reservations)
+// under the tx's SPV proof. The balance debit + FeeSupply(vscFee) credit already happened
+// at build. Record layout in utils.go (Marshal/UnmarshalPendingUnmap).
+const PendingUnmapPrefix = "us" + DirPathDelimiter
+
+// ReservedUtxoPrefix marks a CONFIRMED UTXO that is committed to an in-flight spend and so
+// must not be re-selected until it settles. Key: "ru-"+decimal(id), value "1". Set at unmap
+// BUILD (per input), checked per selection candidate by BOTH getInputUtxoIds (unmap→unmap)
+// and getMigrationInputs (an unmap's active-gen input whose gen retired mid-flight →
+// unmap→migration), deleted at settleUnmap paired with the UTXO delete (so a recycled
+// confirmed id never inherits a stale reservation). A per-UTXO marker — NOT a scanned list —
+// so the migration path stays O(tranche candidates): an unprivileged unmap flood can never
+// gas-DoS rotation (preserves the BRK-1 council A-1 bounded-scan property).
+const ReservedUtxoPrefix = "ru" + DirPathDelimiter
+
 // MigrationSweepPrefix keys the per-sweep migration record (BRK-1 delete-at-confirm).
 // Key: "ms-"+txId. HandleMigrateVault writes it at BUILD (deferring the settle); a
 // migration sweep touches NEITHER the UTXO set nor supply until HandleConfirmSpend
