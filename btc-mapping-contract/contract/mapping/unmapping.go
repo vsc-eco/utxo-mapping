@@ -430,7 +430,23 @@ func (cs *ContractState) buildSpendTransaction(
 		}
 	}
 
-	return tx, witnessScripts, fee, nil
+	// L1-1 (FULL-PRUNED): return the TRUE miner fee = inputs − outputs, not the size-based
+	// estimate. When leftover change is sub-dust it is NOT added as an output (loop above),
+	// so that residual is burned to the miner and the real fee EXCEEDS `fee`. Debiting only
+	// the size fee at HandleUnmap under-collateralizes the vault (Σ(UTXO) drops MORE than
+	// ActiveSupply at settle → I1 breaks in the unsafe direction). Charging inputs−outputs
+	// makes the balance debit match the BTC that actually leaves → conservation holds exactly
+	// (add-fee) and stays over-collateralized (deduct-fee, safe). Equals `fee` whenever a
+	// change output IS added. `fee` above still drives the change calc, so the tx is byte-identical.
+	var outputTotal int64
+	for _, o := range tx.TxOut {
+		outputTotal += o.Value
+	}
+	trueFee := totalInputsAmount - outputTotal
+	if trueFee < 0 {
+		return nil, nil, 0, ce.NewContractError(ce.ErrTransaction, "spend outputs exceed inputs")
+	}
+	return tx, witnessScripts, trueFee, nil
 }
 
 // assertInputsSignable is the BRK-2 contract-side defense-in-depth guard: never

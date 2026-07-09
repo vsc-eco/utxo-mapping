@@ -80,10 +80,14 @@ func (cs *ContractState) HandleTopUpFeeReserve(txData *VerificationRequest) erro
 	if v := sdk.StateGetObject(constants.MigrationSweepPrefix + txId); v != nil && *v != "" {
 		return ce.NewContractError(ce.ErrInput, "fee-reserve tx is an in-flight migration sweep, not a deposit")
 	}
-	for _, pendingId := range cs.TxSpendsList {
-		if pendingId == txId {
-			return ce.NewContractError(ce.ErrInput, "fee-reserve tx is a pending vault spend, not a deposit")
-		}
+	// L10-1 (FULL-PRUNED 2026-07-09): O(1) keyed membership instead of an O(N) scan of
+	// the permissionless-inflatable TxSpendsList. A pending vault spend ALWAYS has a
+	// "d-<txid>" signing-data record written in lockstep with its TxSpendsList entry
+	// (handlers.go / migration.go add both; the settle paths delete both), so the record
+	// IS the pending-spend membership — a flood of pending unmaps can no longer make this
+	// per-deposit check O(N).
+	if d := sdk.StateGetObject(constants.TxSpendsPrefix + txId); d != nil && *d != "" {
+		return ce.NewContractError(ce.ErrInput, "fee-reserve tx is a pending vault spend, not a deposit")
 	}
 
 	// Derive the ACTIVE vault's untagged address — the same P2WSH the unmap change and the

@@ -312,12 +312,15 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 	// already-authorized, already-broadcast spend and moves no new funds; freezing
 	// it merely strands an in-flight migration/withdrawal. Any OTHER confirm stays
 	// pause-gated.
+	// L10-1 (FULL-PRUNED 2026-07-09): O(1) keyed check instead of an O(N) scan of the
+	// permissionless-inflatable TxSpendsList — the "d-<txid>" signing-data record is
+	// written/deleted in lockstep with the list entry (handlers.go / migration.go add
+	// both; settle deletes both), so it IS the pending-spend membership. A flood of
+	// pending unmaps can no longer make this pause-exempt check O(N). The "ms-"/"us-"
+	// record checks below remain as defense-in-depth (never depend on a single record).
 	isPending := false
-	for _, id := range cs.TxSpendsList {
-		if id == txId {
-			isPending = true
-			break
-		}
+	if d := sdk.StateGetObject(constants.TxSpendsPrefix + txId); d != nil && *d != "" {
+		isPending = true
 	}
 	// BRK-1 (methodology M1/M4 S2-1, defense-in-depth): a migration sweep is ALSO
 	// pause-exempt while its "ms-" record is live. updateUtxoSpends now preserves a
