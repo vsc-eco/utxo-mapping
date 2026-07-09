@@ -311,7 +311,12 @@ func (cs *ContractState) addInputsWithWitnesses(tx *wire.MsgTx, inputs []*Utxo) 
 		if err != nil {
 			return nil, err
 		}
-		tx.AddTxIn(wire.NewTxIn(wire.NewOutPoint(txHash, utxo.Vout), nil, nil))
+		txIn := wire.NewTxIn(wire.NewOutPoint(txHash, utxo.Vout), nil, nil)
+		// L7-01: signal BIP-125 opt-in RBF on every input so a stuck spend can be
+		// fee-bumped (re-drive) instead of wedging rotation. BIP-68-inert (bit 31 set),
+		// so no interaction with the OP_CSV backup path. Shared by unmap + migration sweep.
+		txIn.Sequence = constants.RbfSequence
+		tx.AddTxIn(txIn)
 
 		inPrimary, inBackup, genFound := cs.vaultKeysForGeneration(utxo.Generation)
 		if !genFound && len(cs.Vaults) > 0 {

@@ -5,6 +5,17 @@ const DirPathDelimiter = "-"
 const TssKeyName = "main"
 const RouterContractIdKey = "routerid"
 
+// RbfSequence is the nSequence set on EVERY input of every vault spend (unmap +
+// migration sweep). 0xfffffffd (a) signals BIP-125 opt-in Replace-By-Fee so a stuck
+// never-confirming spend can be reliably fee-bumped (the L7-01 re-drive) rather than
+// wedging rotation forever, and (b) has bit 31 set, so BIP-68 relative-locktime is
+// DISABLED — it never interacts with the vault's OP_CSV backup branch (a separate
+// spend path / separate tx), exactly the value Bitcoin Core's wallet uses. The
+// signed BIP143 sighash commits to this value; the node's output-scoping gate
+// recomputes the sighash from the transmitted tx bytes, so it reads this nSequence
+// rather than assuming a default — the node side is unchanged.
+const RbfSequence uint32 = 0xfffffffd
+
 // UTXO ID pool layout (uint16 ID, 65536 slots total).
 // IDs 0–1023   are the unconfirmed pool (change outputs pending confirmation).
 // IDs 1024–65535 are the confirmed pool (active mapped UTXOs ready to spend).
