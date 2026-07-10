@@ -5,16 +5,25 @@ const DirPathDelimiter = "-"
 const TssKeyName = "main"
 const RouterContractIdKey = "routerid"
 
-// UTXO ID pool layout (single-byte ID, 256 slots total).
-// IDs 0–63  are the unconfirmed pool (change outputs pending confirmation).
-// IDs 64–255 are the confirmed pool   (active mapped UTXOs ready to spend).
+// UTXO ID pool layout (uint16 ID, 65536 slots total).
+// IDs 0–1023   are the unconfirmed pool (change outputs pending confirmation).
+// IDs 1024–65535 are the confirmed pool (active mapped UTXOs ready to spend).
 const (
-	UtxoUnconfirmedPoolSize = 64 // number of slots in the unconfirmed pool
-	UtxoConfirmedPoolStart  = 64 // first ID in the confirmed pool
+	UtxoUnconfirmedPoolSize = 1024  // number of slots in the unconfirmed pool
+	UtxoConfirmedPoolStart  = 1024  // first ID in the confirmed pool
+	UtxoMaxId               = 65535 // max uint16
 )
 
+// MaxUtxoAmount is the maximum satoshi value for a single UTXO in the registry.
+// 6 bytes (48 bits) supports up to ~2.81M BTC — far beyond any realistic deposit.
+const MaxUtxoAmount int64 = (1 << 48) - 1
+
 const BalancePrefix = "a" + DirPathDelimiter
-const ObservedPrefix = "o" + DirPathDelimiter
+
+// ObservedBlockPrefix stores the list of observed txid:vout pairs for a given
+// block height. Key: "o-<height>", Value: packed 34-byte entries (32-byte txid
+// + 2-byte vout BE). Pruned alongside block headers during addBlocks.
+const ObservedBlockPrefix = "o" + DirPathDelimiter
 const UtxoPrefix = "u" + DirPathDelimiter
 const UtxoRegistryKey = "r"
 const UtxoLastIdKey = "i"
@@ -23,19 +32,32 @@ const TxSpendsPrefix = "d" + DirPathDelimiter
 const SupplyKey = "s"
 
 const LastHeightKey = "h"
+const SeedHeightKey = "sh"
+const PruneFloorKey = "pf" // lowest unpruned block height, updated during pruning
+
+// BTC-C3 (propagated): per-Hive-block withdrawal rate limit. The
+// accumulator tracks total litoshis deducted by HandleUnmap within a
+// single Hive L1 block; when MaxUnmapPerBlock is positive,
+// HandleUnmap rejects any unmap that would push the accumulator
+// above the cap. Default 1 LTC per Hive block; operators can tune
+// via setMaxUnmapPerBlock. Setting 0 disables the limit.
+const DefaultMaxUnmapPerBlock int64 = 100_000_000 // 1 LTC in litoshis
+const MaxUnmapPerBlockKey = "muxb"
+
+// BlockUnmapAccKey stores the per-block unmap accumulator: 16 bytes
+// = uint64 BE Hive block height || uint64 BE accumulated litoshis.
+const BlockUnmapAccKey = "buac"
 
 // Instruction URL search param keys
 const (
-	DepositToKey     = "deposit_to"
-	SwapAssetOut     = "swap_asset_out"
-	SwapNetworkOut   = "swap_network_out"
-	SwapToKey        = "swap_to"
-	ReturnAddressKey = "return_address"
-	ReturnNetworkKey = "return_network"
+	DepositToKey        = "deposit_to"
+	SwapAssetOut        = "swap_asset_out"
+	SwapToKey           = "swap_to"
+	DestinationChainKey = "destination_chain"
 )
 
 // Address Creation
-const BackupCSVBlocks = 17280 // ~1 month (2.5 min blocks)
+const BackupCSVBlocks = 17280 // ~1 month at LTC's 2.5-min block time
 const TestnetBackupCSVBlocks = 2
 
 // Logs
@@ -47,17 +69,46 @@ const (
 
 const AllowancePrefix = "q" + DirPathDelimiter
 
+const PausedKey = "paused"     // "1" when contract is paused, absent/empty when active
+const MigrateVersionKey = "mv" // current migration version (decimal string)
+
+// LatestMigrateVersion is the newest migration version. Set this in init/seed
+// so freshly deployed contracts skip all migrations.
+const LatestMigrateVersion = "1"
+
+// Old format constants (pre-migration)
+const (
+	OldUtxoConfirmedPoolStart = 64
+)
+
 const OracleAddress = "did:vsc:oracle:ltc"
 const PrimaryPublicKeyStateKey = "pubkey"
 const BackupPublicKeyStateKey = "backupkey"
 
 const BlockPrefix = "b" + DirPathDelimiter
 
+// MaxBaseFeeRate caps the base fee rate at 500 litoshis/vbyte.
+// Pentest finding BTC-C6 (propagated from btc-mapping): 500 still
+// admits genuine extreme-market spikes while halving an oracle's
+// griefing range vs the legacy 1000 ceiling.
+const MaxBaseFeeRate int64 = 500
+
+// MaxBlockRetention is the number of recent block headers to keep.
+// Older headers are pruned during addBlocks to prevent unbounded state growth.
+// keep a week worth of headers to allow addresses to be registered after the fact
+const MaxBlockRetention = 1080
+
+// MaxPrunePerCall limits how many old headers are deleted in a single
+// addBlocks invocation to keep gas usage predictable.
+const MaxPrunePerCall = 50
+
+// LTC has a single testnet (vs BTC's testnet3/testnet4 split).
 const (
 	Testnet string = "testnet"
 	Mainnet string = "mainnet"
+	Regtest string = "regtest"
 )
 
 func IsTestnet(networkName string) bool {
-	return networkName == Testnet
+	return networkName == Testnet || networkName == Regtest
 }

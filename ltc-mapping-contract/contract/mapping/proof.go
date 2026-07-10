@@ -12,6 +12,10 @@ import (
 	"github.com/btcsuite/btcd/wire"
 )
 
+// verifyTransaction checks that rawTxBytes is included in the block at
+// req.BlockHeight via Merkle proof. The contract does not enforce a minimum
+// confirmation depth — that responsibility belongs to the oracle, which only
+// submits headers after sufficient confirmations (see CLAUDE.md § Security Model).
 func verifyTransaction(req *VerificationRequest, rawTxBytes []byte) error {
 	// block header from contract state (stored as raw 80 bytes)
 	rawHeaderStr := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatUint(uint64(req.BlockHeight), 10))

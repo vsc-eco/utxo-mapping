@@ -5,14 +5,16 @@ import (
 	ce "dash-mapping-contract/contract/contracterrors"
 	"dash-mapping-contract/sdk"
 	"crypto/sha256"
+	"encoding/binary"
 	"net/url"
+	"strings"
 
 	"github.com/btcsuite/btcd/chaincfg"
 )
 
-// DASH-specific network params for address validation.
-// DASH uses different address version bytes than Bitcoin.
-// Bech32HRPSegwit is set for internal P2WSH tracking only (DASH has no native segwit).
+// Dash-specific network params for address validation. Dash uses different
+// address version bytes than Bitcoin. Bech32HRPSegwit is set for internal
+// P2WSH tracking only (Dash has no native segwit).
 func dashTestNetParams() *chaincfg.Params {
 	p := chaincfg.TestNet3Params
 	p.PubKeyHashAddrID = 0x8c // 'y' prefix
@@ -29,13 +31,23 @@ func dashMainNetParams() *chaincfg.Params {
 	return &p
 }
 
+func dashRegTestParams() *chaincfg.Params {
+	// Dash regtest reuses Dash testnet base58 prefixes. Bech32HRPSegwit is
+	// left at the inherited "bcrt" since Dash has no native segwit and the
+	// regtest test harness uses bcrt1... destination addresses.
+	p := chaincfg.RegressionNetParams
+	p.PubKeyHashAddrID = 0x8c // 'y' prefix
+	p.ScriptHashAddrID = 0x13 // '8'/'9' prefix
+	return &p
+}
+
 func IntializeContractState(publicKeys PublicKeys, networkMode string) (*ContractState, error) {
 	var networkParams *chaincfg.Params
 	switch networkMode {
 	case constants.Testnet:
 		networkParams = dashTestNetParams()
 	case constants.Regtest:
-		networkParams = &chaincfg.RegressionNetParams
+		networkParams = dashRegTestParams()
 	default:
 		networkParams = dashMainNetParams()
 	}
@@ -51,13 +63,14 @@ func IntializeContractState(publicKeys PublicKeys, networkMode string) (*Contrac
 		}
 	}
 
-	// Load UTXO pool counters (2 bytes: [confirmedNext, unconfirmedNext])
-	confirmedNextId := uint8(constants.UtxoConfirmedPoolStart)
-	unconfirmedNextId := uint8(0)
+	// Load UTXO pool counters (4 bytes: two uint16 BE [confirmedNext, unconfirmedNext])
+	confirmedNextId := uint16(constants.UtxoConfirmedPoolStart)
+	unconfirmedNextId := uint16(0)
 	counterState := sdk.StateGetObject(constants.UtxoLastIdKey)
-	if len(*counterState) == 2 {
-		confirmedNextId = (*counterState)[0]
-		unconfirmedNextId = (*counterState)[1]
+	if len(*counterState) == 4 {
+		counterBytes := []byte(*counterState)
+		confirmedNextId = binary.BigEndian.Uint16(counterBytes[0:])
+		unconfirmedNextId = binary.BigEndian.Uint16(counterBytes[2:])
 	}
 
 	// Load TX spends registry (binary: 32 bytes/entry)
@@ -90,7 +103,6 @@ func IntializeContractState(publicKeys PublicKeys, networkMode string) (*Contrac
 		Supply:            supply,
 		PublicKeys:        publicKeys,
 		NetworkParams:     networkParams,
-		NetworkOptions:    initNetworkLookup(networkParams),
 	}, nil
 }
 
@@ -139,25 +151,25 @@ func (cs *ContractState) parseInstructions(
 		var mappingType MappingType
 		if params.Has(constants.DepositToKey) {
 			recipient = params.Get(constants.DepositToKey)
-			if !cs.NetworkOptions[Vsc].ValidateAddress(recipient) {
+			if sdk.VerifyAddress(recipient) == string(sdk.AddressDomainUnknown) {
 				return nil, ce.NewContractError(
 					ce.ErrInput,
-					"address \""+recipient+"\" invalid on network \""+string(Vsc)+"\"",
+					"address \""+recipient+"\" invalid on magi",
 					"bad instruction \""+instr+"\"",
 				)
 			}
 			mappingType = MapDeposit
 		} else if params.Has(constants.SwapToKey) {
 			recipient = params.Get(constants.SwapToKey)
-			recipientNetwork, err := cs.getNetwork(params.Get(constants.SwapNetworkOut))
-			if err != nil {
-				recipientNetwork = cs.NetworkOptions[Vsc]
+			recipientNetwork := params.Get(constants.SwapNetworkOut)
+			if recipientNetwork == "dash" {
+				return nil, ce.NewContractError(ce.ErrInput, "output network cannot be dash")
 			}
 			mappingType = MapSwap
-			if !recipientNetwork.ValidateAddress(recipient) {
+			if !strings.HasPrefix(sdk.VerifyAddress(recipient), "user:") {
 				return nil, ce.NewContractError(
 					ce.ErrInput,
-					"address \""+recipient+"\" invalid on network \""+string(recipientNetwork.Name())+"\"",
+					"address \""+recipient+"\" is not a user address",
 					"bad instruction \""+instr+"\"",
 				)
 			}
@@ -192,8 +204,11 @@ func (cs *ContractState) SaveToState() error {
 	// UTXO registry (binary)
 	sdk.StateSetObject(constants.UtxoRegistryKey, string(MarshalUtxoRegistry(cs.UtxoList)))
 
-	// UTXO pool counters (2 bytes: [confirmedNext, unconfirmedNext])
-	sdk.StateSetObject(constants.UtxoLastIdKey, string([]byte{cs.ConfirmedNextId, cs.UnconfirmedNextId}))
+	// UTXO pool counters (4 bytes: two uint16 BE [confirmedNext, unconfirmedNext])
+	var counterBuf [4]byte
+	binary.BigEndian.PutUint16(counterBuf[0:], cs.ConfirmedNextId)
+	binary.BigEndian.PutUint16(counterBuf[2:], cs.UnconfirmedNextId)
+	sdk.StateSetObject(constants.UtxoLastIdKey, string(counterBuf[:]))
 
 	// TX spends registry (binary)
 	sdk.StateSetObject(constants.TxSpendsRegistryKey, string(MarshalTxSpendsRegistry(cs.TxSpendsList)))

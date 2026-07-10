@@ -200,6 +200,14 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		return err
 	}
 
+	// Pentest finding BTC-C3: enforce per-Hive-block aggregate unmap
+	// cap before incurring TSS signing cost. The runtime reverts the
+	// entire transaction (including the balance deduction above and
+	// the accumulator update inside the helper) if this returns.
+	if err := checkAndUpdateUnmapRateLimit(env.BlockHeight, finalAmt); err != nil {
+		return err
+	}
+
 	// All checks passed — now request TSS signing (the node reads only the "d-" record +
 	// TxSpendsList entry written below; the "us-" record + reservations are contract-internal,
 	// so the node/broadcast side is UNCHANGED — exactly like BRK-1's migration "ms-" record).
@@ -261,12 +269,25 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 }
 
 // HandleApprove sets the spending allowance for spender to spend owner's tokens.
-func HandleApprove(owner, spender string, amount int64) {
+//
+// review7 MED-1 (D13): granting an allowance hands spend authority over the
+// owner's tokens to the spender, so it requires ACTIVE auth — the same gate as
+// transfer/unmap. Without it a posting-key-only call could approve a spender
+// and then drain the balance via transferFrom.
+func HandleApprove(owner, spender string, amount int64) error {
+	if err := checkAuth(sdk.GetEnv()); err != nil {
+		return err
+	}
 	setAllowance(owner, spender, amount)
+	return nil
 }
 
 // HandleIncreaseAllowance increases spender's allowance by amount.
 func HandleIncreaseAllowance(owner, spender string, amount int64) error {
+	// review7 MED-1: allowance changes require active auth (see HandleApprove).
+	if err := checkAuth(sdk.GetEnv()); err != nil {
+		return err
+	}
 	current := getAllowance(owner, spender)
 	newAmount, err := safeAdd64(current, amount)
 	if err != nil {
@@ -278,6 +299,10 @@ func HandleIncreaseAllowance(owner, spender string, amount int64) error {
 
 // HandleDecreaseAllowance decreases spender's allowance by amount; reverts if it would go below zero.
 func HandleDecreaseAllowance(owner, spender string, amount int64) error {
+	// review7 MED-1: allowance changes require active auth (see HandleApprove).
+	if err := checkAuth(sdk.GetEnv()); err != nil {
+		return err
+	}
 	current := getAllowance(owner, spender)
 	newAmount, err := safeSubtract64(current, amount)
 	if err != nil || newAmount < 0 {
@@ -348,6 +373,13 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 			return ce.NewContractError(ce.ErrTransaction, "contract is paused")
 		}
 	}
+	// Reject an empty index set up front. A confirmSpend with no indices can
+	// never promote a UTXO, so without this guard it would fall through to the
+	// signing-data cleanup below and wipe a pending withdrawal's signing context
+	// without confirming anything (permissionless griefing of an in-flight spend).
+	if len(indices) == 0 {
+		return ce.NewContractError(ce.ErrInput, "indices must be non-empty")
+	}
 
 	indexSet := make(map[uint32]struct{}, len(indices))
 	for _, idx := range indices {
@@ -386,6 +418,15 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 		sdk.StateDeleteObject(getUtxoKey(cs.UtxoList[i].Id))
 		cs.UtxoList[i].Id = newId
 		promotedVouts = append(promotedVouts, utxo.Vout)
+	}
+
+	// Only delete the pending spend's signing data once at least one of its
+	// unconfirmed outputs has actually been promoted to the confirmed pool. If
+	// nothing matched (empty/non-matching indices, or the outputs are no longer
+	// present), leave the signing data intact so the withdrawal stays recoverable
+	// rather than being silently stranded (upstream BTC-L-CONFIRMSPEND).
+	if len(promotedVouts) == 0 {
+		return ce.NewContractError(ce.ErrInput, "no unconfirmed outputs matched the provided indices")
 	}
 	// D-1/C-1 (council HIGH): a promoted output belongs to this confirmed tx (txId) at this
 	// block; record it observed so topUp cannot double-credit a legacy unconfirmed change

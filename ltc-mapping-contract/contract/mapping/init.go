@@ -5,46 +5,40 @@ import (
 	ce "ltc-mapping-contract/contract/contracterrors"
 	"ltc-mapping-contract/sdk"
 	"crypto/sha256"
+	"encoding/binary"
 	"net/url"
+	"strings"
 
 	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/wire"
 )
 
-// LTC-specific network params for address validation.
-// Litecoin uses different address version bytes and bech32 HRP than Bitcoin.
-// Params are registered once so btcutil.DecodeAddress works correctly.
-
-var ltcTestNet = func() *chaincfg.Params {
-	p := chaincfg.Params{
-		Name:             "ltc-testnet",
-		Net:              wire.BitcoinNet(0xfdd2c8f1),
-		PubKeyHashAddrID: 0x6f,
-		ScriptHashAddrID: 0xc4,
-		Bech32HRPSegwit:  "tltc",
-	}
-	chaincfg.Register(&p)
-	return &p
-}()
-
-var ltcMainNet = func() *chaincfg.Params {
-	p := chaincfg.Params{
-		Name:             "ltc-mainnet",
-		Net:              wire.BitcoinNet(0xfbc0b6db),
-		PubKeyHashAddrID: 0x30,
-		ScriptHashAddrID: 0x32,
-		Bech32HRPSegwit:  "ltc",
-	}
-	chaincfg.Register(&p)
-	return &p
-}()
-
+// LTC-specific network params for address validation. LTC uses different
+// address version bytes and Bech32 HRPs than Bitcoin. Bech32HRPSegwit is
+// set for LTC's native bech32 addresses (ltc/tltc).
 func ltcTestNetParams() *chaincfg.Params {
-	return ltcTestNet
+	p := chaincfg.TestNet3Params
+	p.PubKeyHashAddrID = 0x6f
+	p.ScriptHashAddrID = 0xc4
+	p.Bech32HRPSegwit = "tltc"
+	return &p
 }
 
 func ltcMainNetParams() *chaincfg.Params {
-	return ltcMainNet
+	p := chaincfg.MainNetParams
+	p.PubKeyHashAddrID = 0x30
+	p.ScriptHashAddrID = 0x32
+	p.Bech32HRPSegwit = "ltc"
+	return &p
+}
+
+func ltcRegTestParams() *chaincfg.Params {
+	// LTC regtest reuses LTC testnet base58 prefixes. Bech32HRPSegwit is
+	// left at the inherited "bcrt" since the regtest test harness uses
+	// bcrt1... destination addresses derived from btcsuite defaults.
+	p := chaincfg.RegressionNetParams
+	p.PubKeyHashAddrID = 0x6f
+	p.ScriptHashAddrID = 0xc4
+	return &p
 }
 
 func IntializeContractState(publicKeys PublicKeys, networkMode string) (*ContractState, error) {
@@ -52,6 +46,8 @@ func IntializeContractState(publicKeys PublicKeys, networkMode string) (*Contrac
 	switch networkMode {
 	case constants.Testnet:
 		networkParams = ltcTestNetParams()
+	case constants.Regtest:
+		networkParams = ltcRegTestParams()
 	default:
 		networkParams = ltcMainNetParams()
 	}
@@ -67,13 +63,14 @@ func IntializeContractState(publicKeys PublicKeys, networkMode string) (*Contrac
 		}
 	}
 
-	// Load UTXO pool counters (2 bytes: [confirmedNext, unconfirmedNext])
-	confirmedNextId := uint8(constants.UtxoConfirmedPoolStart)
-	unconfirmedNextId := uint8(0)
+	// Load UTXO pool counters (4 bytes: two uint16 BE [confirmedNext, unconfirmedNext])
+	confirmedNextId := uint16(constants.UtxoConfirmedPoolStart)
+	unconfirmedNextId := uint16(0)
 	counterState := sdk.StateGetObject(constants.UtxoLastIdKey)
-	if len(*counterState) == 2 {
-		confirmedNextId = (*counterState)[0]
-		unconfirmedNextId = (*counterState)[1]
+	if len(*counterState) == 4 {
+		counterBytes := []byte(*counterState)
+		confirmedNextId = binary.BigEndian.Uint16(counterBytes[0:])
+		unconfirmedNextId = binary.BigEndian.Uint16(counterBytes[2:])
 	}
 
 	// Load TX spends registry (binary: 32 bytes/entry)
@@ -106,7 +103,6 @@ func IntializeContractState(publicKeys PublicKeys, networkMode string) (*Contrac
 		Supply:            supply,
 		PublicKeys:        publicKeys,
 		NetworkParams:     networkParams,
-		NetworkOptions:    initNetworkLookup(networkParams),
 	}, nil
 }
 
@@ -155,25 +151,25 @@ func (cs *ContractState) parseInstructions(
 		var mappingType MappingType
 		if params.Has(constants.DepositToKey) {
 			recipient = params.Get(constants.DepositToKey)
-			if !cs.NetworkOptions[Vsc].ValidateAddress(recipient) {
+			if sdk.VerifyAddress(recipient) == string(sdk.AddressDomainUnknown) {
 				return nil, ce.NewContractError(
 					ce.ErrInput,
-					"address \""+recipient+"\" invalid on network \""+string(Vsc)+"\"",
+					"address \""+recipient+"\" invalid on magi",
 					"bad instruction \""+instr+"\"",
 				)
 			}
 			mappingType = MapDeposit
 		} else if params.Has(constants.SwapToKey) {
 			recipient = params.Get(constants.SwapToKey)
-			recipientNetwork, err := cs.getNetwork(params.Get(constants.SwapNetworkOut))
-			if err != nil {
-				recipientNetwork = cs.NetworkOptions[Vsc]
+			destinationChain := params.Get(constants.DestinationChainKey)
+			if strings.ToLower(destinationChain) == "btc" {
+				return nil, ce.NewContractError(ce.ErrInput, "output network cannot be btc")
 			}
 			mappingType = MapSwap
-			if !recipientNetwork.ValidateAddress(recipient) {
+			if !strings.HasPrefix(sdk.VerifyAddress(recipient), "user:") {
 				return nil, ce.NewContractError(
 					ce.ErrInput,
-					"address \""+recipient+"\" invalid on network \""+string(recipientNetwork.Name())+"\"",
+					"address \""+recipient+"\" is not a user address",
 					"bad instruction \""+instr+"\"",
 				)
 			}
@@ -208,8 +204,11 @@ func (cs *ContractState) SaveToState() error {
 	// UTXO registry (binary)
 	sdk.StateSetObject(constants.UtxoRegistryKey, string(MarshalUtxoRegistry(cs.UtxoList)))
 
-	// UTXO pool counters (2 bytes: [confirmedNext, unconfirmedNext])
-	sdk.StateSetObject(constants.UtxoLastIdKey, string([]byte{cs.ConfirmedNextId, cs.UnconfirmedNextId}))
+	// UTXO pool counters (4 bytes: two uint16 BE [confirmedNext, unconfirmedNext])
+	var counterBuf [4]byte
+	binary.BigEndian.PutUint16(counterBuf[0:], cs.ConfirmedNextId)
+	binary.BigEndian.PutUint16(counterBuf[2:], cs.UnconfirmedNextId)
+	sdk.StateSetObject(constants.UtxoLastIdKey, string(counterBuf[:]))
 
 	// TX spends registry (binary)
 	sdk.StateSetObject(constants.TxSpendsRegistryKey, string(MarshalTxSpendsRegistry(cs.TxSpendsList)))

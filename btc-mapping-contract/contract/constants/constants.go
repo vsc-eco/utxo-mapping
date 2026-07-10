@@ -153,12 +153,33 @@ const LastHeightKey = "h"
 const SeedHeightKey = "sh"
 const PruneFloorKey = "pf" // lowest unpruned block height, updated during pruning
 
+// BTC-C3: per-Hive-block withdrawal rate limit. The accumulator tracks
+// total sats deducted by HandleUnmap within a single Hive L1 block;
+// when MaxUnmapPerBlock is positive, HandleUnmap rejects any unmap
+// that would push the accumulator above the cap. The accumulator
+// resets on each new Hive block (=3s tick).
+//
+// Default 1 BTC / Hive block = 1200 BTC/hour upper bound on a
+// TSS-quorum-compromise drain. Operators can tune via the
+// setMaxUnmapPerBlock admin handler; setting it to 0 disables the
+// limit (legacy behaviour).
+const DefaultMaxUnmapPerBlock int64 = 100_000_000 // 1 BTC in sats
+const MaxUnmapPerBlockKey = "muxb"
+
+// BlockUnmapAccKey stores the per-block unmap accumulator: 16 bytes
+// = uint64 BE Hive block height || uint64 BE accumulated sats.
+const BlockUnmapAccKey = "buac"
+
 // Instruction URL search param keys
 const (
 	DepositToKey        = "deposit_to"
 	SwapAssetOut        = "swap_asset_out"
 	SwapToKey           = "swap_to"
 	DestinationChainKey = "destination_chain"
+	// MinAmountOutKey lets a deposit-swap instruction carry a slippage bound
+	// (DX-H5). It is baked into the deposit address (part of the hashed
+	// instruction), so the depositor commits to a minimum output up front.
+	MinAmountOutKey = "min_amount_out"
 )
 
 // Address Creation
@@ -201,10 +222,17 @@ const BackupPublicKeyStateKey = "backupkey"
 
 const BlockPrefix = "b" + DirPathDelimiter
 
-// MaxBaseFeeRate caps the base fee rate at 1000 sats/vbyte.
-// Any rate above this is clamped during fee calculation to prevent
-// overflow or unreasonable withdrawal fees from a misconfigured oracle.
-const MaxBaseFeeRate int64 = 1000
+// MaxBaseFeeRate caps the base fee rate at 500 sats/vbyte.
+// Pentest finding BTC-C6: the previous 1000 sat/vbyte ceiling
+// only protected against int overflow — within that range a
+// misbehaving or compromised oracle can drive a typical
+// ~200-vbyte withdrawal fee to ~$200, which is griefing. BTC
+// mainnet historical peaks (2017 bull run, 2023 inscription
+// mania) topped out near 500–750 sat/vbyte for short windows,
+// so 500 covers genuine extreme markets while halving the
+// oracle's griefing range. Any rate above this is clamped
+// during fee calculation; rates below 1 are clamped up to 1.
+const MaxBaseFeeRate int64 = 500
 
 // MaxMigrationInputs bounds the number of UTXOs a single migration sweep tranche
 // consumes (S2). Each input needs its own TSS signature and adds ~150 vB; an

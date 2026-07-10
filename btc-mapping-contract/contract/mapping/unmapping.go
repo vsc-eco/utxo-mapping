@@ -770,7 +770,18 @@ func signSpendTransaction(tx *wire.MsgTx, inputs []*Utxo, witnessScripts map[int
 		// S1.2: sign each input with the keyId of the generation that locked it
 		// (gen 0 → "main", gen N → "mainv<N>"), so the retiring-gen inputs of a
 		// migration sweep are signed by the retiring gen's key.
-		sdk.TssSignKey(VaultKeyId(utxo.Generation), sigHash)
+		// TssSignKey is best-effort at the host boundary: the runtime returns "fail"
+		// — recording no signing request — when the key is missing or not active
+		// (e.g. deprecated/expired). Revert loudly instead of committing a withdrawal
+		// that consumes the inputs + debits the caller while no signature is ever
+		// produced (which would strand the funds). [upstream BTC-C: revert-on-fail]
+		signKeyId := VaultKeyId(utxo.Generation)
+		if status := sdk.TssSignKey(signKeyId, sigHash); status != "ok" {
+			return nil, ce.NewContractError(
+				ce.ErrTransaction,
+				"TSS signing rejected for key \""+signKeyId+"\" (missing or not active): \""+status+"\"",
+			)
+		}
 
 		unsignedSigHashes[i] = UnsignedSigHash{
 			Index:         uint32(i),

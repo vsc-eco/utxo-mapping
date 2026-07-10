@@ -1,5 +1,9 @@
 .DS_Store
 *.wasm
+# Mock router test fixture (see BTC-C4 refund path test). Built once
+# from tests/mocks/mockrouter/main.go and checked into git so test runs
+# don't depend on tinygo being installed.
+!**/tests/mocks/mockrouter/bin/mock_router.wasm
 .env
 data/
 go.work

@@ -2,6 +2,7 @@ package mapping
 
 import (
 	"btc-mapping-contract/sdk"
+	"net/url"
 	"strconv"
 
 	"github.com/CosmWasm/tinyjson"
@@ -12,6 +13,30 @@ import (
 	"btc-mapping-contract/contract/constants"
 	ce "btc-mapping-contract/contract/contracterrors"
 )
+
+// buildSwapInstruction builds the DEX swap instruction for a BTC deposit-swap.
+// DX-H5: it forwards the depositor's min_amount_out param so the ingress swap
+// honours their slippage bound. The instruction was previously built WITHOUT
+// MinAmountOut, so no bound ever reached the router and the swap executed at any
+// price (a sandwich could take the whole amount). The router/dex already enforce
+// MinAmountOut downstream; the bug was purely that the mapping contract never
+// passed it on.
+func buildSwapInstruction(params *url.Values, recipient, assetOut string, amount int64) DexInstruction {
+	instruction := DexInstruction{
+		Type:             "swap",
+		Version:          "1.0.0",
+		AssetIn:          BtcAssetValue,
+		AmountIn:         strconv.FormatInt(amount, 10),
+		AssetOut:         assetOut,
+		Recipient:        recipient,
+		DestinationChain: params.Get(constants.DestinationChainKey),
+	}
+	if params.Has(constants.MinAmountOutKey) {
+		minOut := params.Get(constants.MinAmountOutKey)
+		instruction.MinAmountOut = &minOut
+	}
+	return instruction
+}
 
 func isForVscAcc(
 	txOut *wire.TxOut,
@@ -253,15 +278,7 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 				}
 				assetOut := metadata.Params.Get(constants.SwapAssetOut)
 
-				instruction := DexInstruction{
-					Type:             "swap",
-					Version:          "1.0.0",
-					AssetIn:          BtcAssetValue,
-					AmountIn:         strconv.FormatInt(utxo.Amount, 10),
-					AssetOut:         assetOut,
-					Recipient:        metadata.Recipient,
-					DestinationChain: metadata.Params.Get(constants.DestinationChainKey),
-				}
+				instruction := buildSwapInstruction(metadata.Params, metadata.Recipient, assetOut, utxo.Amount)
 				instrJson, err := tinyjson.Marshal(instruction)
 				if err != nil {
 					return ce.NewContractError(ce.ErrJson, "error marshalling swap instruction: "+err.Error())
@@ -279,16 +296,42 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 				routerAddr := "contract:" + routerId
 				setAllowance(selfAddr, routerAddr, utxo.Amount)
 
-				swapResultStr := sdk.ContractCall(routerId, "execute", string(instrJson), &sdk.ContractCallOptions{})
+				// DX-H6: run the ingress swap in try/catch mode. If it reverts
+				// (slippage / no pool / zero output), the router+DEX state/ledger
+				// effects are rolled back to a savepoint and we are NOT trapped — so
+				// instead of the whole deposit reverting and STRANDING the user's
+				// already-irreversible BTC, we credit them wrapped BTC and they can
+				// withdraw or retry later. The router/DEX keep aborting normally; the
+				// mapping contract decides to absorb the failure.
+				//
+				// (Requires consensus version >= 0.2.0. Below it, Try is ignored and a
+				// reverting swap traps as before — the legacy strand-on-permanent-
+				// failure behaviour, until the network activates the feature.)
+				res := sdk.TryContractCall(routerId, "execute", string(instrJson), nil)
 				// Clean up any remaining allowance after swap to prevent lingering authorization
 				setAllowance(selfAddr, routerAddr, 0)
-				var swapResult SwapResult
-				err = tinyjson.Unmarshal([]byte(*swapResultStr), &swapResult)
-				if err != nil {
-					return ce.WrapContractError(ce.ErrJson, err, "error unmarshalling swap result")
-				}
-				if swapResult.AmountOut == "" || swapResult.AmountOut == "0" {
-					return ce.NewContractError(ce.ErrInput, "swap returned zero amount out")
+
+				if !res.Ok {
+					// The swap rolled back; the BTC drawn for it is still credited to
+					// the contract account (incAccBalance above ran in THIS frame, not
+					// the rolled-back callee). Move it to the depositor as wrapped BTC.
+					selfBal := getAccBal(selfAddr)
+					if selfBal < utxo.Amount {
+						return ce.NewContractError(ce.ErrStateAccess, "swap refund: contract balance underflow")
+					}
+					setAccBal(selfAddr, selfBal-utxo.Amount)
+					if err := incAccBalance(metadata.Recipient, utxo.Amount); err != nil {
+						return ce.Prepend(err, "swap refund: crediting depositor")
+					}
+					sdk.Log("deposit-swap reverted (" + res.Error + "); refunded depositor wrapped BTC")
+				} else {
+					var swapResult SwapResult
+					if err := tinyjson.Unmarshal([]byte(res.Result), &swapResult); err != nil {
+						return ce.WrapContractError(ce.ErrJson, err, "error unmarshalling swap result")
+					}
+					if swapResult.AmountOut == "" || swapResult.AmountOut == "0" {
+						return ce.NewContractError(ce.ErrInput, "swap returned zero amount out")
+					}
 				}
 			default:
 				// should never happen

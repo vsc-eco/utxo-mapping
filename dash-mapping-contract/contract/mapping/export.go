@@ -8,9 +8,9 @@ import (
 
 // AddressWithBackup derives the P2WSH address for the given keys and tag.
 // Tag semantics match createP2WSHAddressWithBackup:
-//   - nil  -> OP_CHECKSIGVERIFY + OP_DATA_0 (change address path)
-//   - []byte{} -> OP_CHECKSIG only (empty-tag UTXO)
-//   - non-empty -> OP_CHECKSIGVERIFY + <tag>
+//   - nil  → OP_CHECKSIGVERIFY + OP_DATA_0 (change address path)
+//   - []byte{} → OP_CHECKSIG only (empty-tag UTXO)
+//   - non-empty → OP_CHECKSIGVERIFY + <tag>
 func AddressWithBackup(
 	primaryPubKeyHex, backupPubKeyHex string,
 	tag []byte,

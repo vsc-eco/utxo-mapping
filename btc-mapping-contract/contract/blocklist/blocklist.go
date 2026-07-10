@@ -51,30 +51,30 @@ func LastHeightToState(lastHeight uint32) {
 }
 
 // seedHeightFromState returns the original seed height, or 0 if not set.
-func seedHeightFromState() uint32 {
+func seedHeightFromState() int64 {
 	s := sdk.StateGetObject(constants.SeedHeightKey)
 	if s == nil || *s == "" {
 		return 0
 	}
-	h, err := strconv.ParseUint(*s, 10, 32)
+	h, err := strconv.ParseInt(*s, 10, 32)
 	if err != nil {
 		return 0
 	}
-	return uint32(h)
+	return h
 }
 
 // pruneFloorFromState returns the lowest height that hasn't been pruned yet.
 // This cursor avoids re-scanning already-pruned regions on each call.
-func pruneFloorFromState() uint32 {
+func pruneFloorFromState() int64 {
 	s := sdk.StateGetObject(constants.PruneFloorKey)
 	if s == nil || *s == "" {
 		return 0
 	}
-	h, err := strconv.ParseUint(*s, 10, 32)
+	h, err := strconv.ParseInt(*s, 10, 32)
 	if err != nil {
 		return 0
 	}
-	return uint32(h)
+	return h
 }
 
 func DivideHeaderList(blocksHex *string) ([]BlockHeaderBytes, error) {
@@ -114,7 +114,10 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 	// block headers stored as raw 80 bytes
 	lastBlockRaw := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatInt(int64(lastHeight), 10))
 	if lastBlockRaw == nil || *lastBlockRaw == "" {
-		return 0, ce.NewContractError(ce.ErrStateAccess, "no block header found at height "+strconv.FormatInt(int64(lastHeight), 10))
+		return 0, ce.NewContractError(
+			ce.ErrStateAccess,
+			"no block header found at height "+strconv.FormatInt(int64(lastHeight), 10),
+		)
 	}
 	lastBlockBytes := []byte(*lastBlockRaw)
 	var lastBlockHeader wire.BlockHeader
@@ -180,17 +183,20 @@ func PruneOldHeaders(lastHeight uint32) int {
 		return 0
 	}
 	pruned := 0
-	h := int64(pruneFloor)
-	for ; h < retainFrom && pruned < constants.MaxPrunePerCall; h++ {
+	h := pruneFloor
+	// limit size of search to prevent blow-up in case of gap after re-seed
+	for ; h < retainFrom && h-pruneFloor < constants.MaxPrunePerCall; h++ {
 		key := constants.BlockPrefix + strconv.FormatInt(h, 10)
 		existing := sdk.StateGetObject(key)
 		if existing != nil && *existing != "" {
 			sdk.StateDeleteObject(key)
+			// Also prune the observed tx list for this block height
+			// Safe to do here because saveObservedList is only ever
+			// called on a proven height
+			observedKey := constants.ObservedBlockPrefix + strconv.FormatInt(h, 10)
+			sdk.StateDeleteObject(observedKey)
 			pruned++
 		}
-		// Also prune the observed tx list for this block height
-		observedKey := constants.ObservedBlockPrefix + strconv.FormatInt(h, 10)
-		sdk.StateDeleteObject(observedKey)
 	}
 	sdk.StateSetObject(constants.PruneFloorKey, strconv.FormatInt(h, 10))
 	return pruned
@@ -238,16 +244,25 @@ func HandleReplaceBlock(rawHeader BlockHeaderBytes, networkMode string) (uint32,
 	prevHeight := lastHeight - 1
 	prevBlockRaw := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatUint(uint64(prevHeight), 10))
 	if prevBlockRaw == nil || *prevBlockRaw == "" {
-		return 0, ce.NewContractError(ce.ErrStateAccess, "no block found at height "+strconv.FormatUint(uint64(prevHeight), 10))
+		return 0, ce.NewContractError(
+			ce.ErrStateAccess,
+			"no block found at height "+strconv.FormatUint(uint64(prevHeight), 10),
+		)
 	}
 	var prevHeader wire.BlockHeader
 	err = prevHeader.BtcDecode(bytes.NewReader([]byte(*prevBlockRaw)), wire.ProtocolVersion, wire.LatestEncoding)
 	if err != nil {
-		return 0, ce.NewContractError(ce.ErrStateAccess, "error decoding block at height "+strconv.FormatUint(uint64(prevHeight), 10))
+		return 0, ce.NewContractError(
+			ce.ErrStateAccess,
+			"error decoding block at height "+strconv.FormatUint(uint64(prevHeight), 10),
+		)
 	}
 	prevHash := prevHeader.BlockHash()
 	if !newHeader.PrevBlock.IsEqual(&prevHash) {
-		return 0, ce.NewContractError(ce.ErrInput, "replacement block does not chain to block at height "+strconv.FormatUint(uint64(prevHeight), 10))
+		return 0, ce.NewContractError(
+			ce.ErrInput,
+			"replacement block does not chain to block at height "+strconv.FormatUint(uint64(prevHeight), 10),
+		)
 	}
 
 	// overwrite the tip
@@ -255,6 +270,11 @@ func HandleReplaceBlock(rawHeader BlockHeaderBytes, networkMode string) (uint32,
 		constants.BlockPrefix+strconv.FormatUint(uint64(lastHeight), 10),
 		string(rawHeader[:]),
 	)
+
+	// The observed TX list remains populated during a replacement, to protect against double mint where
+	// transactions are re-included in the replacement block. An incorrect mint from a replaced block can
+	// technically persist after replacement, but the oracle waits for 2 confirmations and a 3+ block
+	// reorg is unprecendented on BTC mainnet, so very low likelihood of encountering this guard at all
 
 	return lastHeight, nil
 }
@@ -307,12 +327,18 @@ func HandleReplaceBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uin
 	anchorHeight := lastHeight - n
 	anchorBlockRaw := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatUint(uint64(anchorHeight), 10))
 	if anchorBlockRaw == nil || *anchorBlockRaw == "" {
-		return 0, ce.NewContractError(ce.ErrStateAccess, "no block found at anchor height "+strconv.FormatUint(uint64(anchorHeight), 10))
+		return 0, ce.NewContractError(
+			ce.ErrStateAccess,
+			"no block found at anchor height "+strconv.FormatUint(uint64(anchorHeight), 10),
+		)
 	}
 	var anchorHeader wire.BlockHeader
 	err = anchorHeader.BtcDecode(bytes.NewReader([]byte(*anchorBlockRaw)), wire.ProtocolVersion, wire.LatestEncoding)
 	if err != nil {
-		return 0, ce.NewContractError(ce.ErrStateAccess, "error decoding block at anchor height "+strconv.FormatUint(uint64(anchorHeight), 10))
+		return 0, ce.NewContractError(
+			ce.ErrStateAccess,
+			"error decoding block at anchor height "+strconv.FormatUint(uint64(anchorHeight), 10),
+		)
 	}
 	prevHash := anchorHeader.BlockHash()
 
@@ -334,14 +360,26 @@ func HandleReplaceBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uin
 		}
 
 		if !hdr.PrevBlock.IsEqual(&prevHash) {
-			return 0, ce.NewContractError(ce.ErrInput,
-				"replacement block at height "+strconv.FormatUint(uint64(height), 10)+" does not chain to block at height "+strconv.FormatUint(uint64(height-1), 10))
+			return 0, ce.NewContractError(
+				ce.ErrInput,
+				"replacement block at height "+strconv.FormatUint(
+					uint64(height),
+					10,
+				)+" does not chain to block at height "+strconv.FormatUint(
+					uint64(height-1),
+					10,
+				),
+			)
 		}
 
 		sdk.StateSetObject(
 			constants.BlockPrefix+strconv.FormatUint(uint64(height), 10),
 			string(headerBytes[:]),
 		)
+		// The observed TX list remains populated during a replacement, to protect against double mint where
+		// transactions are re-included in the replacement block. An incorrect mint from a replaced block can
+		// technically persist after replacement, but the oracle waits for 2 confirmations and a 3+ block
+		// reorg is unprecendented on BTC mainnet, so very low likelihood of encountering this guard at all
 		prevHash = hdr.BlockHash()
 	}
 

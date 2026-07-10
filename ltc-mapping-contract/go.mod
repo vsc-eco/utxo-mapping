@@ -15,6 +15,7 @@ require (
 	github.com/btcsuite/btcd/btcutil v1.1.6
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0
 	github.com/stretchr/testify v1.11.1
+	github.com/tinylib/msgp v1.6.3
 )
 
 require (
@@ -95,7 +96,6 @@ require (
 	github.com/ipld/go-ipld-prime v0.21.0 // indirect
 	github.com/jackpal/go-nat-pmp v1.0.2 // indirect
 	github.com/jbenet/go-temp-err-catcher v0.1.0 // indirect
-	github.com/jorrizza/ed2curve25519 v0.1.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/kilic/bls12-381 v0.1.0 // indirect
 	github.com/klauspost/compress v1.17.11 // indirect
@@ -212,8 +212,9 @@ require (
 )
 
 require (
+	filippo.io/bigmod v0.1.0 // indirect
 	github.com/agl/ed25519 v0.0.0-20200225211852-fd4d107ace12 // indirect
-	github.com/bnb-chain/tss-lib/v2 v2.0.2 // indirect
+	github.com/bnb-chain/tss-lib/v3 v3.0.0 // indirect
 	github.com/btcsuite/btcd/btcec/v2 v2.3.5 // indirect
 	github.com/btcsuite/btclog v1.0.0 // indirect
 	github.com/decred/dcrd/crypto/blake256 v1.1.0 // indirect
@@ -223,7 +224,6 @@ require (
 	github.com/ipfs/go-log v1.0.5 // indirect
 	github.com/opentracing/opentracing-go v1.2.0 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
-	github.com/tinylib/msgp v1.6.3 // indirect
 	golang.org/x/crypto v0.42.0 // indirect
 	golang.org/x/sys v0.36.0 // indirect
 	golang.org/x/telemetry v0.0.0-20250908211612-aef8a434d053 // indirect

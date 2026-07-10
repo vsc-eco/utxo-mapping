@@ -24,18 +24,8 @@ const (
 	AddressDomainUser     AddressDomain = "user"
 	AddressDomainContract AddressDomain = "contract"
 	AddressDomainSystem   AddressDomain = "system"
-)
-
-type AddressType string
-
-const (
-	AddressTypeEVM     AddressType = "evm"
-	AddressTypeKey     AddressType = "key"
-	AddressTypeHive    AddressType = "hive"
-	AddressTypeSystem   AddressType = "system"
-	AddressTypeContract AddressType = "contract"
-	AddressTypeBLS      AddressType = "bls"
-	AddressTypeUnknown  AddressType = "unknown"
+	AddressDomainKey      AddressDomain = "key"
+	AddressDomainUnknown  AddressDomain = "unknown"
 )
 
 type Address string
@@ -45,35 +35,11 @@ func (a Address) String() string {
 }
 
 func (a Address) Domain() AddressDomain {
-	if strings.HasPrefix(a.String(), "system:") {
-		return AddressDomainSystem
-	}
-	if strings.HasPrefix(a.String(), "contract:") {
-		return AddressDomainContract
-	}
-	return AddressDomainUser
-}
-
-func (a Address) Type() AddressType {
-	if strings.HasPrefix(a.String(), "did:pkh:eip155") {
-		return AddressTypeEVM
-	} else if strings.HasPrefix(a.String(), "did:key:") {
-		return AddressTypeKey
-	} else if strings.HasPrefix(a.String(), "hive:") {
-		return AddressTypeHive
-	} else if strings.HasPrefix(a.String(), "system:") {
-		return AddressTypeSystem
-	} else if strings.HasPrefix(a.String(), "contract:") {
-		return AddressTypeContract
-	} else {
-		return AddressTypeUnknown
-	}
-	//TODO: Detect BLS address type, though it is not used or planned to be supported.
+	addressType := VerifyAddress(a.String())
+	addressDomain := strings.Split(addressType, ":")[0]
+	return AddressDomain(addressDomain)
 }
 
 func (a Address) IsValid() bool {
-	if a.Type() == AddressTypeUnknown {
-		return false
-	}
-	return true
+	return VerifyAddress(a.String()) != string(AddressDomainUnknown)
 }

@@ -47,24 +47,36 @@ Verifies an incoming Bitcoin transaction against the stored block headers and pr
 
 #### Logs
 
-**Deposit Log**
+**Map Log** — emitted once per UTXO processed
 
 | Parameter | Key        | Type   | Description                            |
 | --------- | ---------- | ------ | -------------------------------------- |
-| Type      | Positional | string | Operation type. Always "deposit"       |
-| From      | `f`        | string | Source account in Magi did format      |
+| Type      | Positional | string | Operation type. Always `map`           |
 | To        | `t`        | string | Destination account in Magi did format |
+| From      | `f`        | string | Source BTC address (or `many`)         |
 | Amount    | `a`        | string | Amount in SATS                         |
 
 ---
 
-### 4. `unmap` — Withdraw BTC (Unmap)
+### 4. `unmap` — Withdraw BTC (from Caller)
 
-Initiates a withdrawal of mapped BTC back to a Bitcoin address by constructing and signing an outbound transaction. Requires a valid registered public key to be present in contract state.
+Withdraws mapped BTC from the caller's own balance to a Bitcoin address. The `from` field is ignored — unmaps always draw from the caller's balance. When `deduct_fee` is set, fees are subtracted from the amount rather than added on top. The optional `max_fee` field reverts the transaction if the total fee exceeds the specified cap.
+
+All validation checks (max_fee, balance) are performed before TSS signing is requested.
 
 #### Input
 
-[`TransferParams`](./instruction-schema.md#4-transferparams)
+[`TransferParams`](./instruction-schema.md#4-transferparams) — only `amount`, `to`, `deduct_fee`, and `max_fee` are used.
+
+---
+
+### 4b. `unmapFrom` — Withdraw BTC (from "From")
+
+Withdraws mapped BTC from a third-party account that has approved the caller. The `from` account must have a sufficient allowance for the caller. Otherwise identical to `unmap`.
+
+#### Input
+
+[`TransferParams`](./instruction-schema.md#4-transferparams) — `from` is required.
 
 #### Logs
 
@@ -72,30 +84,56 @@ Initiates a withdrawal of mapped BTC back to a Bitcoin address by constructing a
 
 | Parameter | Key        | Type   | Description                                                 |
 | --------- | ---------- | ------ | ----------------------------------------------------------- |
-| Type      | Positional | string | Operation type, always "fee"                                |
-| Magi Fee  | `magi`     | string | Fee taken by the Magi protocol in SATS                      |
-| BTC Fee   | `btc`      | string | Fee required to send the transaction on BTC mainnet in SATS |
+| Type      | Positional | string | Operation type, always `fee`                                |
+| Magi Fee  | `m`        | string | Fee taken by the Magi protocol in SATS                      |
+| BTC Fee   | `b`        | string | Fee required to send the transaction on BTC mainnet in SATS |
+
+**Unmap Log**
+
+| Parameter | Key        | Type   | Description                                         |
+| --------- | ---------- | ------ | --------------------------------------------------- |
+| Type      | Positional | string | Operation type, always `unmap`                      |
+| Tx ID     | `id`       | string | The Bitcoin transaction ID of the withdrawal        |
+| From      | `f`        | string | Account that funds were deducted from               |
+| To        | `t`        | string | Destination BTC address                             |
+| Deducted  | `d`        | string | Total amount deducted from the sender's balance     |
+| Sent      | `s`        | string | Amount actually sent to the destination BTC address |
 
 ---
 
 ### 5. `transfer` — Transfer Funds (from Caller)
 
-Transfers funds sourced from the **immediate caller** of the contract — typically another contract in a contract-to-contract call chain. Uses the same input schema as `unmap`.
+Transfers funds sourced from the **immediate caller** of the contract — typically another contract in a contract-to-contract call chain. The `from` field is ignored and always resolved to the caller. Uses the same input schema as `unmap` (only `amount` and `to` are used).
 
 #### Input
 
-[`TransferParams`](./instruction-schema.md#4-transferparams)
+[`TransferParams`](./instruction-schema.md#4-transferparams) — only `amount` and `to` are used.
+
+#### Logs
+
+**Transfer Log**
+
+| Parameter | Key        | Type   | Description                            |
+| --------- | ---------- | ------ | -------------------------------------- |
+| Type      | Positional | string | Operation type, always `xfer`          |
+| From      | `f`        | string | Source account                         |
+| To        | `t`        | string | Destination account                    |
+| Amount    | `a`        | string | Amount in SATS                         |
 
 ---
 
 ### 6. `transferFrom` — Transfer Funds (from "From")
 
 Transfers funds sourced from the account specified, rather than the immediate caller.
-The `from` field is required for this action.
+The `from` account must have a sufficient allowance for the caller. The allowance is decremented by the transfer amount.
 
 #### Input
 
-[`TransferParams`](./instruction-schema.md#4-transferparams)
+[`TransferParams`](./instruction-schema.md#4-transferparams) — `from` is required.
+
+#### Logs
+
+Same as `transfer`.
 
 ---
 
@@ -119,26 +157,111 @@ Owner-only. Registers the ID of the router contract that decoded `map` instructi
 
 ---
 
-### 9. `createKeyPair` — Create TSS Key Pair
+### 9. `approve` — Set Spending Allowance
 
-Owner-only. Triggers the creation of a new threshold signature scheme (TSS) ECDSA key pair inside the contract runtime. The input is ignored entirely.
+Sets the spending allowance for a spender to use the caller's tokens. The caller is the owner. Cannot approve self as spender.
 
 #### Input
 
+[`AllowanceParams`](./instruction-schema.md#7-allowanceparams)
+
+---
+
+### 10. `increaseAllowance` — Increase Spending Allowance
+
+Increases the spender's existing allowance by the specified amount. Amount must be positive.
+
+#### Input
+
+[`AllowanceParams`](./instruction-schema.md#7-allowanceparams)
+
+---
+
+### 11. `decreaseAllowance` — Decrease Spending Allowance
+
+Decreases the spender's existing allowance by the specified amount. Reverts if the result would go below zero. Amount must be positive.
+
+#### Input
+
+[`AllowanceParams`](./instruction-schema.md#7-allowanceparams)
+
+---
+
+### 12. `confirmSpend` — Confirm a Pending Spend Transaction
+
+Permissionless. Verifies a Bitcoin spend transaction's Merkle inclusion proof against stored block headers, then promotes unconfirmed change UTXOs at the specified output indices to the confirmed pool. Cleans up the pending signing data for the transaction.
+
+#### Input
+
+[`ConfirmSpendParams`](./instruction-schema.md#8-confirmspendparams)
+
+---
+
+### 13. `getInfo` — Get Token Metadata
+
+Permissionless. Returns static token metadata. No input required.
+
+#### Output
+
 ```json
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "type": ["object", "null"]
-}
+{"name": "Bitcoin", "symbol": "BTC", "decimals": "8"}
 ```
+
+---
+
+### 14. `createKey` — Create TSS Key
+
+Owner-only. Triggers the creation of a new threshold signature scheme (TSS) ECDSA key inside the contract runtime. The input is ignored.
+
+#### Input
 
 Pass `null` or an empty object `{}`. No fields are read.
 
 ---
 
+### 15. `renewKey` — Renew TSS Key
+
+Owner-only. Renews the existing TSS key. The input is ignored.
+
+#### Input
+
+Pass `null` or an empty object `{}`. No fields are read.
+
+---
+
+### 16. `initPruning` — Initialize Block Header Pruning
+
+Owner-only. Sets the prune floor for contracts deployed before pruning was added. Must be called once after a code upgrade. The floor should be the original seed height. After this, `addBlocks` will automatically prune old headers. Cannot be called again once set.
+
+#### Input
+
+Block height as an integer string (e.g. `"116087"`).
+
+---
+
+### 17. `prune` — Prune Old Block Headers
+
+Admin-only. Removes old block headers beyond the retention window. Can be called independently of `addBlocks` to reduce state size.
+
+#### Input
+
+Pass `null` or an empty object `{}`. No fields are read.
+
+---
+
+### 18. `replaceBlock` — Replace a Block Header
+
+Admin-only. Replaces a single block header. Input is the raw 80-byte block header encoded as a hex string (160 hex characters).
+
+#### Input
+
+Raw block header hex string (exactly 80 bytes / 160 hex characters).
+
+---
+
 ## Notes
 
-- **Admin vs Owner**: `seedBlocks` and `addBlocks` require the _admin_ (the contract owner on testnet, a fixed oracle address on mainnet). `registerPublicKey`, `registerRouter`, and `createKeyPair` always require the _contract owner_ regardless of network mode.
+- **Admin vs Owner**: `seedBlocks`, `addBlocks`, `replaceBlock`, and `prune` require the _admin_ (the contract owner on testnet, a fixed oracle address on mainnet). `registerPublicKey`, `registerRouter`, `createKey`, `renewKey`, and `initPruning` always require the _contract owner_ regardless of network mode.
 - **Immutability on mainnet**: Public keys and the router contract ID cannot be overwritten once set on mainnet. Attempts to re-register will return the existing value without error.
-- **`omitempty` fields** (`from`, `primary_public_key`, `backup_public_key`) are excluded from `required` and will be absent in serialized output when empty or zero.
-- **Public key validation**: Hex strings passed to `registerPublicKey` must decode to exactly 33 or 65 bytes. Compressed keys (33 bytes) must begin with `0x02` or `0x03`.
+- **`omitempty` fields** (`from`, `deduct_fee`, `max_fee`, `primary_public_key`, `backup_public_key`) are excluded from `required` and will be absent in serialized output when empty or zero.
+- **Public key validation**: Hex strings passed to `registerPublicKey` must decode to exactly 33 bytes. Compressed keys must begin with `0x02` or `0x03`.

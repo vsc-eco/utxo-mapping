@@ -149,22 +149,30 @@ func checkAndDeductBalance(env sdk.Env, account string, amount int64) error {
 // ---------------------------------------------------------------------------
 
 func MarshalUtxoRegistry(r UtxoRegistry) []byte {
-	buf := make([]byte, len(r)*9)
+	buf := make([]byte, len(r)*8)
+	var tmp [8]byte
 	for i, e := range r {
-		buf[i*9] = e.Id
-		binary.BigEndian.PutUint64(buf[i*9+1:], uint64(e.Amount))
+		off := i * 8
+		binary.BigEndian.PutUint16(buf[off:], e.Id)
+		binary.BigEndian.PutUint64(tmp[:], uint64(e.Amount))
+		copy(buf[off+2:off+8], tmp[2:]) // lower 6 bytes
 	}
 	return buf
 }
 
 func UnmarshalUtxoRegistry(data []byte) (UtxoRegistry, error) {
-	if len(data)%9 != 0 {
-		return nil, errors.New("invalid utxo registry: length not a multiple of 9")
+	if len(data)%8 != 0 {
+		return nil, errors.New("invalid utxo registry: length not a multiple of 8")
 	}
-	out := make(UtxoRegistry, len(data)/9)
+	out := make(UtxoRegistry, len(data)/8)
+	var tmp [8]byte
 	for i := range out {
-		out[i].Id = data[i*9]
-		out[i].Amount = int64(binary.BigEndian.Uint64(data[i*9+1:]))
+		off := i * 8
+		out[i].Id = binary.BigEndian.Uint16(data[off:])
+		copy(tmp[2:], data[off+2:off+8])
+		tmp[0] = 0
+		tmp[1] = 0
+		out[i].Amount = int64(binary.BigEndian.Uint64(tmp[:]))
 	}
 	return out, nil
 }
@@ -240,7 +248,7 @@ func UnmarshalUtxo(data []byte) (*Utxo, error) {
 	return u, nil
 }
 
-func loadUtxo(id uint8) (*Utxo, error) {
+func loadUtxo(id uint16) (*Utxo, error) {
 	raw := sdk.StateGetObject(getUtxoKey(id))
 	if raw == nil || *raw == "" {
 		return nil, ce.NewContractError(ce.ErrStateAccess, "utxo not found for id "+strconv.Itoa(int(id)))
@@ -252,7 +260,7 @@ func loadUtxo(id uint8) (*Utxo, error) {
 	return u, nil
 }
 
-func saveUtxo(id uint8, u *Utxo) {
+func saveUtxo(id uint16, u *Utxo) {
 	sdk.StateSetObject(getUtxoKey(id), string(MarshalUtxo(u)))
 }
 
@@ -327,13 +335,13 @@ func UnmarshalTxSpendsRegistry(data []byte) (TxSpendsRegistry, error) {
 // UTXO ID allocation with rollover and existence check
 // ---------------------------------------------------------------------------
 
-// allocateConfirmedId returns the next free slot in the confirmed pool (64–255).
-// Wraps 255 → 64 and skips slots that already have state data.
-func (cs *ContractState) allocateConfirmedId() (uint8, error) {
+// allocateConfirmedId returns the next free slot in the confirmed pool (1024–65535).
+// Wraps 65535 → 1024 and skips slots that already have state data.
+func (cs *ContractState) allocateConfirmedId() (uint16, error) {
 	startId := cs.ConfirmedNextId
 	for {
 		id := cs.ConfirmedNextId
-		if cs.ConfirmedNextId == 255 {
+		if cs.ConfirmedNextId == constants.UtxoMaxId {
 			cs.ConfirmedNextId = constants.UtxoConfirmedPoolStart
 		} else {
 			cs.ConfirmedNextId++
@@ -348,9 +356,9 @@ func (cs *ContractState) allocateConfirmedId() (uint8, error) {
 	}
 }
 
-// allocateUnconfirmedId returns the next free slot in the unconfirmed pool (0–63).
-// Wraps 63 → 0 and skips slots that already have state data.
-func (cs *ContractState) allocateUnconfirmedId() (uint8, error) {
+// allocateUnconfirmedId returns the next free slot in the unconfirmed pool (0–1023).
+// Wraps 1023 → 0 and skips slots that already have state data.
+func (cs *ContractState) allocateUnconfirmedId() (uint16, error) {
 	startId := cs.UnconfirmedNextId
 	for {
 		id := cs.UnconfirmedNextId
@@ -428,37 +436,8 @@ func setAllowance(owner, spender string, amount int64) {
 	sdk.StateSetObject(key, string(buf[8-n:]))
 }
 
-func (cs *ContractState) getNetwork(s string) (Network, error) {
-	networkName := NetworkName(strings.ToLower(s))
-	network, ok := cs.NetworkOptions[networkName]
-	if ok {
-		return network, nil
-	}
-	return nil, ce.NewContractError(ce.ErrInput, "invalid network \""+s+"\"")
-}
-
 func StrPtr(s string) *string {
 	return &s
-}
-
-func createDepositLog(d Deposit) string {
-	var b strings.Builder
-	b.Grow(128)
-	b.WriteString("dep")
-	b.WriteString(constants.LogDelimiter)
-	b.WriteString("t")
-	b.WriteString(constants.LogKeyDelimiter)
-	b.WriteString(d.to)
-	b.WriteString(constants.LogDelimiter)
-	b.WriteString("f")
-	b.WriteString(constants.LogKeyDelimiter)
-	b.WriteString(d.from)
-	b.WriteString(constants.LogDelimiter)
-	b.WriteString("a")
-	b.WriteString(constants.LogKeyDelimiter)
-	var buf [20]byte
-	b.Write(strconv.AppendInt(buf[:0], d.amount, 10))
-	return b.String()
 }
 
 // senderLabel returns the single sender address if all inputs share one address, or "many" otherwise.
@@ -496,20 +475,77 @@ func createFeeLog(vscFee, btcFee int64) string {
 	var buf [20]byte
 	b.Write(strconv.AppendInt(buf[:0], vscFee, 10))
 	b.WriteString(constants.LogDelimiter)
-	b.WriteString("bch")
+	b.WriteString("b")
 	b.WriteString(constants.LogKeyDelimiter)
 	b.Write(strconv.AppendInt(buf[:0], btcFee, 10))
 	return b.String()
 }
 
-func createUnmapLog(txId string) string {
+func createMapLog(from, to string, amount int64) string {
 	var b strings.Builder
-	b.Grow(71)
-	b.WriteString("unm")
+	b.Grow(128)
+	b.WriteString("map")
+	b.WriteString(constants.LogDelimiter)
+	b.WriteString("t")
+	b.WriteString(constants.LogKeyDelimiter)
+	b.WriteString(to)
+	b.WriteString(constants.LogDelimiter)
+	b.WriteString("f")
+	b.WriteString(constants.LogKeyDelimiter)
+	b.WriteString(from)
+	b.WriteString(constants.LogDelimiter)
+	b.WriteString("a")
+	b.WriteString(constants.LogKeyDelimiter)
+	var buf [20]byte
+	b.Write(strconv.AppendInt(buf[:0], amount, 10))
+	return b.String()
+}
+
+func createTransferLog(from, to string, amount int64) string {
+	var b strings.Builder
+	b.Grow(128)
+	b.WriteString("xfer")
+	b.WriteString(constants.LogDelimiter)
+	b.WriteString("f")
+	b.WriteString(constants.LogKeyDelimiter)
+	b.WriteString(from)
+	b.WriteString(constants.LogDelimiter)
+	b.WriteString("t")
+	b.WriteString(constants.LogKeyDelimiter)
+	b.WriteString(to)
+	b.WriteString(constants.LogDelimiter)
+	b.WriteString("a")
+	b.WriteString(constants.LogKeyDelimiter)
+	var buf [20]byte
+	b.Write(strconv.AppendInt(buf[:0], amount, 10))
+	return b.String()
+}
+
+func createUnmapLog(txId, from, to string, deducted, sent int64) string {
+	var b strings.Builder
+	b.Grow(128)
+	b.WriteString("unmap")
 	b.WriteString(constants.LogDelimiter)
 	b.WriteString("id")
 	b.WriteString(constants.LogKeyDelimiter)
 	b.WriteString(txId)
+	b.WriteString(constants.LogDelimiter)
+	b.WriteString("f")
+	b.WriteString(constants.LogKeyDelimiter)
+	b.WriteString(from)
+	b.WriteString(constants.LogDelimiter)
+	b.WriteString("t")
+	b.WriteString(constants.LogKeyDelimiter)
+	b.WriteString(to)
+	b.WriteString(constants.LogDelimiter)
+	b.WriteString("d")
+	b.WriteString(constants.LogKeyDelimiter)
+	var buf [20]byte
+	b.Write(strconv.AppendInt(buf[:0], deducted, 10))
+	b.WriteString(constants.LogDelimiter)
+	b.WriteString("s")
+	b.WriteString(constants.LogKeyDelimiter)
+	b.Write(strconv.AppendInt(buf[:0], sent, 10))
 	return b.String()
 }
 
@@ -521,6 +557,17 @@ func safeAdd64(a, b int64) (int64, error) {
 		return 0, errors.New("underflow detected")
 	}
 	return a + b, nil
+}
+
+func safeMultiply64(a, b int64) (int64, error) {
+	if a == 0 || b == 0 {
+		return 0, nil
+	}
+	result := a * b
+	if result/a != b {
+		return 0, errors.New("overflow detected")
+	}
+	return result, nil
 }
 
 func safeSubtract64(a, b int64) (int64, error) {
@@ -535,12 +582,74 @@ func safeSubtract64(a, b int64) (int64, error) {
 
 // getUtxoKey returns the state key for a UTXO by its single-byte pool ID.
 // Keys range from "utxo/0" to "utxo/ff".
-func getUtxoKey(id uint8) string {
+func getUtxoKey(id uint16) string {
 	return constants.UtxoPrefix + strconv.FormatUint(uint64(id), 16)
 }
 
-func getObservedKey(utxo Utxo) string {
-	return constants.ObservedPrefix + utxo.TxId + ":" + strconv.FormatUint(uint64(utxo.Vout), 10)
+// ---------------------------------------------------------------------------
+// Per-block observed tx list (34 bytes per entry: 32-byte txid + 2-byte vout BE)
+// State key: "o-<blockHeight>"
+// ---------------------------------------------------------------------------
+
+const observedEntrySize = 34
+
+func observedBlockKey(blockHeight uint32) string {
+	return constants.ObservedBlockPrefix + strconv.FormatUint(uint64(blockHeight), 10)
+}
+
+// observedEntry is a compact 34-byte identifier for a single txid:vout pair.
+type observedEntry [observedEntrySize]byte
+
+func makeObservedEntry(txId string, vout uint32) (observedEntry, error) {
+	var e observedEntry
+	txIdBytes, err := hex.DecodeString(txId)
+	if err != nil || len(txIdBytes) != 32 {
+		return e, errors.New("invalid txid for observed entry")
+	}
+	copy(e[:32], txIdBytes)
+	binary.BigEndian.PutUint16(e[32:], uint16(vout))
+	return e, nil
+}
+
+// loadObservedList loads the packed observed entries for a block height.
+func loadObservedList(blockHeight uint32) []observedEntry {
+	raw := sdk.StateGetObject(observedBlockKey(blockHeight))
+	if raw == nil || len(*raw) == 0 {
+		return nil
+	}
+	data := []byte(*raw)
+	if len(data)%observedEntrySize != 0 {
+		return nil
+	}
+	out := make([]observedEntry, len(data)/observedEntrySize)
+	for i := range out {
+		copy(out[i][:], data[i*observedEntrySize:(i+1)*observedEntrySize])
+	}
+	return out
+}
+
+// isObserved checks whether the entry exists in the list.
+func isObserved(list []observedEntry, entry observedEntry) bool {
+	for _, e := range list {
+		if e == entry {
+			return true
+		}
+	}
+	return false
+}
+
+// saveObservedList writes the packed observed entries for a block height.
+func saveObservedList(blockHeight uint32, list []observedEntry) {
+	buf := make([]byte, len(list)*observedEntrySize)
+	for i, e := range list {
+		copy(buf[i*observedEntrySize:], e[:])
+	}
+	sdk.StateSetObject(observedBlockKey(blockHeight), string(buf))
+}
+
+// DeleteObservedList removes the observed tx list for a block height.
+func DeleteObservedList(blockHeight uint32) {
+	sdk.StateDeleteObject(observedBlockKey(blockHeight))
 }
 
 // DecodeCompressedPubKey decodes a hex string into a CompressedPubKey,
@@ -559,4 +668,89 @@ func DecodeCompressedPubKey(hexStr string) (CompressedPubKey, error) {
 	}
 	copy(key[:], b)
 	return key, nil
+}
+
+// ---------------------------------------------------------------------------
+// Pentest finding BTC-C3: per-Hive-block withdrawal rate limit.
+//
+// Context: HandleUnmap deducts user balance and contract supply on every
+// successful unmap with no aggregate cap. A TSS-quorum compromise (2/3 of
+// 19 = 12 colluding witnesses) can drain the entire bridge in a single
+// Hive block, since they sign every unmap that arrives. Capping the
+// aggregate per-Hive-block outflow gives operators a window (multiple
+// Hive blocks worth of drain attempts) to detect and freeze.
+//
+// Mechanism: a 16-byte accumulator at constants.BlockUnmapAccKey,
+// uint64 BE Hive block height || uint64 BE accumulated sats. On every
+// HandleUnmap that passes preliminary checks, the helper below reads
+// the accumulator. If the stored block height differs from the current
+// env.BlockHeight, the accumulator resets (new block). The helper then
+// adds the current unmap's finalAmt and rejects if the new total
+// exceeds getMaxUnmapPerBlock(). Otherwise it persists the updated
+// accumulator and returns nil.
+//
+// Disable: set MaxUnmapPerBlockKey to "0" via the setMaxUnmapPerBlock
+// admin handler. Default is constants.DefaultMaxUnmapPerBlock.
+// ---------------------------------------------------------------------------
+
+func getMaxUnmapPerBlock() int64 {
+	s := sdk.StateGetObject(constants.MaxUnmapPerBlockKey)
+	if s == nil || *s == "" {
+		return constants.DefaultMaxUnmapPerBlock
+	}
+	v, err := strconv.ParseInt(*s, 10, 64)
+	if err != nil || v < 0 {
+		return constants.DefaultMaxUnmapPerBlock
+	}
+	return v
+}
+
+func loadUnmapAccumulator() (storedHeight uint64, accum int64) {
+	s := sdk.StateGetObject(constants.BlockUnmapAccKey)
+	if s == nil || len(*s) != 16 {
+		return 0, 0
+	}
+	buf := []byte(*s)
+	storedHeight = binary.BigEndian.Uint64(buf[0:8])
+	accum = int64(binary.BigEndian.Uint64(buf[8:16]))
+	return
+}
+
+func saveUnmapAccumulator(blockHeight uint64, accum int64) {
+	var buf [16]byte
+	binary.BigEndian.PutUint64(buf[0:8], blockHeight)
+	binary.BigEndian.PutUint64(buf[8:16], uint64(accum))
+	sdk.StateSetObject(constants.BlockUnmapAccKey, string(buf[:]))
+}
+
+// checkAndUpdateUnmapRateLimit enforces the per-Hive-block cap on the
+// aggregate unmap throughput and persists the updated accumulator.
+// Returns an error when the cap would be exceeded; the caller is
+// expected to surface it as a contract-level reject so the runtime
+// reverts the entire transaction (including the accumulator update).
+func checkAndUpdateUnmapRateLimit(blockHeight uint64, amount int64) error {
+	cap := getMaxUnmapPerBlock()
+	if cap <= 0 {
+		return nil // limit disabled
+	}
+
+	storedHeight, accum := loadUnmapAccumulator()
+	if storedHeight != blockHeight {
+		// Different Hive block — accumulator carries no relevance.
+		accum = 0
+	}
+
+	newAccum, err := safeAdd64(accum, amount)
+	if err != nil {
+		return ce.WrapContractError(ce.ErrArithmetic, err, "rate-limit accumulator overflow")
+	}
+	if newAccum > cap {
+		return ce.NewContractError(
+			ce.ErrTransaction,
+			"unmap rate limit exceeded: "+strconv.FormatInt(newAccum, 10)+
+				" satoshis this Hive block > cap "+strconv.FormatInt(cap, 10)+" satoshis per block",
+		)
+	}
+	saveUnmapAccumulator(blockHeight, newAccum)
+	return nil
 }
