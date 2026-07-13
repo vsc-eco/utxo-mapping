@@ -420,19 +420,37 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 		promotedVouts = append(promotedVouts, utxo.Vout)
 	}
 
+	// A delete-at-confirm spend (migration sweep "ms-" / unmap "us-") indexes NOTHING at
+	// build, so the promotion loop above is a no-op for it by design and promotedVouts is
+	// legitimately empty. Deciding "nothing matched" on promotedVouts alone therefore aborts
+	// before the settle branches below can ever run — on a fresh deploy (which creates no
+	// unconfirmed UTXOs at all) that makes settleMigrationSweep/settleUnmap unreachable and
+	// strands every sweep and withdrawal. Only treat an empty promotion as a griefing/no-op
+	// confirm when there is ALSO no pending spend record to settle.
+	hasSettleRecord := false
+	if ms := sdk.StateGetObject(constants.MigrationSweepPrefix + txId); ms != nil && *ms != "" {
+		hasSettleRecord = true
+	}
+	if !hasSettleRecord {
+		if us := sdk.StateGetObject(constants.PendingUnmapPrefix + txId); us != nil && *us != "" {
+			hasSettleRecord = true
+		}
+	}
 	// Only delete the pending spend's signing data once at least one of its
 	// unconfirmed outputs has actually been promoted to the confirmed pool. If
 	// nothing matched (empty/non-matching indices, or the outputs are no longer
 	// present), leave the signing data intact so the withdrawal stays recoverable
 	// rather than being silently stranded (upstream BTC-L-CONFIRMSPEND).
-	if len(promotedVouts) == 0 {
+	if len(promotedVouts) == 0 && !hasSettleRecord {
 		return ce.NewContractError(ce.ErrInput, "no unconfirmed outputs matched the provided indices")
 	}
 	// D-1/C-1 (council HIGH): a promoted output belongs to this confirmed tx (txId) at this
 	// block; record it observed so topUp cannot double-credit a legacy unconfirmed change
 	// promoted on the upgrade path.
-	if err := markOutpointsObserved(txData.BlockHeight, txId, promotedVouts); err != nil {
-		return err
+	if len(promotedVouts) > 0 {
+		if err := markOutpointsObserved(txData.BlockHeight, txId, promotedVouts); err != nil {
+			return err
+		}
 	}
 
 	// BRK-1 (delete-at-confirm migration settle): if this confirmed tx is a migration
