@@ -132,9 +132,9 @@ const MigrationSweepRegistryKey = "msl"
 // and existing entries only status-transition (pubkeys NEVER mutated → preserves
 // the mainnet key-immutability property). The SDK has no prefix-scan, so this
 // mirrors the r/i packed-blob-plus-counter idiom: one blob holds the whole list.
-const VaultRegistryKey = "v"    // packed VaultEntrySize-byte entries (whole list)
-const VaultNextGenKey = "vn"    // 4-byte BE: next generation number to mint
-const VaultActiveGenKey = "va"  // 4-byte BE: generation currently receiving new deposits
+const VaultRegistryKey = "v"   // packed VaultEntrySize-byte entries (whole list)
+const VaultNextGenKey = "vn"   // 4-byte BE: next generation number to mint
+const VaultActiveGenKey = "va" // 4-byte BE: generation currently receiving new deposits
 
 // VaultPurgeGraceBlocks (S5) is the BTC-block grace an emptied (INACTIVE) generation
 // must wait, measured from its InactiveHeight, before it may transition INACTIVE→PURGED.
@@ -219,6 +219,13 @@ const (
 const OracleAddress = "did:vsc:oracle:btc"
 const PrimaryPublicKeyStateKey = "pubkey"
 const BackupPublicKeyStateKey = "backupkey"
+
+// VaultOperatorKey stores an OPTIONAL second authorized DID (typically the
+// mapping-bot's did:pkh identity) that may call the four OPERATIONAL vault ops
+// — migrateVault, retireVault, writeOffDust, redriveSpend — alongside the owner.
+// It grants NO governance power (pause/router/key registration stay owner-only).
+// Absent/empty ⇒ only the owner may drive the rotation (the pre-operator default).
+const VaultOperatorKey = "vaultop"
 
 const BlockPrefix = "b" + DirPathDelimiter
 

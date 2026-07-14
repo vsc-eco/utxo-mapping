@@ -57,6 +57,29 @@ func checkAdmin() {
 	)
 }
 
+// checkOperator authorizes the four OPERATIONAL vault ops (migrateVault,
+// retireVault, writeOffDust, redriveSpend). The owner always qualifies; an
+// optional vault operator DID (VaultOperatorKey) qualifies too, so an off-chain
+// driver can complete a rotation without holding the owner key. This grants NO
+// governance power — pause/router/key-registration remain checkOwner-only. Every
+// op behind this guard is deterministic and self-validating regardless of caller
+// (a sweep must pay the committed successor, retire is fund-gated, dust write-off
+// is gated on provable un-sweepability, redrive only raises the fee on an
+// already-authorized spend), so a compromised operator key cannot move funds
+// anywhere except toward the successor vault the committee already elected.
+func checkOperator() {
+	caller := sdk.GetEnv().Caller.String()
+	if caller == *sdk.GetEnvKey("contract.owner") {
+		return
+	}
+	if op := sdk.StateGetObject(constants.VaultOperatorKey); op != nil && *op != "" && caller == *op {
+		return
+	}
+	ce.CustomAbort(
+		ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner or the vault operator"),
+	)
+}
+
 func checkOwner() {
 	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
 		ce.CustomAbort(
@@ -985,12 +1008,10 @@ func DiscardPendingKey(_ *string) *string {
 
 //go:wasmexport migrateVault
 func MigrateVault(_ *string) *string {
-	// leave this as owner always
-	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
-		ce.CustomAbort(
-			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
-		)
-	}
+	// Owner or the appointed vault operator (see checkOperator): an operational op
+	// an off-chain driver must be able to call. NN#1 still constrains the destination
+	// regardless of caller.
+	checkOperator()
 
 	// S2: sweep one tranche of a retiring/draining generation's confirmed UTXOs to the
 	// successor (active) vault. PAUSE-GATED (S2-close completeness F-2 / V-8): confirmSpend
@@ -1021,12 +1042,10 @@ func MigrateVault(_ *string) *string {
 
 //go:wasmexport redriveSpend
 func RedriveSpend(input *string) *string {
-	// L7-01 owner-gated (spec v2 D2), like migrateVault.
-	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
-		ce.CustomAbort(
-			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
-		)
-	}
+	// L7-01: owner or the appointed vault operator (see checkOperator), like
+	// migrateVault. A re-drive can only RAISE the fee on an already-authorized spend,
+	// so it is safe for the operator to trigger.
+	checkOperator()
 	// PAUSE-GATED (spec v2 D5): a re-drive SIGNS a new replacement spend + adjusts the fee
 	// reserve — a NEW spend authorization, not a mere reconciliation, so a pause gates it
 	// (confirmSpend's settle stays pause-exempt). The owner controls both; unpause to re-drive.
@@ -1055,12 +1074,10 @@ func RedriveSpend(input *string) *string {
 
 //go:wasmexport retireVault
 func RetireVault(_ *string) *string {
-	// leave this as owner always
-	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
-		ce.CustomAbort(
-			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
-		)
-	}
+	// Owner or the appointed vault operator (see checkOperator). retireVault is
+	// fund-gated (it only advances a DRAINED generation), so the operator cannot
+	// retire a gen that still holds funds.
+	checkOperator()
 
 	// S5.0: reconcile the superseded-generation lifecycle tail (DRAINING→INACTIVE→PURGED)
 	// against the live UTXO registry + BTC height. PAUSE-GATED (like migrateVault): a purge
@@ -1089,7 +1106,10 @@ func RetireVault(_ *string) *string {
 
 //go:wasmexport writeOffDust
 func WriteOffDust(_ *string) *string {
-	checkOwner()
+	// Owner or the appointed vault operator (see checkOperator). Gated on provable
+	// un-sweepability inside HandleWriteOffDust, so the operator cannot write off a
+	// residual that could still be swept economically.
+	checkOperator()
 
 	// V-1 dust-escape fix: force-retire a superseded generation's residual that is
 	// provably un-sweepable at the fixed minimum fee rate (see dust_writeoff.go). PAUSE-
@@ -1122,6 +1142,43 @@ func WriteOffDust(_ *string) *string {
 		ce.CustomAbort(err)
 	}
 	return mapping.StrPtr(result)
+}
+
+//go:wasmexport setVaultOperator
+func SetVaultOperator(input *string) *string {
+	// Owner-only: appointing the operator is a governance act (the operator gains the
+	// four operational vault ops). Unlike registerRouter this is deliberately
+	// REPLACEABLE, not set-once — governance must be able to ROTATE the operator key
+	// (or revoke it) without redeploying. An empty input clears the operator, so only
+	// the owner can drive the rotation again.
+	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
+		ce.CustomAbort(
+			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
+		)
+	}
+
+	operator := ""
+	if input != nil {
+		operator = strings.TrimSpace(*input)
+	}
+
+	if operator == "" {
+		sdk.StateDeleteObject(constants.VaultOperatorKey)
+		return mapping.StrPtr("cleared vault operator (owner-only rotation)")
+	}
+
+	// Light shape check: the operator must be a VSC caller identity — either a Hive
+	// account ("hive:...", e.g. a dedicated ops account) or a DID ("did:...", e.g. the
+	// mapping-bot's did:pkh:eip155:...). Reject obvious garbage so a typo cannot
+	// silently lock out the operator path — but do not over-constrain beyond that.
+	if !strings.HasPrefix(operator, "hive:") && !strings.HasPrefix(operator, "did:") {
+		ce.CustomAbort(
+			ce.NewContractError(ce.ErrInput, "vault operator must be a hive: account or a did: identity", ce.MsgBadInput),
+		)
+	}
+
+	sdk.StateSetObject(constants.VaultOperatorKey, operator)
+	return mapping.StrPtr("set vault operator to: " + operator)
 }
 
 //go:wasmexport registerRouter
