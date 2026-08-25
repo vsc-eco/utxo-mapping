@@ -25,8 +25,16 @@ GOWORK_EXTRA_MOUNTS := $(if $(wildcard go.work),$(shell \
     [ -d "$$host" ] && printf -- '-v %s:%s ' "$$host" "$$ctr"; \
   done),)
 
+# -e HOME=/tmp: the image ships HOME=/ but we run as the host UID, so Go resolves
+# its module cache to /go and the build dies with "mkdir /go: permission denied"
+# for every non-root user -- i.e. `make dev` cannot build at all. /tmp is writable
+# in the image and, deliberately, is NOT the bind-mounted source dir: pointing HOME
+# at $(WORKDIR) instead scatters go/, .cache/ and .config/ (~355MB, and mode-444 so
+# a plain rm -rf cannot remove it) across the repo. This matches the same fix in
+# go-vsc-node's tests/devnet/contracts/{call-tss,btc-stub}/Makefile.
 TINYGO_CMD = docker run --rm \
     -u $(shell id -u):$(shell id -g) \
+    -e HOME=/tmp \
     $(GOWORK_EXTRA_MOUNTS) \
     -v $(CURDIR):$(WORKDIR) \
     -w $(WORKDIR) \
@@ -218,7 +226,16 @@ tinyjson:
 		fi; \
 	done
 
-test:
+# `dev` and `testnet3` are REAL prerequisites, not cosmetic: the suite embeds the
+# built artifacts via //go:embed bin (contract_bytes.go) and registers BOTH of them
+# -- ContractWasm = DevWasm for most tests, and Testnet3Wasm in blocklist_test.go,
+# which needs a testnet3-mode build because it replays real testnet3 block headers.
+# Without these prerequisites `make test` runs against whatever stale binaries happen
+# to be checked in. On 2026-08-25 that was a 2026-06-04 dev.wasm with none of the
+# vault-rotation-v2 code, and a 2026-03-25 testnet3.wasm with no replaceBlocks export
+# at all (so those subtests failed with wasm_function_not_found).
+# Both targets already do their own staleness detection.
+test: dev testnet3
 	cd tests/current && go test -v -p 1 -parallel 1 -run "$(FILTER)"
 
 clean:
