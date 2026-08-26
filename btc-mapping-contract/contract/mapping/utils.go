@@ -178,6 +178,95 @@ func UnmarshalUtxoRegistry(data []byte) (UtxoRegistry, error) {
 }
 
 // ---------------------------------------------------------------------------
+// Vault registry binary encoding (VaultEntrySize=91 bytes/entry) — S1 dual-gen + S5 InactiveHeight.
+// Mirrors the UtxoRegistry packed-blob idiom. See types.go Vault for the layout.
+// ---------------------------------------------------------------------------
+
+func MarshalVaultRegistry(v VaultRegistry) []byte {
+	buf := make([]byte, len(v)*VaultEntrySize)
+	for i := range v {
+		off := i * VaultEntrySize
+		e := &v[i]
+		binary.BigEndian.PutUint32(buf[off:], e.Generation)
+		copy(buf[off+4:off+37], e.Primary[:])
+		copy(buf[off+37:off+70], e.Backup[:])
+		buf[off+70] = byte(e.Status)
+		binary.BigEndian.PutUint32(buf[off+71:], e.Predecessor)
+		binary.BigEndian.PutUint32(buf[off+75:], e.CreatedHeight)
+		binary.BigEndian.PutUint32(buf[off+79:], e.ActivatedHeight)
+		binary.BigEndian.PutUint32(buf[off+83:], e.RetiredHeight)
+		binary.BigEndian.PutUint32(buf[off+87:], e.InactiveHeight)
+	}
+	return buf
+}
+
+func UnmarshalVaultRegistry(data []byte) (VaultRegistry, error) {
+	if len(data)%VaultEntrySize != 0 {
+		return nil, errors.New("invalid vault registry: length not a multiple of VaultEntrySize")
+	}
+	out := make(VaultRegistry, len(data)/VaultEntrySize)
+	for i := range out {
+		off := i * VaultEntrySize
+		out[i].Generation = binary.BigEndian.Uint32(data[off:])
+		copy(out[i].Primary[:], data[off+4:off+37])
+		copy(out[i].Backup[:], data[off+37:off+70])
+		out[i].Status = VaultStatus(data[off+70])
+		out[i].Predecessor = binary.BigEndian.Uint32(data[off+71:])
+		out[i].CreatedHeight = binary.BigEndian.Uint32(data[off+75:])
+		out[i].ActivatedHeight = binary.BigEndian.Uint32(data[off+79:])
+		out[i].RetiredHeight = binary.BigEndian.Uint32(data[off+83:])
+		out[i].InactiveHeight = binary.BigEndian.Uint32(data[off+87:])
+	}
+	return out, nil
+}
+
+// VaultKeyId returns the TSS keyId for a vault generation. Generation 0 keeps the
+// legacy "main" id (backward-compatible with the live deployed key); generation N
+// uses "mainv<N>". The node prefixes the contract id and its isBtcVaultKey gate
+// prefix-matches "main" for every generation. Exported: the key ceremony in main.go
+// (createKey/renewKey) mints/renews keys by generation and MUST use this single
+// source of truth — never re-derive the id inline (drift would strand a gen's key).
+//
+// The id MUST be alphanumeric (^[a-zA-Z0-9]+$): the runtime's tss create_key /
+// tss_v2.create_key / renew_key host bindings reject any other keyName with
+// ErrInvalidArgument. A hyphenated "main-v<N>" would be rejected at keygen time —
+// rotation would be impossible (a latent brick). Hence "mainv<N>", no separator.
+func VaultKeyId(gen uint32) string {
+	if gen == 0 {
+		return constants.TssKeyName
+	}
+	return constants.TssKeyName + "v" + strconv.FormatUint(uint64(gen), 10)
+}
+
+// isZeroKey reports whether a compressed pubkey is the zero value — i.e. a vault
+// whose TSS keygen has not yet landed a real key. Activation MUST refuse a
+// zero-key vault (its address would be underivable / unspendable).
+func isZeroKey(k CompressedPubKey) bool {
+	for _, b := range k {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// vaultKeysForGeneration returns the primary+backup pubkeys of the given vault
+// generation from the loaded vault list, and whether the generation was FOUND.
+// The caller MUST check `found`: falling back to cs.PublicKeys is only safe when
+// the vault list is empty (pre-fold — everything is gen-0/legacy). For a missing
+// generation in a POPULATED list the caller must ABORT, because vaultKeyId does
+// NOT fall back (it returns "mainv<N>") — a silent key-fallback would build a
+// witness the signature cannot satisfy → an unspendable tx (council F2, 3-lens).
+func (cs *ContractState) vaultKeysForGeneration(gen uint32) (CompressedPubKey, CompressedPubKey, bool) {
+	for i := range cs.Vaults {
+		if cs.Vaults[i].Generation == gen {
+			return cs.Vaults[i].Primary, cs.Vaults[i].Backup, true
+		}
+	}
+	return cs.PublicKeys.Primary, cs.PublicKeys.Backup, false
+}
+
+// ---------------------------------------------------------------------------
 // Individual UTXO binary encoding
 //
 // Layout:
@@ -188,6 +277,7 @@ func UnmarshalUtxoRegistry(data []byte) (UtxoRegistry, error) {
 //   [N]  PkScript
 //   [1]  len(Tag)
 //   [M]  Tag
+//   [4]  Generation  (uint32 BE; S1 dual-gen; absent in pre-S1 blobs → read as 0)
 // ---------------------------------------------------------------------------
 
 func MarshalUtxo(u *Utxo) []byte {
@@ -195,7 +285,7 @@ func MarshalUtxo(u *Utxo) []byte {
 	if err != nil || len(txIdBytes) != 32 {
 		return nil
 	}
-	total := 32 + 4 + 8 + 1 + len(u.PkScript) + 1 + len(u.Tag)
+	total := 32 + 4 + 8 + 1 + len(u.PkScript) + 1 + len(u.Tag) + 4 // +4: Generation (S1 dual-gen)
 	buf := make([]byte, total)
 	off := 0
 	copy(buf[off:], txIdBytes)
@@ -211,6 +301,8 @@ func MarshalUtxo(u *Utxo) []byte {
 	buf[off] = byte(len(u.Tag))
 	off++
 	copy(buf[off:], u.Tag)
+	off += len(u.Tag)
+	binary.BigEndian.PutUint32(buf[off:], u.Generation)
 	return buf
 }
 
@@ -245,6 +337,18 @@ func UnmarshalUtxo(data []byte) (*Utxo, error) {
 	}
 	u.Tag = make([]byte, tagLen)
 	copy(u.Tag, data[off:off+tagLen])
+	off += tagLen
+	// S1 dual-gen: Generation (4 bytes BE) is appended. A pre-S1 blob ends here (no
+	// tail → gen 0); an S1 blob has EXACTLY 4 trailing bytes. Any other remainder is a
+	// corrupt/truncated blob → fail closed (D-CLOSE-1), matching the pkscript/tag length
+	// checks above, rather than silently reading gen 0.
+	switch rem := len(data) - off; rem {
+	case 0: // pre-S1 blob — generation stays 0
+	case 4:
+		u.Generation = binary.BigEndian.Uint32(data[off:])
+	default:
+		return nil, errors.New("utxo data has a malformed generation tail")
+	}
 	return u, nil
 }
 
@@ -329,6 +433,276 @@ func UnmarshalTxSpendsRegistry(data []byte) (TxSpendsRegistry, error) {
 		out[i] = hex.EncodeToString(data[i*32 : i*32+32])
 	}
 	return out, nil
+}
+
+// ---------------------------------------------------------------------------
+// MigrationSweep record binary encoding (BRK-1 delete-at-confirm). State key
+// "ms-"+txId, one record per in-flight migration sweep. Layout:
+//
+//	[8]   BtcFee            (int64  BE; the reserved miner fee, always >= 0)
+//	[4]   SuccessorGen      (uint32 BE)
+//	[2]   len(InputIds)     (uint16 BE; bounded by MaxMigrationInputs)
+//	[2*N] InputIds          (uint16 BE each)
+//	[M]   SuccessorAddress  (UTF-8, the record tail — no length prefix)
+// ---------------------------------------------------------------------------
+
+func MarshalMigrationSweep(r *MigrationSweep) []byte {
+	n := len(r.InputIds)
+	buf := make([]byte, 8+4+4+2+n*2+len(r.SuccessorAddress))
+	off := 0
+	binary.BigEndian.PutUint64(buf[off:], uint64(r.BtcFee))
+	off += 8
+	binary.BigEndian.PutUint32(buf[off:], r.SuccessorGen)
+	off += 4
+	binary.BigEndian.PutUint32(buf[off:], r.BuildHeight) // L7-01
+	off += 4
+	binary.BigEndian.PutUint16(buf[off:], uint16(n))
+	off += 2
+	for _, id := range r.InputIds {
+		binary.BigEndian.PutUint16(buf[off:], id)
+		off += 2
+	}
+	copy(buf[off:], r.SuccessorAddress)
+	return buf
+}
+
+func UnmarshalMigrationSweep(data []byte) (*MigrationSweep, error) {
+	const minLen = 8 + 4 + 4 + 2
+	if len(data) < minLen {
+		return nil, errors.New("migration sweep record too short")
+	}
+	r := &MigrationSweep{}
+	off := 0
+	r.BtcFee = int64(binary.BigEndian.Uint64(data[off:]))
+	off += 8
+	r.SuccessorGen = binary.BigEndian.Uint32(data[off:])
+	off += 4
+	r.BuildHeight = binary.BigEndian.Uint32(data[off:]) // L7-01
+	off += 4
+	n := int(binary.BigEndian.Uint16(data[off:]))
+	off += 2
+	if off+n*2 > len(data) {
+		return nil, errors.New("migration sweep record truncated (input ids)")
+	}
+	r.InputIds = make([]uint16, n)
+	for i := 0; i < n; i++ {
+		r.InputIds[i] = binary.BigEndian.Uint16(data[off:])
+		off += 2
+	}
+	r.SuccessorAddress = string(data[off:])
+	return r, nil
+}
+
+// ---------------------------------------------------------------------------
+// PendingUnmap record ("us-"+txId) — Guard 1 delete-at-confirm. Layout:
+//
+//	[4]   ChangeGen     (uint32 BE)
+//	[2]   len(InputIds) (uint16 BE)
+//	[2*N] InputIds      (uint16 BE each)
+//	[M]   ChangeAddress (UTF-8, the record tail — no length prefix)
+// ---------------------------------------------------------------------------
+
+func MarshalPendingUnmap(r *PendingUnmap) []byte {
+	n := len(r.InputIds)
+	buf := make([]byte, 4+8+4+2+n*2+len(r.ChangeAddress))
+	off := 0
+	binary.BigEndian.PutUint32(buf[off:], r.ChangeGen)
+	off += 4
+	binary.BigEndian.PutUint64(buf[off:], uint64(r.BtcFee)) // L7-01
+	off += 8
+	binary.BigEndian.PutUint32(buf[off:], r.BuildHeight) // L7-01
+	off += 4
+	binary.BigEndian.PutUint16(buf[off:], uint16(n))
+	off += 2
+	for _, id := range r.InputIds {
+		binary.BigEndian.PutUint16(buf[off:], id)
+		off += 2
+	}
+	copy(buf[off:], r.ChangeAddress)
+	return buf
+}
+
+func UnmarshalPendingUnmap(data []byte) (*PendingUnmap, error) {
+	const minLen = 4 + 8 + 4 + 2
+	if len(data) < minLen {
+		return nil, errors.New("pending unmap record too short")
+	}
+	r := &PendingUnmap{}
+	off := 0
+	r.ChangeGen = binary.BigEndian.Uint32(data[off:])
+	off += 4
+	r.BtcFee = int64(binary.BigEndian.Uint64(data[off:])) // L7-01
+	off += 8
+	r.BuildHeight = binary.BigEndian.Uint32(data[off:]) // L7-01
+	off += 4
+	n := int(binary.BigEndian.Uint16(data[off:]))
+	off += 2
+	if off+n*2 > len(data) {
+		return nil, errors.New("pending unmap record truncated (input ids)")
+	}
+	r.InputIds = make([]uint16, n)
+	for i := 0; i < n; i++ {
+		r.InputIds[i] = binary.BigEndian.Uint16(data[off:])
+		off += 2
+	}
+	r.ChangeAddress = string(data[off:])
+	return r, nil
+}
+
+// ---------------------------------------------------------------------------
+// SpendGroup record ("g-"+<minInputId>) — L7-01 re-drive spend group. Layout:
+//
+//	[8]    HighestFee     (int64 BE)
+//	[2]    len(Members)   (uint16 BE)
+//	[64*K] Members        (64-char hex txids, fixed width, no delimiters)
+// ---------------------------------------------------------------------------
+
+const txidHexLen = 64
+
+func MarshalSpendGroup(g *SpendGroup) []byte {
+	k := len(g.Members)
+	buf := make([]byte, 8+2+k*txidHexLen)
+	off := 0
+	binary.BigEndian.PutUint64(buf[off:], uint64(g.HighestFee))
+	off += 8
+	binary.BigEndian.PutUint16(buf[off:], uint16(k))
+	off += 2
+	for _, m := range g.Members {
+		copy(buf[off:off+txidHexLen], m) // txids are always 64 hex chars
+		off += txidHexLen
+	}
+	return buf
+}
+
+func UnmarshalSpendGroup(data []byte) (*SpendGroup, error) {
+	const minLen = 8 + 2
+	if len(data) < minLen {
+		return nil, errors.New("spend group record too short")
+	}
+	g := &SpendGroup{}
+	off := 0
+	g.HighestFee = int64(binary.BigEndian.Uint64(data[off:]))
+	off += 8
+	k := int(binary.BigEndian.Uint16(data[off:]))
+	off += 2
+	if off+k*txidHexLen != len(data) {
+		return nil, errors.New("spend group record truncated (members)")
+	}
+	g.Members = make([]string, k)
+	for i := 0; i < k; i++ {
+		g.Members[i] = string(data[off : off+txidHexLen])
+		off += txidHexLen
+	}
+	return g, nil
+}
+
+// spendGroupKey derives the L7-01 spend-group state key from a spend's reserved input
+// set: "g-"+<minInputId>. Deterministic and stable across an original spend and its
+// re-driven replacements (they reuse the IDENTICAL inputs), and unique because a UTXO is
+// reserved by at most one live spend. Panics on an empty set — callers always have ≥1 input.
+func spendGroupKey(inputIds []uint16) string {
+	min := inputIds[0]
+	for _, id := range inputIds[1:] {
+		if id < min {
+			min = id
+		}
+	}
+	return constants.SpendGroupPrefix + strconv.FormatUint(uint64(min), 10)
+}
+
+// currentLastHeight reads the deterministic LastHeight ("h") — the same value the
+// blocklist package writes at addBlocks/seedBlocks — for the L7-01 record BuildHeight and
+// re-drive staleness gate. 0 if unset (pre-genesis) or unparseable, treated as "oldest".
+func currentLastHeight() uint32 {
+	raw := sdk.StateGetObject(constants.LastHeightKey)
+	if raw == nil || *raw == "" {
+		return 0
+	}
+	h, err := strconv.ParseUint(*raw, 10, 32)
+	if err != nil {
+		return 0
+	}
+	return uint32(h)
+}
+
+// removeTxid swap-removes txId from a txid list (TxSpendsList / MigrationSweeps),
+// membership-only so order does not matter. Returns the (possibly shortened) slice.
+func removeTxid(list []string, txId string) []string {
+	for i, val := range list {
+		if val == txId {
+			list[i] = list[len(list)-1]
+			return list[:len(list)-1]
+		}
+	}
+	return list
+}
+
+// clearSpendGroup removes EVERY record of the L7-01 spend group that the just-settled
+// confirmedTxId belongs to — itself plus any RBF replacements sharing its reserved input
+// set — plus the group object, atomically in this committed tx. This is the H2 guarantee
+// (spec v2): a settle of ANY member clears the whole group, so a dangling sibling can never
+// keep an "ms-"/"d-" record + list entry live with its inputs already deleted (which would
+// inflate pendingMigrationState forever, re-arming the NN#3 freeze, and be uncleanable via
+// confirmSpend's fail-closed input guard). inputIds is the confirmed record's input set (the
+// group key). LAZY: with no re-drive the group object is absent → members == {confirmedTxId},
+// byte-identical to the pre-L7-01 single-txid cleanup. The confirmed member's own settle
+// already deleted the shared inputs + released reservations; this only deletes bookkeeping.
+func (cs *ContractState) clearSpendGroup(confirmedTxId string, inputIds []uint16) {
+	members := []string{confirmedTxId}
+	gk := spendGroupKey(inputIds)
+	if raw := sdk.StateGetObject(gk); raw != nil && *raw != "" {
+		if g, err := UnmarshalSpendGroup([]byte(*raw)); err == nil {
+			members = g.Members
+			// Defensive: a settle must always clear its OWN records even if a corrupt
+			// group object somehow omits the confirmed txid.
+			present := false
+			for _, m := range members {
+				if m == confirmedTxId {
+					present = true
+					break
+				}
+			}
+			if !present {
+				members = append(members, confirmedTxId)
+			}
+		}
+		sdk.StateDeleteObject(gk)
+	}
+	for _, m := range members {
+		sdk.StateDeleteObject(constants.PendingUnmapPrefix + m)   // us-<m> (no-op if a sweep)
+		sdk.StateDeleteObject(constants.MigrationSweepPrefix + m) // ms-<m> (no-op if an unmap)
+		sdk.StateDeleteObject(constants.TxSpendsPrefix + m)       // d-<m>
+		cs.TxSpendsList = removeTxid(cs.TxSpendsList, m)
+		cs.MigrationSweeps = removeTxid(cs.MigrationSweeps, m)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Reserved-UTXO markers ("ru-"+id) — Guard 1 delete-at-confirm in-flight exclusion.
+// A confirmed UTXO committed to an in-flight UNMAP stays in the registry until its tx
+// confirms (settleUnmap); this per-UTXO marker keeps it out of BOTH the next unmap's
+// selection and any migration sweep's selection meanwhile, so two in-flight spends can
+// never double-select the same input. A marker (not a scanned list) so the migration path
+// stays O(tranche candidates) — an unprivileged unmap flood can never gas-DoS rotation
+// (BRK-1 council A-1 preserved). Set at unmap build, checked per selection candidate,
+// deleted at settleUnmap paired with the UTXO delete.
+// ---------------------------------------------------------------------------
+
+func reservedUtxoKey(id uint16) string {
+	return constants.ReservedUtxoPrefix + strconv.FormatUint(uint64(id), 10)
+}
+
+func reserveUtxo(id uint16) {
+	sdk.StateSetObject(reservedUtxoKey(id), "1")
+}
+
+func unreserveUtxo(id uint16) {
+	sdk.StateDeleteObject(reservedUtxoKey(id))
+}
+
+func isUtxoReserved(id uint16) bool {
+	v := sdk.StateGetObject(reservedUtxoKey(id))
+	return v != nil && *v != ""
 }
 
 // ---------------------------------------------------------------------------
@@ -645,6 +1019,41 @@ func saveObservedList(blockHeight uint32, list []observedEntry) {
 		copy(buf[i*observedEntrySize:], e[:])
 	}
 	sdk.StateSetObject(observedBlockKey(blockHeight), string(buf))
+}
+
+// markOutpointsObserved records (txId, vout) pairs in a block's observed list (council D-1/C-1,
+// HIGH). The observed list is the single "already credited" ledger, but only `map` and
+// `topUpFeeReserve` wrote it — the settle paths (settleUnmap change, settleMigrationSweep sweep)
+// and the promotion loops turned on-chain outputs into confirmed vault UTXOs WITHOUT recording
+// them, so a later topUpFeeReserve of the SAME outpoint (it pays the identical untagged vault
+// address) could double-credit FeeSupply + double-index the outpoint (a phantom UTXO the
+// Σ==Active+Fee assert cannot catch, since both sides inflate). Every path that creates a
+// confirmed vault UTXO from an on-chain output must call this. Idempotent (skips entries already
+// present) and bounded (one list load/save per call). Ordering is deterministic (append order =
+// tx-output order at a deterministic call site), so the packed bytes match across nodes. The
+// observed list is pruned in lock-step with its block header, so an entry lives exactly as long
+// as the output stays SPV-provable — precisely the top-up attack window.
+func markOutpointsObserved(blockHeight uint32, txId string, vouts []uint32) error {
+	if len(vouts) == 0 {
+		return nil
+	}
+	list := loadObservedList(blockHeight)
+	changed := false
+	for _, vout := range vouts {
+		entry, err := makeObservedEntry(txId, vout)
+		if err != nil {
+			return ce.WrapContractError(ce.ErrInput, err, "error creating observed entry")
+		}
+		if isObserved(list, entry) {
+			continue
+		}
+		list = append(list, entry)
+		changed = true
+	}
+	if changed {
+		saveObservedList(blockHeight, list)
+	}
+	return nil
 }
 
 // DeleteObservedList removes the observed tx list for a block height.

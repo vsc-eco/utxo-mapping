@@ -137,7 +137,7 @@ func TestUnmap(t *testing.T) {
 		ContractId: contractId,
 		Action:     "unmap",
 		Payload:    payload,
-		RcLimit:    10000,
+		RcLimit:    20000, // delete-at-confirm raised unmap build cost ~24pct (was 10000); ~11pct of the 100k-RC max
 		Intents:    []contracts.Intent{},
 	})
 

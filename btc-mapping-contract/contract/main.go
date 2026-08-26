@@ -57,6 +57,29 @@ func checkAdmin() {
 	)
 }
 
+// checkOperator authorizes the four OPERATIONAL vault ops (migrateVault,
+// retireVault, writeOffDust, redriveSpend). The owner always qualifies; an
+// optional vault operator DID (VaultOperatorKey) qualifies too, so an off-chain
+// driver can complete a rotation without holding the owner key. This grants NO
+// governance power — pause/router/key-registration remain checkOwner-only. Every
+// op behind this guard is deterministic and self-validating regardless of caller
+// (a sweep must pay the committed successor, retire is fund-gated, dust write-off
+// is gated on provable un-sweepability, redrive only raises the fee on an
+// already-authorized spend), so a compromised operator key cannot move funds
+// anywhere except toward the successor vault the committee already elected.
+func checkOperator() {
+	caller := sdk.GetEnv().Caller.String()
+	if caller == *sdk.GetEnvKey("contract.owner") {
+		return
+	}
+	if op := sdk.StateGetObject(constants.VaultOperatorKey); op != nil && *op != "" && caller == *op {
+		return
+	}
+	ce.CustomAbort(
+		ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner or the vault operator"),
+	)
+}
+
 func checkOwner() {
 	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
 		ce.CustomAbort(
@@ -89,8 +112,13 @@ func SeedBlocks(blockSeedInput *string) *string {
 		ce.CustomAbort(err)
 	}
 
-	// Fresh deployments start at the latest migration version so they skip all migrations.
-	sdk.StateSetObject(constants.MigrateVersionKey, constants.LatestMigrateVersion)
+	// Fresh deployments start at the latest migration version so they skip all
+	// migrations. Only set it when UNSET (a truly fresh deploy) — a reseed of an
+	// already-deployed (possibly upgraded-but-unmigrated) contract must NOT jam the
+	// version forward, or it would permanently disable the pending migrations (E-1).
+	if v := sdk.StateGetObject(constants.MigrateVersionKey); v == nil || *v == "" {
+		sdk.StateSetObject(constants.MigrateVersionKey, constants.LatestMigrateVersion)
+	}
 
 	outMsg := "last height: " + strconv.FormatUint(uint64(newLastHeight), 10)
 	return &outMsg
@@ -498,7 +526,11 @@ func DecreaseAllowance(input *string) *string {
 //
 //go:wasmexport confirmSpend
 func ConfirmSpend(input *string) *string {
-	checkNotPaused()
+	// BRK-4b (brick council FS-1/V-8): the pause check is applied INSIDE
+	// HandleConfirmSpend, which EXEMPTS a confirm of an already-pending spend (in
+	// the TxSpends registry) — reconciling an already-authorized, already-broadcast
+	// spend moves no new funds, and freezing it merely strands an in-flight
+	// migration/withdrawal. A confirm of any other tx stays pause-gated.
 	var params mapping.ConfirmSpendParams
 	err := tinyjson.Unmarshal([]byte(*input), &params)
 	if err != nil {
@@ -531,6 +563,84 @@ func ConfirmSpend(input *string) *string {
 	return mapping.StrPtr("0")
 }
 
+//go:wasmexport reportUnauthorizedSpend
+func ReportUnauthorizedSpend(input *string) *string {
+	// M1.1b (Build-Map §5b; THORChain SlashVault-derived): PERMISSIONLESS + NOT pause-gated
+	// (a theft during a pause must still halt; the op moves no funds — it only SPV-proves an
+	// unauthorised spend of a registered vault UTXO and, if so, trips the deterministic
+	// BtcTheftHaltKey the node's keysign gate reads). Reuses the confirmSpend params shape
+	// (tx_data + unused indices) so no new tinyjson marshaler is needed — only TxData is read.
+	var params mapping.ConfirmSpendParams
+	err := tinyjson.Unmarshal([]byte(*input), &params)
+	if err != nil {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
+	}
+	if params.TxData == nil || params.TxData.RawTxHex == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "tx_data.raw_tx_hex required"))
+	}
+	publicKeys, err := loadPublicKeys()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	contractState, err := mapping.IntializeContractState(publicKeys, NetworkMode)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	if err := contractState.HandleReportUnauthorizedSpend(params.TxData); err != nil {
+		ce.CustomAbort(err)
+	}
+	// The halt flag (if tripped) is written directly to state inside the handler; there is no
+	// cs mutation to persist, so no SaveToState (mirrors the direct-flag idiom of pause()).
+	return mapping.StrPtr("0")
+}
+
+//go:wasmexport clearTheftHalt
+func ClearTheftHalt(_ *string) *string {
+	// Owner-only (like pause/unpause): the M1.1b auto-trip is permissionless, but CLEARING it
+	// — resuming BTC keysign after a detected theft — is a deliberate governance action.
+	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
+		ce.CustomAbort(
+			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
+		)
+	}
+	sdk.StateDeleteObject(constants.BtcTheftHaltKey)
+	return mapping.StrPtr("theft halt cleared")
+}
+
+//go:wasmexport topUpFeeReserve
+func TopUpFeeReserve(input *string) *string {
+	// Operator-funded migration fee reserve (council FeeSupply lens). PERMISSIONLESS +
+	// NOT pause-gated: it only SPV-proves a real BTC deposit to the active vault and
+	// credits FeeSupply by it (conservation-preserving; moves no funds OUT), so anyone may
+	// fund the reserve to un-wedge a fee-starved rotation, even during a pause. The
+	// migration fee-shortage abort writes no state, so a top-up lets the next migrateVault
+	// tranche continue automatically — migration can never terminally brick on fees. Reuses
+	// the confirmSpend params shape (tx_data + unused indices) so no new marshaler is needed.
+	var params mapping.ConfirmSpendParams
+	err := tinyjson.Unmarshal([]byte(*input), &params)
+	if err != nil {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
+	}
+	if params.TxData == nil || params.TxData.RawTxHex == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "tx_data.raw_tx_hex required"))
+	}
+	publicKeys, err := loadPublicKeys()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	contractState, err := mapping.IntializeContractState(publicKeys, NetworkMode)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	if err := contractState.HandleTopUpFeeReserve(params.TxData); err != nil {
+		ce.CustomAbort(err)
+	}
+	if err := contractState.SaveToState(); err != nil {
+		ce.CustomAbort(err)
+	}
+	return mapping.StrPtr("0")
+}
+
 // Pauses all token operations (map, unmap, transfer, approve, confirmSpend).
 // Admin/owner operations remain available while paused.
 //
@@ -559,13 +669,29 @@ func Migrate(_ *string) *string {
 	if versionPtr != nil {
 		version = *versionPtr
 	}
+	// Compare migration versions NUMERICALLY (council F3, 4-lens). A lexicographic
+	// string compare (`version < "2"`) misfires at v10+ ("10" < "2" is TRUE) → it
+	// re-enters an already-applied migration block and REGRESSES the version counter,
+	// which would re-run the NON-IDEMPOTENT v1 registry re-key → fund corruption.
+	// Empty (unmigrated) → 0 → runs v1 then v2. A NON-EMPTY but non-numeric value is
+	// unexpected (only this contract writes mv, always a decimal) → treat it as beyond
+	// all known migrations (skip everything) so a corrupt value can NEVER re-run the
+	// non-idempotent v1 (council N-1 hardening — defense-in-depth even though unreachable).
+	curVer := 0
+	if version != "" {
+		parsed, err := strconv.Atoi(version)
+		if err != nil || parsed < 0 {
+			parsed = 1 << 30 // garbage / negative → beyond any real version → skip all migrations
+		}
+		curVer = parsed
+	}
 
 	// --- v1: migrate UTXO registry from 9-byte (uint8 ID + int64) to 8-byte
 	// (uint16 ID + uint48) entries, and counter from 2 bytes to 4 bytes.
 	// Old confirmed pool: 64–255 → new: 1024–65535 (offset +960).
 	// Old unconfirmed pool: 0–63 → unchanged (0–1023 range, same IDs).
 	// Individual UTXO blobs (u-<id>) are re-keyed to match the new hex IDs.
-	if version < "1" {
+	if curVer < 1 {
 		// Read old-format registry (9 bytes/entry: 1-byte ID + 8-byte amount BE)
 		regRaw := sdk.StateGetObject(constants.UtxoRegistryKey)
 		if regRaw != nil && len(*regRaw) > 0 {
@@ -627,7 +753,23 @@ func Migrate(_ *string) *string {
 		sdk.Log("migrate|v=1")
 	}
 
-	// --- future migrations go here ---
+	// --- v2: S1 dual-generation vault state model. Fold the legacy single-slot
+	// key (pubkey/backupkey) into generation 0 of the append-only vault list.
+	// The legacy slots are KEPT readable (defense). The fold is idempotent and
+	// fail-safe (never overwrites a populated list, never folds an absent/short
+	// key). It is EXTRACTED into mapping.FoldLegacyGen0IfNeeded so the key ceremony
+	// (createKey/etc.) runs the SAME fold before minting — that closes the B-1
+	// window where a createKey BEFORE migrate on an upgraded funded deploy would
+	// mint a divergent gen-0 and strand every legacy UTXO. UTXO generation tagging
+	// is automatic: pre-S1 UTXO blobs read as Generation 0 (see UnmarshalUtxo).
+	if curVer < 2 {
+		if mapping.FoldLegacyGen0IfNeeded() {
+			sdk.Log("migrate|v=2|fold_gen0")
+		} else {
+			sdk.Log("migrate|v=2|no_fold")
+		}
+		sdk.StateSetObject(constants.MigrateVersionKey, "2")
+	}
 
 	result := "migrated to v" + *sdk.StateGetObject(constants.MigrateVersionKey)
 	return &result
@@ -683,36 +825,68 @@ func RegisterPublicKey(keyStr *string) *string {
 		)
 	}
 
-	var resultBuilder strings.Builder
-
+	// Decode whichever key(s) were provided up front (split primary/backup
+	// registration is allowed — either may be empty).
+	var primaryPtr, backupPtr *mapping.CompressedPubKey
 	if keys.PrimaryPubKey != "" {
 		key, err := validateAndDecodeKey(keys.PrimaryPubKey)
 		if err != nil {
 			ce.CustomAbort(ce.Prepend(err, "error registering primary public key"))
 		}
-		existingPrimary := sdk.StateGetObject(constants.PrimaryPublicKeyStateKey)
-		if *existingPrimary == "" || constants.IsTestnet(NetworkMode) {
-			sdk.StateSetObject(constants.PrimaryPublicKeyStateKey, string(key[:]))
-			resultBuilder.WriteString("set primary key to: " + keys.PrimaryPubKey)
-		} else {
-			resultBuilder.WriteString("primary key already registered: " + hex.EncodeToString([]byte(*existingPrimary)))
-		}
+		primaryPtr = &key
 	}
-
 	if keys.BackupPubKey != "" {
 		key, err := validateAndDecodeKey(keys.BackupPubKey)
 		if err != nil {
 			ce.CustomAbort(ce.Prepend(err, "error registering backup public key"))
 		}
+		backupPtr = &key
+	}
+
+	// S1.3: route the key(s) into the PENDING vault createKey minted. For a GENESIS
+	// vault (the bootstrap key, self-referential predecessor) this activates it once
+	// both keys are set + the primary attests to the TSS ceremony. isGenesis (not the
+	// gen NUMBER) tells us whether to also write the legacy flat keys (back-compat /
+	// the empty-list fallback): a rotation successor leaves the flat gen-0 keys
+	// untouched, so the spend path keeps resolving per-generation keys from the vault
+	// list. Keys are set-once immutable inside RegisterVaultKeys.
+	height, _ := blocklist.LastHeightFromState()
+	targetGen, hasPending, isGenesis, err := mapping.RegisterVaultKeys(primaryPtr, backupPtr, height)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	writeFlat := !hasPending || isGenesis
+
+	var resultBuilder strings.Builder
+
+	if primaryPtr != nil {
+		if writeFlat {
+			existingPrimary := sdk.StateGetObject(constants.PrimaryPublicKeyStateKey)
+			if *existingPrimary == "" || constants.IsTestnet(NetworkMode) {
+				sdk.StateSetObject(constants.PrimaryPublicKeyStateKey, string(primaryPtr[:]))
+				resultBuilder.WriteString("set primary key to: " + keys.PrimaryPubKey)
+			} else {
+				resultBuilder.WriteString("primary key already registered: " + hex.EncodeToString([]byte(*existingPrimary)))
+			}
+		} else {
+			resultBuilder.WriteString("set primary key for generation " + strconv.FormatUint(uint64(targetGen), 10))
+		}
+	}
+
+	if backupPtr != nil {
 		if resultBuilder.Len() > 0 {
 			resultBuilder.WriteString(", ")
 		}
-		existingBackup := sdk.StateGetObject(constants.BackupPublicKeyStateKey)
-		if *existingBackup == "" || constants.IsTestnet(NetworkMode) {
-			sdk.StateSetObject(constants.BackupPublicKeyStateKey, string(key[:]))
-			resultBuilder.WriteString("set backup key to: " + keys.BackupPubKey)
+		if writeFlat {
+			existingBackup := sdk.StateGetObject(constants.BackupPublicKeyStateKey)
+			if *existingBackup == "" || constants.IsTestnet(NetworkMode) {
+				sdk.StateSetObject(constants.BackupPublicKeyStateKey, string(backupPtr[:]))
+				resultBuilder.WriteString("set backup key to: " + keys.BackupPubKey)
+			} else {
+				resultBuilder.WriteString("backup key already registered: " + hex.EncodeToString([]byte(*existingBackup)))
+			}
 		} else {
-			resultBuilder.WriteString("backup key already registered: " + hex.EncodeToString([]byte(*existingBackup)))
+			resultBuilder.WriteString("set backup key for generation " + strconv.FormatUint(uint64(targetGen), 10))
 		}
 	}
 
@@ -728,9 +902,31 @@ func CreateKey(_ *string) *string {
 		)
 	}
 
-	keyId := constants.TssKeyName
+	// NN#3 (S2-close completeness F-1): refuse a new key generation while any superseded
+	// (retiring/draining) generation still holds funds — else multiple funded old keys
+	// pile up, defeating rotation's purpose (each live key is a reconstruction target).
+	// Drain the prior generation (migrateVault) first. Genesis / a clean rotation passes
+	// trivially (no funded superseded gen). Registry-based (S5 hardens with SPV).
+	funded, nn3err := mapping.AnyFundedSupersededGen()
+	if nn3err != nil {
+		ce.CustomAbort(nn3err)
+	}
+	if funded {
+		ce.CustomAbort(ce.NewContractError(ce.ErrTransaction,
+			"cannot create a new key while a superseded generation still holds funds — drain it (migrateVault) first (NN#3)"))
+	}
+
+	// S1.3: mint the NEXT generation as a pending vault (genesis mints gen-0),
+	// bound to the active generation as predecessor, then request its TSS key. The
+	// live vault is untouched — it keeps receiving deposits and signing until an
+	// explicit activateKey cuts over. Refuses if a keygen is already in flight.
+	height, _ := blocklist.LastHeightFromState() // 0 pre-genesis (no blocks yet) is fine
+	gen, keyId, err := mapping.MintNextGeneration(height)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
 	sdk.TssCreateKey(keyId, "ecdsa", 365)
-	return mapping.StrPtr("key created, id: " + keyId)
+	return mapping.StrPtr("minted generation " + strconv.FormatUint(uint64(gen), 10) + ", key id: " + keyId + " (awaiting keygen)")
 }
 
 //go:wasmexport renewKey
@@ -742,9 +938,247 @@ func RenewKey(_ *string) *string {
 		)
 	}
 
-	keyId := constants.TssKeyName
-	sdk.TssRenewKey(keyId, 365)
-	return mapping.StrPtr("key \"" + keyId + "\" renewed")
+	// S1.3 (D-2): renew every fund-holding generation's key — active AND retiring — so
+	// a retiring generation that still custodies unswept funds cannot have its TSS key
+	// expire out from under it (never-brick). RenewableVaultKeyIds filters to keys that
+	// are currently "active" (round-2 fix): sdk.TssRenewKey ABORTS THE WHOLE TX on any
+	// un-renewable key, so renewing a bad key would block renewing every OTHER key —
+	// including the live active one. It also folds an unmigrated legacy gen-0 first.
+	keyIds, skipped, err := mapping.RenewableVaultKeyIds()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	for _, keyId := range keyIds {
+		sdk.TssRenewKey(keyId, 365)
+	}
+	result := "renewed keys: " + strings.Join(keyIds, ",")
+	if len(skipped) > 0 {
+		// L-1: surface fund-holding gens whose key could NOT be renewed (retired/missing)
+		// — a never-brick #1 warning, not a silent success. Space-separated so the
+		// renewed (comma-joined) list stays unambiguous.
+		sdk.Log("warn|renew-skipped|" + strings.Join(skipped, " "))
+		result += "; skipped (unrenewable, fund-holding): " + strings.Join(skipped, " ")
+	}
+	return mapping.StrPtr(result)
+}
+
+//go:wasmexport activateKey
+func ActivateKey(_ *string) *string {
+	// leave this as owner always
+	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
+		ce.CustomAbort(
+			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
+		)
+	}
+
+	// S1.3: cut over to the pending generation. Its predecessor moves to RETIRING
+	// (keeps keys + funds, still fully spendable); it is NEVER purged here (S5 purges
+	// only after funds are gone). Aborts on incomplete keygen or broken lineage,
+	// leaving the live vault untouched.
+	height, _ := blocklist.LastHeightFromState()
+	activated, retired, hadPredecessor, err := mapping.ActivatePendingGeneration(height)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	if hadPredecessor {
+		return mapping.StrPtr("activated generation " + strconv.FormatUint(uint64(activated), 10) +
+			"; generation " + strconv.FormatUint(uint64(retired), 10) + " now retiring")
+	}
+	return mapping.StrPtr("activated generation " + strconv.FormatUint(uint64(activated), 10))
+}
+
+//go:wasmexport discardPendingKey
+func DiscardPendingKey(_ *string) *string {
+	// leave this as owner always
+	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
+		ce.CustomAbort(
+			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
+		)
+	}
+
+	// S1.3 never-brick escape: drop a stalled/failed pending keygen so the owner can
+	// re-mint. Only ever removes a PENDING vault (which holds no funds); the
+	// generation number is not reused.
+	discarded, err := mapping.DiscardPendingGeneration()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	return mapping.StrPtr("discarded pending generation " + strconv.FormatUint(uint64(discarded), 10))
+}
+
+//go:wasmexport migrateVault
+func MigrateVault(_ *string) *string {
+	// Owner or the appointed vault operator (see checkOperator): an operational op
+	// an off-chain driver must be able to call. NN#1 still constrains the destination
+	// regardless of caller.
+	checkOperator()
+
+	// S2: sweep one tranche of a retiring/draining generation's confirmed UTXOs to the
+	// successor (active) vault. PAUSE-GATED (S2-close completeness F-2 / V-8): confirmSpend
+	// — the only path that promotes a sweep's output — is itself pause-gated, so sweeping
+	// during a pause would strand the unconfirmed output (worse if the pause outlasts
+	// header retention → the confirm proof is pruned). Keep migration consistent with
+	// confirm. True evacuation-during-pause (exempt BOTH sides for a whitelisted evac key)
+	// is the deferred V-8 design (S3). NN#1 still constrains the destination regardless.
+	checkNotPaused()
+	publicKeys, err := loadPublicKeys()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	contractState, err := mapping.IntializeContractState(publicKeys, NetworkMode)
+	if err != nil {
+		ce.CustomAbort(ce.Prepend(err, "error initializing contract state"))
+	}
+	result, err := contractState.HandleMigrateVault()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	err = contractState.SaveToState()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	return mapping.StrPtr(result)
+}
+
+//go:wasmexport redriveSpend
+func RedriveSpend(input *string) *string {
+	// L7-01: owner or the appointed vault operator (see checkOperator), like
+	// migrateVault. A re-drive can only RAISE the fee on an already-authorized spend,
+	// so it is safe for the operator to trigger.
+	checkOperator()
+	// PAUSE-GATED (spec v2 D5): a re-drive SIGNS a new replacement spend + adjusts the fee
+	// reserve — a NEW spend authorization, not a mere reconciliation, so a pause gates it
+	// (confirmSpend's settle stays pause-exempt). The owner controls both; unpause to re-drive.
+	checkNotPaused()
+	if input == nil || *input == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "redriveSpend requires the stuck txid"))
+	}
+	publicKeys, err := loadPublicKeys()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	contractState, err := mapping.IntializeContractState(publicKeys, NetworkMode)
+	if err != nil {
+		ce.CustomAbort(ce.Prepend(err, "error initializing contract state"))
+	}
+	result, err := contractState.HandleRedrive(*input)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	err = contractState.SaveToState()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	return mapping.StrPtr(result)
+}
+
+//go:wasmexport retireVault
+func RetireVault(_ *string) *string {
+	// Owner or the appointed vault operator (see checkOperator). retireVault is
+	// fund-gated (it only advances a DRAINED generation), so the operator cannot
+	// retire a gen that still holds funds.
+	checkOperator()
+
+	// S5.0: reconcile the superseded-generation lifecycle tail (DRAINING→INACTIVE→PURGED)
+	// against the live UTXO registry + BTC height. PAUSE-GATED (like migrateVault): a purge
+	// retires a gen's address out of the deposit-matchable set and — via S5.1 — signals TSS
+	// share destruction, exactly the irreversible actions that must NOT proceed during an
+	// emergency pause. This op performs NO key destruction itself; it only drives contract
+	// status. Idempotent: a call with nothing to transition writes the (unchanged) registry
+	// and returns "no generation transitions".
+	checkNotPaused()
+	// ABORT (do not proceed at height 0) if the block height is unavailable. height=0
+	// would anchor a DRAINING→INACTIVE transition at InactiveHeight=0, which the
+	// canPurgeGen fail-closed guard then treats as "never inactivated" — permanently
+	// stranding that gen (safe-but-stuck). Fail loudly instead of relying on a guard in
+	// another function (S5 council L-1, flagged by 3 lenses). A real DRAINING gen cannot
+	// coexist with height==0 (S2 requires seeded blocks), so this never fires in practice.
+	height, err := blocklist.LastHeightFromState()
+	if err != nil {
+		ce.CustomAbort(ce.Prepend(err, "retireVault: block height unavailable"))
+	}
+	result, err := mapping.ReconcileRetiringVaults(height)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	return mapping.StrPtr(result)
+}
+
+//go:wasmexport writeOffDust
+func WriteOffDust(_ *string) *string {
+	// Owner or the appointed vault operator (see checkOperator). Gated on provable
+	// un-sweepability inside HandleWriteOffDust, so the operator cannot write off a
+	// residual that could still be swept economically.
+	checkOperator()
+
+	// V-1 dust-escape fix: force-retire a superseded generation's residual that is
+	// provably un-sweepable at the fixed minimum fee rate (see dust_writeoff.go). PAUSE-
+	// GATED (like migrateVault/retireVault): this op deletes registry UTXOs and debits
+	// Supply, exactly the kind of state mutation that must not proceed during an
+	// emergency pause.
+	checkNotPaused()
+
+	publicKeys, err := loadPublicKeys()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	contractState, err := mapping.IntializeContractState(publicKeys, NetworkMode)
+	if err != nil {
+		ce.CustomAbort(ce.Prepend(err, "error initializing contract state"))
+	}
+	// ABORT if the block height is unavailable (mirrors retireVault: fail loudly rather
+	// than proceed with an ambiguous height, even though this op's own logic does not
+	// consume height today — see HandleWriteOffDust's doc comment).
+	height, err := blocklist.LastHeightFromState()
+	if err != nil {
+		ce.CustomAbort(ce.Prepend(err, "writeOffDust: block height unavailable"))
+	}
+	result, err := contractState.HandleWriteOffDust(height)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	err = contractState.SaveToState()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	return mapping.StrPtr(result)
+}
+
+//go:wasmexport setVaultOperator
+func SetVaultOperator(input *string) *string {
+	// Owner-only: appointing the operator is a governance act (the operator gains the
+	// four operational vault ops). Unlike registerRouter this is deliberately
+	// REPLACEABLE, not set-once — governance must be able to ROTATE the operator key
+	// (or revoke it) without redeploying. An empty input clears the operator, so only
+	// the owner can drive the rotation again.
+	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
+		ce.CustomAbort(
+			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
+		)
+	}
+
+	operator := ""
+	if input != nil {
+		operator = strings.TrimSpace(*input)
+	}
+
+	if operator == "" {
+		sdk.StateDeleteObject(constants.VaultOperatorKey)
+		return mapping.StrPtr("cleared vault operator (owner-only rotation)")
+	}
+
+	// Light shape check: the operator must be a VSC caller identity — either a Hive
+	// account ("hive:...", e.g. a dedicated ops account) or a DID ("did:...", e.g. the
+	// mapping-bot's did:pkh:eip155:...). Reject obvious garbage so a typo cannot
+	// silently lock out the operator path — but do not over-constrain beyond that.
+	if !strings.HasPrefix(operator, "hive:") && !strings.HasPrefix(operator, "did:") {
+		ce.CustomAbort(
+			ce.NewContractError(ce.ErrInput, "vault operator must be a hive: account or a did: identity", ce.MsgBadInput),
+		)
+	}
+
+	sdk.StateSetObject(constants.VaultOperatorKey, operator)
+	return mapping.StrPtr("set vault operator to: " + operator)
 }
 
 //go:wasmexport registerRouter
