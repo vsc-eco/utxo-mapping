@@ -181,6 +181,40 @@ func CorrectGenesisVaultKeys(primary, backup *CompressedPubKey) (bool, error) {
 	if v.Generation != 0 || v.Status != VaultStatusActive || !isGenesisVault(v) {
 		return false, nil
 	}
+
+	// THE GATE THAT KEEPS THIS FROM BEING A KEY-SUBSTITUTION PRIMITIVE.
+	//
+	// "Holds no value" is a point-in-time fact, not "was never used". A live,
+	// never-rotated vault sits at exactly one Active genesis generation and reaches
+	// zero UTXOs and zero supply every time the last outstanding withdrawal clears.
+	// Without this, that window would let the owner key swap the vault's spending
+	// primary for a self-generated one — and the deposit script is a bare
+	// OP_IF <primary> OP_CHECKSIG (createP2WSHAddressWithBackup), so Bitcoin has no
+	// notion of "this pubkey must belong to a TSS quorum". Every later deposit would
+	// be unilaterally spendable by whoever supplied the replacement. Rotation cannot
+	// do that — it routes through attestPrimaryKey — and this path must not become
+	// the exception.
+	//
+	// So: a generation whose primary IS the ceremony output is FROZEN, and where a
+	// ceremony output exists the only correction permitted is the one that makes the
+	// generation AGREE with it. That grants no new power — the key was always going
+	// to be the ceremony's. Only a generation with no ceremony key at all (the
+	// legacy flat bootstrap, which never ran createKey and is the sole scenario
+	// VR2-21 documents) stays freely correctable, and there the owner already chose
+	// the key unilaterally.
+	attested, hasActiveKey, readable := attestedGenerationPrimary(v.Generation)
+	if !readable {
+		return false, nil // an active ceremony key we cannot read — fail closed
+	}
+	if hasActiveKey {
+		if v.Primary == attested {
+			return false, nil // already agrees with the ceremony: immutable
+		}
+		if primary == nil || *primary != attested {
+			return false, nil // the only permitted correction is "agree with the ceremony"
+		}
+	}
+
 	changed := false
 	if primary != nil && v.Primary != *primary {
 		v.Primary = *primary
@@ -196,6 +230,34 @@ func CorrectGenesisVaultKeys(primary, backup *CompressedPubKey) (bool, error) {
 	SaveVaultState(vaults, nextGen, activeGen)
 	sdk.Log("gen0-corrected")
 	return true, nil
+}
+
+// attestedGenerationPrimary reads the TSS ceremony's ACTIVE output for a
+// generation.
+//
+// Returns (key, hasActiveKey, readable). `readable` is false only when there IS an
+// active ceremony key whose pubkey cannot be decoded — callers must treat that as
+// "do not proceed", so an unreadable keystore refuses a correction rather than
+// permitting one. A generation with no active ceremony key at all is reported
+// positively as (zero, false, true): that is the legacy flat bootstrap, not an
+// error.
+//
+// This is deliberately narrower than attestPrimaryKey, which additionally requires
+// a verified BRK-2 check-signature before ACTIVATING a generation. Nothing is
+// being activated here — generation 0 is already Active — and requiring a
+// check-signature would block precisely the legacy-bootstrap correction this
+// serves, since a folded gen-0 never went through attestation in the first place.
+func attestedGenerationPrimary(gen uint32) (key CompressedPubKey, hasActiveKey bool, readable bool) {
+	parts := strings.Split(sdk.TssGetKey(VaultKeyId(gen)), ",")
+	if len(parts) < 2 || parts[0] != tssKeyActiveStatus {
+		return key, false, true // no active ceremony key for this generation
+	}
+	raw, derr := hex.DecodeString(parts[1])
+	if derr != nil || len(raw) != 33 {
+		return key, true, false
+	}
+	copy(key[:], raw)
+	return key, true, true
 }
 
 // isGenesisVault reports whether a vault is a bootstrap (genesis) vault — one with

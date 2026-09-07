@@ -139,7 +139,11 @@ Same as `transfer`.
 
 ### 7. `registerPublicKey` — Register ECDSA Public Key(s)
 
-Owner-only. Registers the primary and/or backup ECDSA public keys used to verify and sign Bitcoin transactions. On mainnet, keys can only be set once and cannot be overwritten. On testnet, re-registration is permitted.
+Owner-only. Registers the primary and/or backup ECDSA public keys used to verify and sign Bitcoin transactions.
+
+Keys are set-once, and the rule is now the same on every network — it is about VALUE, not about the build. A registered pair can only be replaced while the contract provably holds nothing (no UTXOs in the registry and zero active/user/fee supply), and, where the TSS ceremony has produced an active key for the generation, only by the pair that makes the generation AGREE with that ceremony output. A generation whose primary already is the ceremony output is frozen outright. So a mistyped key can be corrected during bring-up, and a key with funds riding on it can never be re-pointed.
+
+This replaced a `IsTestnet` build-flag escape, which asked the wrong question in both directions: it let a testnet operator re-point the keys of a FUNDED contract, and refused a mainnet operator a correction on a provably empty one.
 
 #### Input
 
@@ -262,6 +266,6 @@ Raw block header hex string (exactly 80 bytes / 160 hex characters).
 ## Notes
 
 - **Admin vs Owner**: `seedBlocks`, `addBlocks`, `replaceBlock`, and `prune` require the _admin_ (the contract owner on testnet, a fixed oracle address on mainnet). `registerPublicKey`, `registerRouter`, `createKey`, `renewKey`, and `initPruning` always require the _contract owner_ regardless of network mode.
-- **Immutability on mainnet**: Public keys and the router contract ID cannot be overwritten once set on mainnet. Attempts to re-register will return the existing value without error.
+- **Immutability**: The router contract ID cannot be overwritten once set, on ANY network (it is read directly on the deposit path and grants the registered router an allowance over freshly-credited value, so a re-point is a fund-drain vector). Public keys are immutable once the contract holds any value, and immutable outright once the generation's primary is the TSS ceremony output — see `registerPublicKey` above. Attempts to re-register will return the existing value without error.
 - **`omitempty` fields** (`from`, `deduct_fee`, `max_fee`, `primary_public_key`, `backup_public_key`) are excluded from `required` and will be absent in serialized output when empty or zero.
 - **Public key validation**: Hex strings passed to `registerPublicKey` must decode to exactly 33 bytes. Compressed keys must begin with `0x02` or `0x03`.

@@ -141,7 +141,17 @@ If the oracle is misconfigured to submit 0-confirmation blocks, deposits could b
 
 #### Key rotation
 
-TSS public keys (primary and backup) are **immutable on mainnet** once registered. This prevents governance attacks from rotating keys to steal funds. Key rotation requires a future contract upgrade that would spend all existing UTXOs under the old key before switching — this is intentionally deferred due to complexity.
+TSS public keys (primary and backup) are **immutable once any value rides on them**, and immutable outright once a
+generation's primary is the TSS ceremony output. This prevents governance attacks from rotating keys to steal
+funds: the deposit script is a bare `OP_IF <primary> OP_CHECKSIG`, so a substituted primary would be unilaterally
+spendable by whoever supplied it. The one permitted exception is a bring-up correction — while the contract
+provably holds nothing, a mistyped pair may be replaced, and where a ceremony key exists only by the pair that
+makes the generation AGREE with it. That grants no new power, since the key was always going to be the
+ceremony's.
+
+Key ROTATION is no longer deferred: vault-rotation-v2 mints a fresh per-generation key, sweeps the old
+generation's UTXOs to the successor, and retires the predecessor. Every activation routes through
+`attestPrimaryKey`, so a rotation can never introduce an unattested primary.
 
 #### Pause mechanism
 

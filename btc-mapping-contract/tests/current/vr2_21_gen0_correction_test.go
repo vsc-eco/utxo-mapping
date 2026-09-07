@@ -1,6 +1,7 @@
 package current_test
 
 import (
+	"encoding/hex"
 	"testing"
 
 	"btc-mapping-contract/contract/constants"
@@ -20,6 +21,9 @@ const (
 	wrongPrimaryHex = "0242f9da15eae56fe6aca65136738905c0afdb2c4edf379e107b3b00b98c7fc9f0"
 	wrongBackupHex  = "0332e9f22cfa2f6233c059c4d54700e3d00df3d7f55e3ea16207b860360446634f"
 )
+
+// hexOf renders raw key bytes the way the test constants are written.
+func hexOf(b []byte) string { return hex.EncodeToString(b) }
 
 func registerKeys(t *testing.T, ct *test_utils.ContractTest, contractId, owner, txId, primaryHex, backupHex string) test_utils.ContractTestCallResult {
 	t.Helper()
@@ -83,6 +87,11 @@ func TestVR221_WrongGenesisKeysAreCorrectableWhileNoValueIsAtRisk(t *testing.T) 
 	// A fresh deploy: fee rate configured, but no UTXOs and no supply.
 	ct.StateSet(contractId, constants.SupplyKey,
 		string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
+
+	// The TSS ceremony ran and produced the key the operator MEANT to register.
+	// This is the realistic shape of the mistake: the true key exists, and what got
+	// typed into registerPublicKey does not match it.
+	seedTssKey(t, &ct, contractId, mapping.VaultKeyId(0), TestPrimaryPubKeyHex)
 
 	// The mistake.
 	first := registerKeys(t, &ct, contractId, owner, "vr2-21-wrong", wrongPrimaryHex, wrongBackupHex)
@@ -149,4 +158,86 @@ func TestVR221_KeysFreezeOnceTheContractHoldsValue(t *testing.T) {
 		"a funded contract's generation 0 must be immutable — coins are riding on it")
 	assert.Equal(t, decodeHex(t, wrongBackupHex), string(gen0.Backup[:]),
 		"a funded contract's generation 0 backup must be immutable")
+}
+
+// The gate that keeps the correction path from becoming a key-substitution
+// primitive.
+//
+// "Currently holds no value" is a point-in-time fact, not "was never used". A
+// live, never-rotated vault sits at exactly one Active genesis generation, and it
+// transiently reaches zero UTXOs and zero supply every time the last outstanding
+// withdrawal clears. Without this gate that window would let the owner key swap
+// the vault's spending primary for a self-generated one — and the deposit script
+// is a bare OP_IF <primary> OP_CHECKSIG, so Bitcoin has no notion of "this pubkey
+// must belong to a TSS quorum". Every subsequent deposit would be unilaterally
+// spendable by whoever supplied the replacement.
+//
+// That would be a strictly new capability, and the wrong kind: rotation already
+// exists and routes through attestPrimaryKey, so it CANNOT introduce an unattested
+// primary. The correction path must not become the exception.
+//
+// A generation whose primary IS the ceremony output is therefore frozen outright.
+func TestVR221_ACeremonyBackedGenesisKeyIsNeverCorrectable(t *testing.T) {
+	const contractId = "vr221_tssbacked"
+	const owner = "hive:milo-hpr"
+
+	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
+	ct.RegisterContract(contractId, owner, ContractWasm)
+
+	ct.StateSet(contractId, constants.SupplyKey,
+		string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
+
+	// The post-fold mainnet shape: gen-0 Active, its primary IS the ceremony output.
+	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
+	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
+	ct.StateSet(contractId, constants.MigrateVersionKey, "1")
+	seedTssKey(t, &ct, contractId, mapping.VaultKeyId(0), TestPrimaryPubKeyHex)
+	require.Empty(t, callMigrate(t, &ct, contractId, owner).Err, "fold should succeed")
+
+	seeded := loadGen0(t, &ct, contractId)
+	require.Equal(t, TestPrimaryPubKeyHex, hexOf(seeded.Primary[:]),
+		"fixture precondition: gen-0 must agree with the ceremony output")
+
+	// The contract holds nothing, so the value gate alone would permit this.
+	swap := registerKeys(t, &ct, contractId, owner, "vr2-21-tss-swap", wrongPrimaryHex, wrongBackupHex)
+	require.True(t, swap.Success, "a refused correction reports, it does not abort")
+
+	gen0 := loadGen0(t, &ct, contractId)
+	assert.Equal(t, TestPrimaryPubKeyHex, hexOf(gen0.Primary[:]),
+		"a ceremony-backed generation's primary must NEVER be swapped; an empty "+
+			"balance is not permission to re-point the vault's spending key")
+	assert.Equal(t, TestBackupPubKeyHex, hexOf(gen0.Backup[:]),
+		"and its backup must not be swapped either — the CSV branch is a spending path too")
+	assert.NotContains(t, swap.Ret, "generation 0 corrected",
+		"the refusal must not report a correction it did not make")
+}
+
+// Where a ceremony output exists, the ONLY correction permitted is the one that
+// makes the generation agree with it. An operator who mistyped cannot use the
+// correction path to install some third key of their choosing.
+func TestVR221_CorrectionMustAgreeWithTheCeremonyOutput(t *testing.T) {
+	const contractId = "vr221_thirdkey"
+	const owner = "hive:milo-hpr"
+
+	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
+	ct.RegisterContract(contractId, owner, ContractWasm)
+
+	ct.StateSet(contractId, constants.SupplyKey,
+		string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
+	seedTssKey(t, &ct, contractId, mapping.VaultKeyId(0), TestPrimaryPubKeyHex)
+
+	first := registerKeys(t, &ct, contractId, owner, "vr2-21-third-first", wrongPrimaryHex, wrongBackupHex)
+	require.True(t, first.Success, "first registration should succeed; err=%q msg=%q", first.Err, first.ErrMsg)
+
+	// A third key: neither what was registered nor what the ceremony produced.
+	const thirdPrimaryHex = "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+	second := registerKeys(t, &ct, contractId, owner, "vr2-21-third-swap", thirdPrimaryHex, wrongBackupHex)
+	require.True(t, second.Success, "a refused correction reports, it does not abort")
+
+	gen0 := loadGen0(t, &ct, contractId)
+	assert.Equal(t, wrongPrimaryHex, hexOf(gen0.Primary[:]),
+		"the correction path may only make a generation AGREE with its ceremony "+
+			"output; it must not install an arbitrary third key")
 }
