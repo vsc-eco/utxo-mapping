@@ -1202,12 +1202,23 @@ func RegisterRouter(input *string) *string {
 	var resultBuilder strings.Builder
 
 	if router.ContractId != "" {
-		existingPrimary := sdk.StateGetObject(constants.RouterContractIdKey)
-		if *existingPrimary == "" || constants.IsTestnet(NetworkMode) {
+		existingRouter := sdk.StateGetObject(constants.RouterContractIdKey)
+		// VR2-20: set-once on EVERY network, testnet and regtest included.
+		//
+		// The other two set-once keys relaxed for testnet (primary/backup public
+		// keys) are re-derived from the vault list on every init, so re-pointing
+		// them does not stick. This one has no such backstop: it is read straight
+		// off state on the deposit path, where a swap-tagged deposit credits the
+		// contract itself with the freshly mapped amount and then grants the
+		// registered router an ALLOWANCE over exactly that credit. Re-pointing it
+		// therefore handed an arbitrary contract a live spend authority over real
+		// deposits, and a router that returns a plausible non-zero amount_out is
+		// treated as SUCCESS — so the theft commits rather than rolling back.
+		if *existingRouter == "" {
 			sdk.StateSetObject(constants.RouterContractIdKey, router.ContractId)
 			resultBuilder.WriteString("set router contract ID to: " + router.ContractId)
 		} else {
-			resultBuilder.WriteString("router contract ID already registered: " + *existingPrimary)
+			resultBuilder.WriteString("router contract ID already registered: " + *existingRouter)
 		}
 	}
 
