@@ -206,7 +206,50 @@ func (cs *ContractState) buildMigrationTransaction(inputs []*Utxo, totalInputs i
 	// UTXOs, recoverable; abort leaves no state change). For a re-drive this is ALSO the
 	// affordability gate: a bump that can't fit under the ceiling routes to the dust residual.
 	if fee > totalInputs/2 {
-		return nil, nil, 0, ce.NewContractError(ce.ErrTransaction, "migration fee exceeds half the tranche value — sweep deferred")
+		// VR2-11: rather than deferring indefinitely, retry at the highest rate the
+		// ceiling actually allows.
+		//
+		// The old behaviour deadlocked a whole class of residuals. A tranche whose
+		// sweep is affordable at the protocol minimum but not at a spiked oracle rate
+		// was deferred here, while write-off correctly declined to touch it (it IS
+		// sweepable at the minimum), so nothing moved until fees happened to fall —
+		// and meanwhile NN#3 blocked every rotation and the committee's bond stayed
+		// locked. Nobody had to attack anything; a fee spike was enough.
+		//
+		// The rate is DERIVED, never chosen: the largest rate whose fee fits under the
+		// same ceiling. So this does not weaken V5-4 — the fee still never exceeds
+		// half the tranche, which is exactly the protection V5-4 exists to give. It
+		// only stops the contract insisting on the oracle's rate when a lower one
+		// would clear the same bar. Paying under the going rate means slower
+		// confirmation, which is what the re-drive path is for.
+		//
+		// Redrives are excluded: a replacement must out-fee its original, so lowering
+		// the rate there is meaningless, and the existing defer is the right answer.
+		if prevFee > 0 {
+			return nil, nil, 0, ce.NewContractError(ce.ErrTransaction, "migration fee exceeds half the tranche value — sweep deferred")
+		}
+		oracleRate := clampedFeeRate(cs.Supply.BaseFeeRate)
+		vSize := fee / oracleRate // exact: calculateSegwitFee returns vSize*rate
+		affordableRate := int64(0)
+		if vSize > 0 {
+			affordableRate = (totalInputs / 2) / vSize
+		}
+		if affordableRate < 1 {
+			// Unaffordable even at the protocol minimum. This is the genuinely stuck
+			// residual, and it is write-off's to judge, not this builder's.
+			return nil, nil, 0, ce.NewContractError(ce.ErrTransaction, "migration fee exceeds half the tranche value even at the minimum rate — sweep deferred")
+		}
+		reducedFee, rErr := calculateSegwitFeeAt(affordableRate, int64(tx.SerializeSize()), witnessScripts)
+		if rErr != nil {
+			return nil, nil, 0, rErr
+		}
+		if reducedFee > totalInputs/2 {
+			// Belt and braces: the ceiling is the invariant, not the arithmetic above.
+			return nil, nil, 0, ce.NewContractError(ce.ErrTransaction, "migration fee exceeds half the tranche value — sweep deferred")
+		}
+		sdk.Log("migrate-fee-reduced|rate=" + strconv.FormatInt(affordableRate, 10) +
+			"|oracle=" + strconv.FormatInt(oracleRate, 10))
+		fee = reducedFee
 	}
 	sendAmount, err := safeSubtract64(totalInputs, fee)
 	if err != nil || sendAmount <= dustThreshold {

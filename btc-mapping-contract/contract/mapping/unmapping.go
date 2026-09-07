@@ -279,7 +279,19 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint16, int64, error) 
 }
 
 func (cs *ContractState) calculateSegwitFee(baseSize int64, witnessScripts map[int][]byte) (int64, error) {
-	feeRate := clampedFeeRate(cs.Supply.BaseFeeRate)
+	return calculateSegwitFeeAt(clampedFeeRate(cs.Supply.BaseFeeRate), baseSize, witnessScripts)
+}
+
+// calculateSegwitFeeAt prices a transaction at an EXPLICIT rate.
+//
+// VR2-11: the migration builder needs to ask "what would this cost at a different
+// rate?" without the oracle's rate being the only answer available. It takes the
+// rate as an argument rather than reading — let alone temporarily writing —
+// cs.Supply.BaseFeeRate. That distinction is load-bearing: TinyGo has no `defer`,
+// so a "set the rate, build, restore it" approach would persist an operational
+// rate as the GLOBAL oracle rate on any early return that still reaches
+// SaveToState, corrupting every later unmap, migration and write-off price.
+func calculateSegwitFeeAt(feeRate int64, baseSize int64, witnessScripts map[int][]byte) (int64, error) {
 	// Witness stack per input: <sig> <branch_selector> <witness_script>
 	// Serialized: item_count(1) + sig_len(1) + sig(72) + branch_len(1) + branch(1) + script_len(1) + script(N)
 	witnessDataSize := int64(0)
