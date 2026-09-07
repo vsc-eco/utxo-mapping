@@ -53,7 +53,7 @@ func TestRedriveSweep_BumpsFeeAndSettlesEither(t *testing.T) {
 	contractId, owner := "mapping_contract", "hive:milo-hpr"
 	ct.RegisterContract(contractId, owner, ContractWasm)
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1, FeeSupply: 100000})))
-	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.LastHeightKey, "102")
 	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
 	seedActiveGen0(t, &ct, contractId, owner)
 
@@ -165,7 +165,7 @@ func TestRedriveUnmap_BumpsFeeReducesChangeKeepsDest(t *testing.T) {
 	contractId, owner := "mapping_contract", "hive:milo-hpr"
 	ct.RegisterContract(contractId, owner, ContractWasm)
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1, FeeSupply: 100000})))
-	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.LastHeightKey, "102")
 	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
 	seedActiveGen0(t, &ct, contractId, owner)
 

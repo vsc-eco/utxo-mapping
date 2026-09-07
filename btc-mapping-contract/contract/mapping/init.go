@@ -159,8 +159,9 @@ func InitializeMappingState(
 	}
 
 	return &MappingState{
-		ContractState:   *contractState,
-		AddressRegistry: registry,
+		ContractState:    *contractState,
+		AddressRegistry:  registry,
+		MinConfirmations: constants.MinDepositConfirmations(networkMode),
 	}, err
 }
 

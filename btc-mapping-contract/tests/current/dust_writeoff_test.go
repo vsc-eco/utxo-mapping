@@ -74,7 +74,8 @@ func TestWriteOffDust_DefeatsGriefSequence(t *testing.T) {
 	contractId, owner := "mapping_contract", "hive:milo-hpr"
 	ct.RegisterContract(contractId, owner, ContractWasm)
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
-	ct.StateSet(contractId, constants.LastHeightKey, strconv.FormatUint(uint64(blockHeight), 10))
+	// VR2-07: seed the tip above the deposit block so the maturity gate is met.
+	ct.StateSet(contractId, constants.LastHeightKey, strconv.FormatUint(uint64(blockHeight)+2, 10))
 
 	legacyDustInstr := "deposit_to=hive:legacy-victim"
 	legacyFixture := buildMapFixture(t, legacyDustInstr, dustAmount, blockHeight)
@@ -162,6 +163,9 @@ func TestWriteOffDust_DefeatsGriefSequence(t *testing.T) {
 	repeatBlockHeight := uint32(101)
 	repeatFixture := buildMapFixture(t, repeatInstr, dustAmount, repeatBlockHeight)
 	ct.StateSet(contractId, constants.BlockPrefix+strconv.FormatUint(uint64(repeatBlockHeight), 10), decodeHex(t, repeatFixture.BlockHeaderHex))
+	// VR2-07: advance the tip past this second deposit too, so the maturity gate is
+	// satisfied and the assertion below tests the DUST floor rather than depth.
+	ct.StateSet(contractId, constants.LastHeightKey, strconv.FormatUint(uint64(repeatBlockHeight)+2, 10))
 	repeatParams := mapping.MapParams{
 		TxData: &mapping.VerificationRequest{
 			BlockHeight: repeatBlockHeight, RawTxHex: repeatFixture.RawTxHex,
@@ -283,7 +287,8 @@ func TestMapDustFloor_InertPreRotation(t *testing.T) {
 	contractId, owner := "mapping_contract", "hive:milo-hpr"
 	ct.RegisterContract(contractId, owner, ContractWasm)
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
-	ct.StateSet(contractId, constants.LastHeightKey, strconv.FormatUint(uint64(blockHeight), 10))
+	// VR2-07: seed the tip above the deposit block so the maturity gate is met.
+	ct.StateSet(contractId, constants.LastHeightKey, strconv.FormatUint(uint64(blockHeight)+2, 10))
 	ct.StateSet(contractId, constants.BlockPrefix+strconv.FormatUint(uint64(blockHeight), 10), decodeHex(t, fixture.BlockHeaderHex))
 	seedActiveGen0(t, &ct, contractId, owner) // gen-0 ACTIVE only — no rotation has ever happened
 

@@ -136,7 +136,7 @@ func TestS12VaultListIsSourceOfTruth(t *testing.T) {
 	owner := "hive:milo-hpr"
 	ct.RegisterContract(contractId, owner, ContractWasm)
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
-	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.LastHeightKey, "102")
 	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
 
 	// Legacy slots: WRONG (swapped) pairing. If the code read these, the derived

@@ -275,6 +275,40 @@ const MigrationCanaryValue int64 = 1_000_000
 // FS-1/FS-2/FS-4/FS-5 H-3 — a recoverable freeze that would otherwise degrade
 // past the primary path). 4608 = 4320 (mainnet CSV) + 288 (~2-day reorg margin);
 // on testnet (CSV=2) this is harmless headroom. Header storage ≈ 4608*80 B ≈ 369 KB.
+// MinDepositConfirmations is how far a deposit's block must be buried under the
+// contract's own chain tip before the deposit may be credited (VR2-07).
+//
+// Without it a deposit is creditable the instant its header lands, which is only
+// the oracle's own relay threshold — 2 confirmations on mainnet. A 2-block
+// Bitcoin reorg is routine, and the contract can only follow reorgs 2 deep
+// (HandleReplaceBlocks is hard-capped at 2 on mainnet), so a deposit orphaned by
+// one keeps its L2 credit while the backing coins cease to exist: an
+// un-reconcilable inflation of user supply against a vault that never received
+// them.
+//
+// This stacks on the oracle's threshold rather than replacing it, so mainnet
+// requires roughly 6 real confirmations end to end — the conventional Bitcoin
+// settlement bar.
+//
+// Deliberately FLAT, not scaled by deposit value. Value-scaling is defeated by
+// splitting one deposit across sub-threshold outputs: indexOutputs makes one UTXO
+// per output with no aggregation, so there is nothing to accumulate against
+// without a new per-address rolling window. A flat floor cannot be split around.
+//
+// Regtest deliberately enforces a NON-ZERO depth. Setting it to zero there would
+// leave the entire test suite running with the gate inert — testnet unable to
+// prove what mainnet enforces, which is exactly the shape of finding VR2-20.
+func MinDepositConfirmations(networkMode string) uint32 {
+	switch networkMode {
+	case Testnet3, Testnet4:
+		return 2
+	case Regtest:
+		return 2
+	default: // mainnet
+		return 4
+	}
+}
+
 const MaxBlockRetention = 4608
 
 // MaxPrunePerCall limits how many old headers are deleted in a single

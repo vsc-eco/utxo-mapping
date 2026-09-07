@@ -260,6 +260,10 @@ type ContractState struct {
 type MappingState struct {
 	ContractState
 	AddressRegistry map[string]*AddressMetadata // map of btc addresses to the tags they were created with
+	// MinConfirmations is the deposit maturity gate (VR2-07), resolved from the
+	// build's network at construction. Carried here rather than re-derived at the
+	// call site so there is exactly one place it can be wrong.
+	MinConfirmations uint32
 }
 
 // DEX Instruction Schema

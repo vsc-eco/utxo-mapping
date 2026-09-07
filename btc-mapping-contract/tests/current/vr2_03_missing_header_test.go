@@ -42,10 +42,12 @@ func TestVR203_MissingBlockHeaderIsNamedInTheError(t *testing.T) {
 	const contractId = "vr203_hdr"
 	const owner = "hive:milo-hpr"
 	const recipient = "hive:milo-receiver"
-	const instruction = "to=" + recipient
+	const instruction = "deposit_to=" + recipient
 	const seededHeight = uint32(100)
-	// The proof will claim a height the contract has no header for.
-	const unprovableHeight = uint32(101)
+	// The proof will claim a height the contract has no header for. It is chosen
+	// well below the tip so the deposit-maturity gate (VR2-07) is satisfied and the
+	// MISSING HEADER is the only thing left that can explain the refusal.
+	const unprovableHeight = uint32(105)
 
 	fixture := buildMapFixture(t, instruction, 500_000, seededHeight)
 
@@ -55,7 +57,7 @@ func TestVR203_MissingBlockHeaderIsNamedInTheError(t *testing.T) {
 
 	ct.StateSet(contractId, constants.SupplyKey,
 		string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
-	ct.StateSet(contractId, constants.LastHeightKey, "101")
+	ct.StateSet(contractId, constants.LastHeightKey, "110")
 	// Height 100's header IS seeded; height 101's is deliberately absent — exactly the
 	// shape a pruned header leaves behind.
 	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
@@ -101,6 +103,6 @@ func TestVR203_MissingBlockHeaderIsNamedInTheError(t *testing.T) {
 	combined := r.Err + " " + r.ErrMsg
 	assert.True(t, strings.Contains(combined, "block header"),
 		"the failure must name the missing header; got err=%q msg=%q", r.Err, r.ErrMsg)
-	assert.True(t, strings.Contains(combined, "101"),
+	assert.True(t, strings.Contains(combined, "105"),
 		"the failure must name the height it could not prove against; got err=%q msg=%q", r.Err, r.ErrMsg)
 }

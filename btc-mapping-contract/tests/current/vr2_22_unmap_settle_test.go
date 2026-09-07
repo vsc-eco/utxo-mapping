@@ -44,7 +44,7 @@ func TestVR222_UnmapSettlesOnConfirm(t *testing.T) {
 	ct.RegisterContract(contractId, owner, ContractWasm)
 	ct.StateSet(contractId, constants.SupplyKey,
 		string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1, FeeSupply: 100_000})))
-	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.LastHeightKey, "102")
 	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
 	seedActiveGen0(t, &ct, contractId, owner)
 

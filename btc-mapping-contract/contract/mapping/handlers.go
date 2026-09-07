@@ -24,6 +24,42 @@ func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 		return ce.Prepend(err, "error verifying tranasction")
 	}
 
+	// VR2-07: refuse a deposit that is not yet buried deep enough, rather than
+	// crediting it and trying to claw it back later.
+	//
+	// A deposit used to be creditable the instant its header landed, which is only
+	// the oracle's own relay threshold — 2 confirmations on mainnet. A 2-block
+	// reorg is routine, and the contract can follow reorgs at most 2 deep
+	// (HandleReplaceBlocks is hard-capped at 2 on mainnet), so a deposit orphaned
+	// by one kept its L2 credit while the backing coins ceased to exist.
+	//
+	// Refusing BEFORE indexing, rather than crediting-then-holding, is what makes
+	// this implementable at all. Balance is one fungible integer, so "hold the top
+	// N sats" would need a parallel pending-credit ledger; and un-crediting after
+	// the fact runs into a worse bug — the depositor may already have moved the
+	// phantom credit, and the subtraction guards only integer wrap, not a negative
+	// result, which is the exact class that halted the fleet before. Nothing is
+	// indexed, nothing is credited, and the depositor simply re-submits the same
+	// permissionless SPV proof once the depth clears.
+	//
+	// It also closes the swap escape for free: a swap-tagged deposit self-credits
+	// and calls the router synchronously inside this same call, so no
+	// withdrawal-side hold could ever have fired in time.
+	tip := currentLastHeight()
+	depth := uint32(0)
+	if tip > txData.BlockHeight {
+		depth = tip - txData.BlockHeight
+	}
+	if depth < ms.MinConfirmations {
+		return ce.NewContractError(ce.ErrInput,
+			"deposit is not confirmed deeply enough yet: block "+
+				strconv.FormatUint(uint64(txData.BlockHeight), 10)+" sits "+
+				strconv.FormatUint(uint64(depth), 10)+" below a tip of "+
+				strconv.FormatUint(uint64(tip), 10)+", and "+
+				strconv.FormatUint(uint64(ms.MinConfirmations), 10)+
+				" is required (re-submit the same proof once it matures)")
+	}
+
 	var msgTx wire.MsgTx
 	err = msgTx.Deserialize(bytes.NewReader(rawTx))
 	if err != nil {

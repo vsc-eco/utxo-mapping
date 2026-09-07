@@ -73,7 +73,7 @@ func btcc3SetupContract(t *testing.T, ct *test_utils.ContractTest, contractId st
 		FeeSupply:    0,
 		BaseFeeRate:  1,
 	})))
-	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.LastHeightKey, "102")
 	ct.StateSet(contractId, constants.BlockPrefix+"100", buildSeedHeaderRaw(t, time.Unix(0, 0)))
 }
 
