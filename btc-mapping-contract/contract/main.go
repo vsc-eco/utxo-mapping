@@ -857,12 +857,22 @@ func RegisterPublicKey(keyStr *string) *string {
 	}
 	writeFlat := !hasPending || isGenesis
 
+	// VR2-21: whether a MISTYPED key pair can still be replaced. This used to be
+	// `constants.IsTestnet(NetworkMode)` — a build flag, which asked the wrong
+	// question in both directions: it let a testnet operator re-point the keys of a
+	// FUNDED contract, and it refused a mainnet operator a correction even when the
+	// contract was provably empty. The pair is correctable exactly while no coins are
+	// riding on it, and that is the same rule on every network.
+	//
+	// Read ONCE, before any write, so both key slots decide on identical state.
+	correctable := mapping.VaultKeysCorrectable()
+
 	var resultBuilder strings.Builder
 
 	if primaryPtr != nil {
 		if writeFlat {
 			existingPrimary := sdk.StateGetObject(constants.PrimaryPublicKeyStateKey)
-			if *existingPrimary == "" || constants.IsTestnet(NetworkMode) {
+			if *existingPrimary == "" || correctable {
 				sdk.StateSetObject(constants.PrimaryPublicKeyStateKey, string(primaryPtr[:]))
 				resultBuilder.WriteString("set primary key to: " + keys.PrimaryPubKey)
 			} else {
@@ -879,7 +889,7 @@ func RegisterPublicKey(keyStr *string) *string {
 		}
 		if writeFlat {
 			existingBackup := sdk.StateGetObject(constants.BackupPublicKeyStateKey)
-			if *existingBackup == "" || constants.IsTestnet(NetworkMode) {
+			if *existingBackup == "" || correctable {
 				sdk.StateSetObject(constants.BackupPublicKeyStateKey, string(backupPtr[:]))
 				resultBuilder.WriteString("set backup key to: " + keys.BackupPubKey)
 			} else {
@@ -887,6 +897,22 @@ func RegisterPublicKey(keyStr *string) *string {
 			}
 		} else {
 			resultBuilder.WriteString("set backup key for generation " + strconv.FormatUint(uint64(targetGen), 10))
+		}
+	}
+
+	// VR2-21: carry the correction into generation 0. RegisterVaultKeys already ran
+	// FoldLegacyGen0IfNeeded above, which froze the PREVIOUS flat pair into vaults[0]
+	// on this very call — so without this the corrected flat key is dead state:
+	// IntializeContractState resolves the contract's keys from the vault list, not
+	// from the flat slots. A no-op unless gen-0 is a lone, Active, genesis vault and
+	// the contract holds no value.
+	if writeFlat {
+		corrected, cerr := mapping.CorrectGenesisVaultKeys(primaryPtr, backupPtr)
+		if cerr != nil {
+			ce.CustomAbort(cerr)
+		}
+		if corrected {
+			resultBuilder.WriteString(" (generation 0 corrected)")
 		}
 	}
 

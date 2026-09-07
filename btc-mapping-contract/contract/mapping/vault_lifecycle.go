@@ -122,6 +122,82 @@ func FoldLegacyGen0IfNeeded() bool {
 	return true
 }
 
+// VaultKeysCorrectable reports whether the contract provably holds NO value, so
+// re-registering the vault key pair cannot strand or redirect anyone's coins.
+//
+// VR2-21. This replaces the IsTestnet build-flag escape that used to guard the flat
+// key writes. A build flag is the wrong question twice over: it let a testnet
+// operator re-point the keys of a FUNDED contract, and it refused a mainnet operator
+// a correction even when nothing whatsoever was at stake. What actually matters is
+// whether any BTC is riding on the current pair, and the contract can answer that
+// directly — the same answer on every network.
+//
+// Deliberately conservative: an unreadable supply blob counts as value at risk. The
+// UTXO registry is only tested for EMPTINESS, never unmarshalled, so this stays a
+// cheap state read on the key-ceremony path.
+func VaultKeysCorrectable() bool {
+	if raw := sdk.StateGetObject(constants.UtxoRegistryKey); raw != nil && len(*raw) > 0 {
+		return false // the vault is tracking coins
+	}
+	if raw := sdk.StateGetObject(constants.SupplyKey); raw != nil && len(*raw) > 0 {
+		supply, err := UnmarshalSupply([]byte(*raw))
+		if err != nil {
+			return false // unreadable supply — assume value at risk
+		}
+		// BaseFeeRate is configuration, not value, so it is deliberately not tested.
+		if supply.ActiveSupply != 0 || supply.UserSupply != 0 || supply.FeeSupply != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// CorrectGenesisVaultKeys re-points a folded generation 0 at a corrected key pair,
+// and reports whether it changed anything.
+//
+// VR2-21. FoldLegacyGen0IfNeeded freezes whatever flat pair exists into vaults[0],
+// and it fires on the very call an operator makes to FIX a mistyped key — so without
+// this the corrected flat key is dead state, because IntializeContractState resolves
+// the contract's keys from the vault list. The backup half has no other escape at
+// all: MintNextGeneration pins every successor's backup to the active vault's (F1)
+// and RegisterVaultKeys rejects a different one as immutable, so a wrong backup
+// folded into gen-0 is inherited by every future generation, permanently.
+//
+// Narrow by construction: it touches ONLY a lone, Active, genesis generation 0 — the
+// exact shape the fold produces — and only while VaultKeysCorrectable() holds. It
+// never runs once a rotation has minted a successor, and never once value exists.
+func CorrectGenesisVaultKeys(primary, backup *CompressedPubKey) (bool, error) {
+	if !VaultKeysCorrectable() {
+		return false, nil
+	}
+	vaults, nextGen, activeGen, err := LoadVaultState()
+	if err != nil {
+		return false, err
+	}
+	if len(vaults) != 1 {
+		return false, nil // a successor exists — lineage is live, never rewrite it
+	}
+	v := &vaults[0]
+	if v.Generation != 0 || v.Status != VaultStatusActive || !isGenesisVault(v) {
+		return false, nil
+	}
+	changed := false
+	if primary != nil && v.Primary != *primary {
+		v.Primary = *primary
+		changed = true
+	}
+	if backup != nil && v.Backup != *backup {
+		v.Backup = *backup
+		changed = true
+	}
+	if !changed {
+		return false, nil
+	}
+	SaveVaultState(vaults, nextGen, activeGen)
+	sdk.Log("gen0-corrected")
+	return true, nil
+}
+
 // isGenesisVault reports whether a vault is a bootstrap (genesis) vault — one with
 // no ancestor, marked by a self-referential predecessor. Rotation successors have
 // Predecessor < Generation (the active gen they descend from), so this cleanly
