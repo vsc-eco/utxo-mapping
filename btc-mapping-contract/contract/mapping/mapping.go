@@ -311,10 +311,40 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 				// Clean up any remaining allowance after swap to prevent lingering authorization
 				setAllowance(selfAddr, routerAddr, 0)
 
+				// VR2-23: ALL router-failure shapes converge on the SAME refund.
+				//
+				// A router can fail three ways: it reverts, it returns something
+				// unparseable, or it "succeeds" while producing zero output (a drained
+				// pool is enough — no malice required). The original BTC-C4 fix
+				// refunded the depositor in all three cases; a later refactor to
+				// TryContractCall kept only the revert branch, on the stated assumption
+				// that zero output would always surface as a revert. That assumption is
+				// false, and the repo ships a mock router specifically to prove it.
+				//
+				// With only the revert branch, a zero-output swap hard-errored and
+				// reverted the ENTIRE map call — including registration of the
+				// already-SPV-verified L1 deposit. Real Bitcoin that had landed on
+				// chain got no credit and no registry entry: stranded.
+				//
+				// Refunding is safe on the success path too, because the underflow check
+				// below only pays out if the contract STILL HOLDS the funds. If the
+				// router already pulled them through its allowance, selfBal is short and
+				// we fail closed rather than paying twice.
+				routerFailure := ""
 				if !res.Ok {
-					// The swap rolled back; the BTC drawn for it is still credited to
-					// the contract account (incAccBalance above ran in THIS frame, not
-					// the rolled-back callee). Move it to the depositor as wrapped BTC.
+					routerFailure = "reverted: " + res.Error
+				} else {
+					var swapResult SwapResult
+					if err := tinyjson.Unmarshal([]byte(res.Result), &swapResult); err != nil {
+						routerFailure = "unparseable result"
+					} else if swapResult.AmountOut == "" || swapResult.AmountOut == "0" {
+						routerFailure = "zero amount out"
+					}
+				}
+				if routerFailure != "" {
+					// The BTC drawn for the swap is still credited to the contract
+					// account (incAccBalance above ran in THIS frame, not in a
+					// rolled-back callee). Move it to the depositor as wrapped BTC.
 					selfBal := getAccBal(selfAddr)
 					if selfBal < utxo.Amount {
 						return ce.NewContractError(ce.ErrStateAccess, "swap refund: contract balance underflow")
@@ -323,15 +353,7 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 					if err := incAccBalance(metadata.Recipient, utxo.Amount); err != nil {
 						return ce.Prepend(err, "swap refund: crediting depositor")
 					}
-					sdk.Log("deposit-swap reverted (" + res.Error + "); refunded depositor wrapped BTC")
-				} else {
-					var swapResult SwapResult
-					if err := tinyjson.Unmarshal([]byte(res.Result), &swapResult); err != nil {
-						return ce.WrapContractError(ce.ErrJson, err, "error unmarshalling swap result")
-					}
-					if swapResult.AmountOut == "" || swapResult.AmountOut == "0" {
-						return ce.NewContractError(ce.ErrInput, "swap returned zero amount out")
-					}
+					sdk.Log("deposit-swap failed (" + routerFailure + "); refunded depositor wrapped BTC")
 				}
 			default:
 				// should never happen

@@ -427,15 +427,17 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 	// unconfirmed UTXOs at all) that makes settleMigrationSweep/settleUnmap unreachable and
 	// strands every sweep and withdrawal. Only treat an empty promotion as a griefing/no-op
 	// confirm when there is ALSO no pending spend record to settle.
-	hasSettleRecord := false
-	if ms := sdk.StateGetObject(constants.MigrationSweepPrefix + txId); ms != nil && *ms != "" {
-		hasSettleRecord = true
-	}
-	if !hasSettleRecord {
-		if us := sdk.StateGetObject(constants.PendingUnmapPrefix + txId); us != nil && *us != "" {
-			hasSettleRecord = true
-		}
-	}
+	//
+	// INTEGRATION NOTE: upstream's guard is kept verbatim in meaning. The two records
+	// are read into locals here rather than re-read inside the settle branches below,
+	// because those branches need the record CONTENTS anyway and re-reading state in a
+	// gas-metered contract is pure waste. hasSettleRecord is exactly the disjunction
+	// upstream computed, so the guard's behaviour is unchanged.
+	msRaw := sdk.StateGetObject(constants.MigrationSweepPrefix + txId)
+	hasMigrationSweep := msRaw != nil && *msRaw != ""
+	usRaw := sdk.StateGetObject(constants.PendingUnmapPrefix + txId)
+	hasPendingUnmap := usRaw != nil && *usRaw != ""
+	hasSettleRecord := hasMigrationSweep || hasPendingUnmap
 	// Only delete the pending spend's signing data once at least one of its
 	// unconfirmed outputs has actually been promoted to the confirmed pool. If
 	// nothing matched (empty/non-matching indices, or the outputs are no longer
@@ -465,7 +467,7 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 	// the two settle paths fires. settledInputs captures the confirmed record's input set —
 	// the L7-01 spend-group key used for the group-aware cleanup below.
 	var settledInputs []uint16
-	if msRaw := sdk.StateGetObject(constants.MigrationSweepPrefix + txId); msRaw != nil && *msRaw != "" {
+	if hasMigrationSweep {
 		rec, err := UnmarshalMigrationSweep([]byte(*msRaw))
 		if err != nil {
 			return ce.NewContractError(ce.ErrStateAccess, "error decoding migration sweep record: "+err.Error())
@@ -480,7 +482,7 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 	// perform the finish HandleUnmap deferred — index the change output(s) as confirmed, delete
 	// the swept inputs, clear their reservations — under the SPV proof verified above.
 	// Pause-EXEMPT (isPending is true for an in-flight unmap).
-	if usRaw := sdk.StateGetObject(constants.PendingUnmapPrefix + txId); usRaw != nil && *usRaw != "" {
+	if hasPendingUnmap {
 		rec, err := UnmarshalPendingUnmap([]byte(*usRaw))
 		if err != nil {
 			return ce.NewContractError(ce.ErrStateAccess, "error decoding pending unmap record: "+err.Error())
