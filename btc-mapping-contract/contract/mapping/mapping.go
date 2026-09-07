@@ -308,6 +308,22 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 				// reverting swap traps as before — the legacy strand-on-permanent-
 				// failure behaviour, until the network activates the feature.)
 				res := sdk.TryContractCall(routerId, "execute", string(instrJson), nil)
+				// PER-SWAP PROVENANCE: capture how much of THIS swap's allowance the
+				// router did NOT consume, BEFORE clearing it. checkAndDeductBalance
+				// decrements the allowance on every third-party pull, so the remainder
+				// is exactly the portion of THIS deposit still held by the contract.
+				//
+				// This must NOT be inferred from getAccBal(selfAddr): "contract:<id>" is
+				// a SHARED, PERSISTENT account across every output in this call and every
+				// future call, so an unrelated deposit's leftover credit can mask a
+				// router that drained this one — refunding value the router already took.
+				unspentAllowance := getAllowance(selfAddr, routerAddr)
+				if unspentAllowance > utxo.Amount {
+					unspentAllowance = utxo.Amount
+				}
+				if unspentAllowance < 0 {
+					unspentAllowance = 0
+				}
 				// Clean up any remaining allowance after swap to prevent lingering authorization
 				setAllowance(selfAddr, routerAddr, 0)
 
@@ -342,18 +358,27 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 					}
 				}
 				if routerFailure != "" {
-					// The BTC drawn for the swap is still credited to the contract
-					// account (incAccBalance above ran in THIS frame, not in a
-					// rolled-back callee). Move it to the depositor as wrapped BTC.
-					selfBal := getAccBal(selfAddr)
-					if selfBal < utxo.Amount {
-						return ce.NewContractError(ce.ErrStateAccess, "swap refund: contract balance underflow")
+					// Refund ONLY the part of THIS deposit the router did not take.
+					//
+					// A reverting router consumed nothing, so unspentAllowance is the
+					// full amount and the depositor is made whole. A router that
+					// "succeeded" while pulling the funds and reporting zero output has
+					// already been paid through the allowance it was granted; refunding
+					// the full amount there would pay the same sats twice and, as proven
+					// by PoC, could be funded out of an UNRELATED depositor's stranded
+					// credit — silently zeroing an innocent third party's deposit.
+					if unspentAllowance > 0 {
+						selfBal := getAccBal(selfAddr)
+						if selfBal < unspentAllowance {
+							return ce.NewContractError(ce.ErrStateAccess, "swap refund: contract balance underflow")
+						}
+						setAccBal(selfAddr, selfBal-unspentAllowance)
+						if err := incAccBalance(metadata.Recipient, unspentAllowance); err != nil {
+							return ce.Prepend(err, "swap refund: crediting depositor")
+						}
 					}
-					setAccBal(selfAddr, selfBal-utxo.Amount)
-					if err := incAccBalance(metadata.Recipient, utxo.Amount); err != nil {
-						return ce.Prepend(err, "swap refund: crediting depositor")
-					}
-					sdk.Log("deposit-swap failed (" + routerFailure + "); refunded depositor wrapped BTC")
+					sdk.Log("deposit-swap failed (" + routerFailure + "); refunded " +
+						strconv.FormatInt(unspentAllowance, 10) + " unspent sats to depositor")
 				}
 			default:
 				// should never happen
