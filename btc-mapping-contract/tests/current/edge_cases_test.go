@@ -975,7 +975,9 @@ func TestConfirmSpendPromotesUtxos(t *testing.T) {
 		UserSupply:   5000,
 		BaseFeeRate:  1,
 	})))
-	ct.StateSet(contractId, constants.LastHeightKey, "101")
+	// VR2-06: the settle waits for MinConfirmations, so the tip sits above the
+	// spend's block.
+	ct.StateSet(contractId, constants.LastHeightKey, "103")
 	ct.StateSet(contractId, constants.BlockPrefix+"100", buildSeedHeaderRaw(t, time.Unix(0, 0)))
 	ct.StateSet(contractId, constants.BlockPrefix+"101", fixture.BlockHeaderRaw)
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))

@@ -237,6 +237,12 @@ type SystemSupply struct {
 // ConfirmedNextId and UnconfirmedNextId are stored together as 4 bytes at "i":
 // two uint16 BE values [confirmedNext, unconfirmedNext].
 type ContractState struct {
+	// MinConfirmations is how deep an L1 event must be before the contract acts on
+	// it as final — crediting a deposit (VR2-07) or settling a spend (VR2-06).
+	// Resolved from the build's network at construction and carried here rather
+	// than re-derived at each call site, so there is exactly one place it can be
+	// wrong and both gates cannot drift apart.
+	MinConfirmations  uint32
 	UtxoList          UtxoRegistry
 	ConfirmedNextId   uint16 // next candidate in the confirmed pool   (1024–65535, wraps)
 	UnconfirmedNextId uint16 // next candidate in the unconfirmed pool (0–1023,    wraps)
@@ -260,10 +266,6 @@ type ContractState struct {
 type MappingState struct {
 	ContractState
 	AddressRegistry map[string]*AddressMetadata // map of btc addresses to the tags they were created with
-	// MinConfirmations is the deposit maturity gate (VR2-07), resolved from the
-	// build's network at construction. Carried here rather than re-derived at the
-	// call site so there is exactly one place it can be wrong.
-	MinConfirmations uint32
 }
 
 // DEX Instruction Schema

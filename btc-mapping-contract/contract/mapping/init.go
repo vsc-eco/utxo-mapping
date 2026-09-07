@@ -101,6 +101,7 @@ func IntializeContractState(publicKeys PublicKeys, networkMode string) (*Contrac
 	}
 
 	cs := &ContractState{
+		MinConfirmations:  constants.MinConfirmationDepth(networkMode),
 		UtxoList:          utxos,
 		ConfirmedNextId:   confirmedNextId,
 		UnconfirmedNextId: unconfirmedNextId,
@@ -159,9 +160,8 @@ func InitializeMappingState(
 	}
 
 	return &MappingState{
-		ContractState:    *contractState,
-		AddressRegistry:  registry,
-		MinConfirmations: constants.MinDepositConfirmations(networkMode),
+		ContractState:   *contractState,
+		AddressRegistry: registry,
 	}, err
 }
 

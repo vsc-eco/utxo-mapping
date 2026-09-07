@@ -275,8 +275,9 @@ const MigrationCanaryValue int64 = 1_000_000
 // FS-1/FS-2/FS-4/FS-5 H-3 — a recoverable freeze that would otherwise degrade
 // past the primary path). 4608 = 4320 (mainnet CSV) + 288 (~2-day reorg margin);
 // on testnet (CSV=2) this is harmless headroom. Header storage ≈ 4608*80 B ≈ 369 KB.
-// MinDepositConfirmations is how far a deposit's block must be buried under the
-// contract's own chain tip before the deposit may be credited (VR2-07).
+// MinConfirmationDepth is how far an L1 event's block must be buried under the
+// contract's own chain tip before the contract acts on it as final: crediting a
+// deposit (VR2-07) or settling a spend (VR2-06).
 //
 // Without it a deposit is creditable the instant its header lands, which is only
 // the oracle's own relay threshold — 2 confirmations on mainnet. A 2-block
@@ -295,10 +296,15 @@ const MigrationCanaryValue int64 = 1_000_000
 // per output with no aggregation, so there is nothing to accumulate against
 // without a new per-address rolling window. A flat floor cannot be split around.
 //
+// It must stay strictly below RedriveStaleBlocks. A settle waiting for depth keeps
+// its spend record live, so if the redrive window opened first an operator could
+// RBF a transaction that is already mined — producing a replacement that can never
+// confirm, because Bitcoin has already spent its inputs.
+//
 // Regtest deliberately enforces a NON-ZERO depth. Setting it to zero there would
 // leave the entire test suite running with the gate inert — testnet unable to
 // prove what mainnet enforces, which is exactly the shape of finding VR2-20.
-func MinDepositConfirmations(networkMode string) uint32 {
+func MinConfirmationDepth(networkMode string) uint32 {
 	switch networkMode {
 	case Testnet3, Testnet4:
 		return 2

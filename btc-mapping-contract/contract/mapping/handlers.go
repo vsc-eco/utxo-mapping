@@ -45,19 +45,8 @@ func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 	// It also closes the swap escape for free: a swap-tagged deposit self-credits
 	// and calls the router synchronously inside this same call, so no
 	// withdrawal-side hold could ever have fired in time.
-	tip := currentLastHeight()
-	depth := uint32(0)
-	if tip > txData.BlockHeight {
-		depth = tip - txData.BlockHeight
-	}
-	if depth < ms.MinConfirmations {
-		return ce.NewContractError(ce.ErrInput,
-			"deposit is not confirmed deeply enough yet: block "+
-				strconv.FormatUint(uint64(txData.BlockHeight), 10)+" sits "+
-				strconv.FormatUint(uint64(depth), 10)+" below a tip of "+
-				strconv.FormatUint(uint64(tip), 10)+", and "+
-				strconv.FormatUint(uint64(ms.MinConfirmations), 10)+
-				" is required (re-submit the same proof once it matures)")
+	if err := ms.requireConfirmationDepth(txData.BlockHeight, "deposit"); err != nil {
+		return err
 	}
 
 	var msgTx wire.MsgTx
@@ -348,6 +337,35 @@ func HandleDecreaseAllowance(owner, spender string, amount int64) error {
 	return nil
 }
 
+// requireConfirmationDepth refuses an L1 event whose block is not yet buried
+// MinConfirmations deep under the contract's own tip.
+//
+// One helper for both the deposit and the settle side, so the two gates cannot
+// drift apart: they are the same question — has this event had enough
+// proof-of-work stacked on it to treat as final — and the answer must be the same
+// number in both places.
+//
+// The refusal is a clean, retryable error rather than a silent skip. Both callers
+// take a permissionless SPV proof, so "not yet" has to be distinguishable from
+// "never": the submitter re-sends the identical proof once the depth accrues.
+func (cs *ContractState) requireConfirmationDepth(minedHeight uint32, what string) error {
+	tip := currentLastHeight()
+	depth := uint32(0)
+	if tip > minedHeight {
+		depth = tip - minedHeight
+	}
+	if depth < cs.MinConfirmations {
+		return ce.NewContractError(ce.ErrInput,
+			what+" is not confirmed deeply enough yet: block "+
+				strconv.FormatUint(uint64(minedHeight), 10)+" sits "+
+				strconv.FormatUint(uint64(depth), 10)+" below a tip of "+
+				strconv.FormatUint(uint64(tip), 10)+", and "+
+				strconv.FormatUint(uint64(cs.MinConfirmations), 10)+
+				" is required (re-submit the same proof once it matures)")
+	}
+	return nil
+}
+
 // HandleConfirmSpend confirms a pending spend transaction by verifying its
 // Merkle inclusion proof against the stored block headers, then promoting the
 // unconfirmed change UTXOs at the specified output indices to the confirmed pool.
@@ -364,6 +382,28 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 	if err := verifyTransaction(txData, rawTx); err != nil {
 		return ce.Prepend(err, "error verifying transaction")
 	}
+
+	// VR2-06: a settle is as irreversible as a credit, so it waits for the same
+	// depth.
+	//
+	// Settling deletes the spent inputs from the registry and promotes the
+	// transaction's outputs. If that transaction is then reorged out, the contract
+	// believes coins moved that did not: the inputs are gone from its books while
+	// the coins still sit at the old address, so the generation reads as empty
+	// while holding funds — a phantom that nothing in-band can reconcile. Waiting
+	// the same MinConfirmations as a deposit makes the two sides of the ledger
+	// equally hard to reorg.
+	//
+	// The wait is deliberately shorter than RedriveStaleBlocks. A settle waiting on
+	// depth keeps its spend record live, so if the redrive window opened first an
+	// operator could RBF a transaction Bitcoin has already mined — producing a
+	// replacement that can never confirm because its inputs are spent. Keeping the
+	// depth strictly inside the staleness window means the settle always resolves
+	// before redrive becomes possible.
+	if err := cs.requireConfirmationDepth(txData.BlockHeight, "spend"); err != nil {
+		return err
+	}
+
 	var msgTx wire.MsgTx
 	if err := msgTx.Deserialize(bytes.NewReader(rawTx)); err != nil {
 		return ce.WrapContractError(ce.ErrInput, err, "could not deserialize transaction")
