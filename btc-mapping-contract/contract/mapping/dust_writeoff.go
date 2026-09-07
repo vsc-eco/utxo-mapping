@@ -1,9 +1,11 @@
 package mapping
 
 import (
+	"btc-mapping-contract/contract/constants"
 	ce "btc-mapping-contract/contract/contracterrors"
 	"btc-mapping-contract/sdk"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -56,18 +58,57 @@ import (
 // total and n are always non-negative, bounded well within int64 (individual UTXO amounts
 // are capped at MaxUtxoAmount = 2^48-1, and the caller accumulates `total` via safeAdd64
 // before calling this), so the arithmetic here needs no additional overflow guards.
-func isResidualUnsweepableAtMinFee(total int64, n int64) bool {
-	if total <= 0 || n <= 0 {
+func isResidualUnsweepableAtMinFee(amounts []int64) bool {
+	if len(amounts) == 0 {
 		return false
 	}
-	// Same sizing as estimateFee/estimateVSize (unmapping.go): n inputs (41B each,
-	// 72+112+5B witness stack) + 1 consolidated output (43B) + 10B base tx overhead. At
-	// the fixed minimum rate (1 sat/vbyte) fee == vsize (the rate multiplier is 1).
-	fee1 := estimateVSize(10+n*41+43, n*(72+112+5))
-	if fee1 > total/2 {
-		return true
+
+	// VR2-16: judge the residual on the best tranche a sweep could actually BUILD,
+	// not on the whole pile priced as one transaction.
+	//
+	// The old form took (total, n) and priced every input together. That is not how
+	// sweeping works, and the difference destroys money: a generation holding one
+	// meaningful output among a pile of dust prices as hopeless on the aggregate —
+	// the dust drags the combined fee above half the combined value — while the
+	// meaningful output on its own clears both abort conditions comfortably. Write-off
+	// deletes everything it condemns, so that output was burned. Aggregate pricing
+	// also overstates the fee for any residual larger than one tranche, since a real
+	// sweep is capped at MaxMigrationInputs and drains in successive passes.
+	//
+	// Sorting descending and testing every prefix finds the best tranche exactly.
+	// Each additional input adds a fixed ~88 sats of fee at the minimum rate, so a
+	// low-value input can only worsen both conditions; taking the largest inputs
+	// first and stopping wherever it stops helping is therefore optimal, and testing
+	// all prefixes needs no reasoning about where that point is. Deterministic: a
+	// total order on (amount desc, then value) gives every node the same sequence.
+	sorted := make([]int64, 0, len(amounts))
+	for _, a := range amounts {
+		if a > 0 {
+			sorted = append(sorted, a)
+		}
 	}
-	return total-fee1 <= dustThreshold
+	if len(sorted) == 0 {
+		return false // nothing to sweep is not the same as provably stuck
+	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] > sorted[j] })
+
+	limit := len(sorted)
+	if limit > constants.MaxMigrationInputs {
+		limit = constants.MaxMigrationInputs
+	}
+
+	var trancheTotal int64
+	for k := 1; k <= limit; k++ {
+		trancheTotal += sorted[k-1]
+		// Same sizing as estimateFee/estimateVSize (unmapping.go): k inputs (41B each,
+		// 72+112+5B witness stack) + 1 consolidated output (43B) + 10B base tx
+		// overhead. At the fixed minimum rate (1 sat/vbyte) fee == vsize.
+		fee1 := estimateVSize(10+int64(k)*41+43, int64(k)*(72+112+5))
+		if fee1 <= trancheTotal/2 && trancheTotal-fee1 > dustThreshold {
+			return false // this tranche is buildable, so the residual is not stuck
+		}
+	}
+	return true
 }
 
 // HandleWriteOffDust scans every SUPERSEDED (retiring/draining/inactive) generation's
@@ -118,6 +159,11 @@ func (cs *ContractState) HandleWriteOffDust(height uint32) (string, error) {
 		sum int64
 		n   int64
 		ids []uint16
+		// VR2-16: the individual amounts, because whether a residual is genuinely
+		// stuck depends on the best tranche that could be built from it, not on the
+		// aggregate. Pricing the sum alone condemned — and deleted — residuals that
+		// ordinary migration could still drain.
+		amounts []int64
 	}
 	accum := make(map[uint32]*genAccum)
 	for _, entry := range cs.UtxoList {
@@ -143,6 +189,7 @@ func (cs *ContractState) HandleWriteOffDust(height uint32) (string, error) {
 		a.sum = newSum
 		a.n++
 		a.ids = append(a.ids, entry.Id)
+		a.amounts = append(a.amounts, u.Amount)
 	}
 
 	var writtenOff []string
@@ -155,7 +202,7 @@ func (cs *ContractState) HandleWriteOffDust(height uint32) (string, error) {
 		if !ok || a.sum <= 0 {
 			continue // nothing held by this generation (after exclusions)
 		}
-		if !isResidualUnsweepableAtMinFee(a.sum, a.n) {
+		if !isResidualUnsweepableAtMinFee(a.amounts) {
 			continue // genuinely sweepable — leave it for the normal migrateVault sweep
 		}
 
