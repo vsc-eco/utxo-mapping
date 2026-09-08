@@ -241,3 +241,59 @@ func TestVR221_CorrectionMustAgreeWithTheCeremonyOutput(t *testing.T) {
 		"the correction path may only make a generation AGREE with its ceremony "+
 			"output; it must not install an arbitrary third key")
 }
+
+// VR2-21, second gap — found by the devnet campaign, not by reading.
+//
+// The value gate alone is not enough. Once the genesis generation has ACTIVATED
+// there is no pending vault left, so RegisterVaultKeys returns a clean no-op
+// rather than refusing, and on an empty contract the value gate permits the
+// write. A second registerPublicKey with a different key therefore overwrote the
+// flat slot while the vault list kept the real one.
+//
+// That divergence is not cosmetic. The devnet ledger recorded exactly this state
+// as leaving a generation unactivatable even after the correct key was restored:
+// the vault list is the source of truth for address derivation, but a flat slot
+// disagreeing with it poisons activation downstream. On a mainnet build the flat
+// slots were never rewritable, so the bug was invisible there — which is why it
+// took a regtest devnet run to surface it, and is the same
+// testnet-cannot-prove-what-mainnet-enforces shape as VR2-20.
+func TestVR221_FlatKeyCannotDisagreeWithTheActiveGeneration(t *testing.T) {
+	const contractId = "vr221_flatdiverge"
+	const owner = "hive:milo-hpr"
+
+	ct := test_utils.NewContractTest()
+	t.Cleanup(func() { ct.DataLayer.Stop() })
+	ct.RegisterContract(contractId, owner, ContractWasm)
+
+	ct.StateSet(contractId, constants.SupplyKey,
+		string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
+
+	// An ACTIVE generation 0 holding the real pair, with the flat slots mirroring
+	// it — the state a completed genesis bring-up leaves behind.
+	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
+	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
+	ct.StateSet(contractId, constants.MigrateVersionKey, "1")
+	seedTssKey(t, &ct, contractId, mapping.VaultKeyId(0), TestPrimaryPubKeyHex)
+	require.Empty(t, callMigrate(t, &ct, contractId, owner).Err, "fold should succeed")
+	activeGen := loadGen0(t, &ct, contractId)
+	require.Equal(t, TestPrimaryPubKeyHex, hexOf(activeGen.Primary[:]),
+		"fixture precondition: an Active generation holds the real pair")
+
+	// The contract is empty, so the VALUE gate alone would allow this write.
+	r := registerKeys(t, &ct, contractId, owner, "vr2-21-flat-diverge", wrongPrimaryHex, wrongBackupHex)
+	require.True(t, r.Success, "a refused write reports, it does not abort")
+
+	assert.Equal(t, decodeHex(t, TestPrimaryPubKeyHex),
+		ct.StateGet(contractId, constants.PrimaryPublicKeyStateKey),
+		"the flat primary must not be allowed to disagree with the active generation")
+	assert.Equal(t, decodeHex(t, TestBackupPubKeyHex),
+		ct.StateGet(contractId, constants.BackupPublicKeyStateKey),
+		"nor the flat backup")
+
+	// Re-registering the SAME pair stays a legitimate no-op: mirroring is allowed,
+	// only disagreement is refused.
+	same := registerKeys(t, &ct, contractId, owner, "vr2-21-flat-mirror", TestPrimaryPubKeyHex, TestBackupPubKeyHex)
+	require.True(t, same.Success, "re-registering the identical pair must remain accepted")
+	assert.Equal(t, decodeHex(t, TestPrimaryPubKeyHex),
+		ct.StateGet(contractId, constants.PrimaryPublicKeyStateKey))
+}

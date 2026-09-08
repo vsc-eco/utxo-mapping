@@ -152,6 +152,28 @@ func VaultKeysCorrectable() bool {
 	return true
 }
 
+// ActiveGenerationKeys returns the ACTIVE generation's key pair, and whether one
+// exists.
+//
+// The vault list is the source of truth: IntializeContractState resolves the
+// contract's public keys from it whenever an Active generation matches ActiveGen,
+// and the flat slots are only a legacy fallback for a contract that has no vault
+// list yet. So once a generation holds the authoritative pair, the flat slots may
+// MIRROR it but must never disagree with it.
+func ActiveGenerationKeys() (primary, backup CompressedPubKey, ok bool) {
+	vaults, _, activeGen, err := LoadVaultState()
+	if err != nil {
+		return primary, backup, false
+	}
+	for i := range vaults {
+		v := &vaults[i]
+		if v.Generation == activeGen && v.Status == VaultStatusActive && !isZeroKey(v.Primary) {
+			return v.Primary, v.Backup, true
+		}
+	}
+	return primary, backup, false
+}
+
 // CorrectGenesisVaultKeys re-points a folded generation 0 at a corrected key pair,
 // and reports whether it changed anything.
 //

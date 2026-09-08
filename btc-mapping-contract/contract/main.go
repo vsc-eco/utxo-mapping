@@ -867,12 +867,52 @@ func RegisterPublicKey(keyStr *string) *string {
 	// Read ONCE, before any write, so both key slots decide on identical state.
 	correctable := mapping.VaultKeysCorrectable()
 
+	// VR2-21 (second gap, found on devnet): the flat slots may MIRROR the active
+	// generation's keys but must never DISAGREE with them.
+	//
+	// The value gate above is not sufficient on its own. Once the genesis
+	// generation has activated there is no pending vault left, so RegisterVaultKeys
+	// returns a clean no-op instead of refusing — and on an EMPTY contract
+	// `correctable` is true, so a second registerPublicKey with a different key
+	// silently overwrote the flat slot while the vault list kept the real one.
+	//
+	// That divergence is not cosmetic. It is exactly the state the devnet ledger
+	// recorded as leaving a generation unactivatable even after the correct key was
+	// restored: the vault list is the source of truth for address derivation, but a
+	// flat slot disagreeing with it poisons activation downstream.
+	//
+	// So: while an Active generation holds the authoritative pair, a flat write is
+	// permitted only if it agrees with that pair. This is what makes the regtest
+	// build behave like mainnet, where the flat slots were never rewritable at all.
+	// ORDER MATTERS. The generation is corrected FIRST, then the flat slots are made
+	// to agree with the result.
+	//
+	// RegisterVaultKeys ran FoldLegacyGen0IfNeeded above, which froze the PREVIOUS
+	// flat pair into vaults[0] on this very call. Reading the active generation
+	// before correcting it would therefore compare the incoming key against the very
+	// mistake being corrected, and refuse the correction — so the mirror rule has to
+	// look at the CORRECTED generation, not the folded one.
+	//
+	// The correction is itself narrow: only a lone, Active, genesis generation, only
+	// while the contract holds no value, and where a TSS ceremony key exists only to
+	// make the generation AGREE with it.
+	genZeroCorrected := false
+	if writeFlat {
+		corrected, cerr := mapping.CorrectGenesisVaultKeys(primaryPtr, backupPtr)
+		if cerr != nil {
+			ce.CustomAbort(cerr)
+		}
+		genZeroCorrected = corrected
+	}
+	activePrimary, activeBackup, haveActiveGen := mapping.ActiveGenerationKeys()
+
 	var resultBuilder strings.Builder
 
 	if primaryPtr != nil {
 		if writeFlat {
 			existingPrimary := sdk.StateGetObject(constants.PrimaryPublicKeyStateKey)
-			if *existingPrimary == "" || correctable {
+			mirrorsActive := !haveActiveGen || *primaryPtr == activePrimary
+			if mirrorsActive && (*existingPrimary == "" || correctable) {
 				sdk.StateSetObject(constants.PrimaryPublicKeyStateKey, string(primaryPtr[:]))
 				resultBuilder.WriteString("set primary key to: " + keys.PrimaryPubKey)
 			} else {
@@ -889,7 +929,8 @@ func RegisterPublicKey(keyStr *string) *string {
 		}
 		if writeFlat {
 			existingBackup := sdk.StateGetObject(constants.BackupPublicKeyStateKey)
-			if *existingBackup == "" || correctable {
+			mirrorsActive := !haveActiveGen || *backupPtr == activeBackup
+			if mirrorsActive && (*existingBackup == "" || correctable) {
 				sdk.StateSetObject(constants.BackupPublicKeyStateKey, string(backupPtr[:]))
 				resultBuilder.WriteString("set backup key to: " + keys.BackupPubKey)
 			} else {
@@ -900,20 +941,8 @@ func RegisterPublicKey(keyStr *string) *string {
 		}
 	}
 
-	// VR2-21: carry the correction into generation 0. RegisterVaultKeys already ran
-	// FoldLegacyGen0IfNeeded above, which froze the PREVIOUS flat pair into vaults[0]
-	// on this very call — so without this the corrected flat key is dead state:
-	// IntializeContractState resolves the contract's keys from the vault list, not
-	// from the flat slots. A no-op unless gen-0 is a lone, Active, genesis vault and
-	// the contract holds no value.
-	if writeFlat {
-		corrected, cerr := mapping.CorrectGenesisVaultKeys(primaryPtr, backupPtr)
-		if cerr != nil {
-			ce.CustomAbort(cerr)
-		}
-		if corrected {
-			resultBuilder.WriteString(" (generation 0 corrected)")
-		}
+	if genZeroCorrected {
+		resultBuilder.WriteString(" (generation 0 corrected)")
 	}
 
 	return mapping.StrPtr(resultBuilder.String())
