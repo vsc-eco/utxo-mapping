@@ -557,3 +557,96 @@ func TestWriteOffDust_LeavesPendingSweepFeesIntact(t *testing.T) {
 	require.Equal(t, inFlightAmt+eligibleAmt, supply.UserSupply)
 	require.Equal(t, sumRegistry(t, ct, contractId), supply.ActiveSupply+supply.FeeSupply, "I1 holds exact")
 }
+
+
+// (f) DETERMINISM of the reserve budget across MULTIPLE eligible generations.
+//
+// The VR2-15 budget is a RUNNING one: each written-off generation decrements it, so when the
+// reserve can cover one eligible residual but not both, WHICH generation wins is decided by
+// iteration order. That is a consensus property, not a cosmetic one -- every node
+// re-executes this contract, and two nodes that picked different generations would write
+// different state, produce different CIDs and fork.
+//
+// The order is cs.Vaults, the packed vault-registry slice in stored order, which is
+// identical on every node. This test pins that: with room for exactly one, the FIRST
+// eligible generation in registry order is written off and the second is left untouched,
+// with the second's UTXO still present and the reserve exhausted rather than overdrawn.
+//
+// It exists so that a future refactor to a map-based scan (the obvious "tidy-up") fails here
+// instead of on mainnet. Go randomises map iteration, so that change would be silently
+// non-deterministic and this is the only place it would show up.
+func TestWriteOffDust_MultiGenBudgetIsDeterministic(t *testing.T) {
+	ct, contractId, owner := newRetireCT(t)
+	const h = 900000
+	const D = int64(300) // sub-dust: unsweepable at the fixed minimum rate
+
+	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
+	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
+		ActiveSupply: 2 * D, UserSupply: 2 * D, BaseFeeRate: 1,
+	})))
+	// TWO superseded generations, each holding one un-sweepable residual.
+	seedRetireState(ct, contractId, h, mapping.VaultRegistry{
+		{Generation: 1, Status: mapping.VaultStatusDraining, Predecessor: 0, RetiredHeight: h - 2000},
+		{Generation: 2, Status: mapping.VaultStatusDraining, Predecessor: 1, RetiredHeight: h - 1000},
+		{Generation: 3, Status: mapping.VaultStatusActive, Predecessor: 2},
+	}, 4, 3)
+	seedGenUtxos(t, ct, contractId, 1, []utxoSeed{{id: 1024, amount: D}})
+	// seedGenUtxos overwrites the registry, so add gen-2's residual additively.
+	seedReserve(t, ct, contractId, 2, 1025, D)
+	// seedReserve credited FeeSupply by D for that UTXO; undo the credit so the entry is a
+	// gen-2 RESIDUAL, not reserve backing. FeeSupply is set explicitly below.
+	sup := loadSupply(t, ct, contractId)
+	sup.FeeSupply = 0
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&sup)))
+	// Now fund the reserve on the ACTIVE gen with room for EXACTLY ONE residual.
+	seedReserve(t, ct, contractId, 3, 2048, D)
+	require.Equal(t, D, loadSupply(t, ct, contractId).FeeSupply, "reserve covers exactly one residual")
+
+	res := callKeyAction(t, ct, contractId, owner, "writeOffDust", []byte(""))
+	require.Empty(t, res.Err, res.ErrMsg)
+
+	// Exactly ONE generation written off, and it is the FIRST in registry order.
+	require.Contains(t, res.Ret, "gen=1", "the first eligible generation in registry order is written off")
+	require.NotContains(t, res.Ret, "gen=2", "the second must be left: the budget only covered one")
+
+	reg, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
+	require.NoError(t, err)
+	ids := map[uint16]bool{}
+	for _, e := range reg {
+		ids[e.Id] = true
+	}
+	require.False(t, ids[1024], "gen-1's residual is deleted")
+	require.True(t, ids[1025], "gen-2's residual survives: the reserve could not cover it")
+	require.True(t, ids[2048], "the reserve UTXO itself is never written off")
+
+	supply := loadSupply(t, ct, contractId)
+	require.Equal(t, int64(0), supply.FeeSupply, "the reserve is exhausted, never overdrawn")
+	require.Equal(t, 2*D, supply.ActiveSupply, "user principal untouched")
+	require.Equal(t, 2*D, supply.UserSupply)
+	require.Equal(t, sumRegistry(t, ct, contractId), supply.ActiveSupply+supply.FeeSupply, "I1 holds exact")
+
+	// ★ POSITIVE CONTROL. Everything above is consistent with gen-2 simply not being
+	// ELIGIBLE -- in which case the test proves nothing about ordering, only that an
+	// ineligible generation is skipped. Top the reserve back up and re-run: gen-2 must now
+	// be written off too. That is what establishes it was eligible all along and was left
+	// solely because the budget ran out.
+	seedReserve(t, ct, contractId, 3, 2049, D)
+	res2 := callKeyAction(t, ct, contractId, owner, "writeOffDust", []byte(""))
+	require.Empty(t, res2.Err, res2.ErrMsg)
+	require.Contains(t, res2.Ret, "gen=2",
+		"gen-2 WAS eligible: with the reserve refunded it is written off, so the first pass "+
+			"left it for want of budget and not for want of eligibility")
+
+	reg2, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
+	require.NoError(t, err)
+	ids2 := map[uint16]bool{}
+	for _, e := range reg2 {
+		ids2[e.Id] = true
+	}
+	require.False(t, ids2[1025], "gen-2's residual is deleted on the second pass")
+	supply2 := loadSupply(t, ct, contractId)
+	require.Equal(t, int64(0), supply2.FeeSupply, "the top-up is consumed by exactly the second residual")
+	require.Equal(t, 2*D, supply2.UserSupply, "user principal still untouched across both passes")
+	require.Equal(t, sumRegistry(t, ct, contractId), supply2.ActiveSupply+supply2.FeeSupply, "I1 still exact")
+}
