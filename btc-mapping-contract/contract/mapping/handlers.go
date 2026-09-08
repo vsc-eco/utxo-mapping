@@ -266,6 +266,8 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		BuildHeight:   currentLastHeight(), // L7-01: re-drive staleness clock
 	}
 	sdk.StateSetObject(constants.PendingUnmapPrefix+txId, string(MarshalPendingUnmap(unmapRecord)))
+	// VR2-03: hold header retention open for this spend until it settles.
+	notePendingSpend(unmapRecord.BuildHeight)
 	for _, inputId := range inputUtxoIds {
 		reserveUtxo(inputId)
 	}

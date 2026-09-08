@@ -419,6 +419,8 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 		BuildHeight:      currentLastHeight(), // L7-01: re-drive staleness clock
 	}
 	sdk.StateSetObject(constants.MigrationSweepPrefix+txId, string(MarshalMigrationSweep(sweepRecord)))
+	// VR2-03: hold header retention open for this spend until it settles.
+	notePendingSpend(sweepRecord.BuildHeight)
 	// Dedicated migration-sweep index (BRK-1 council A-1): paired 1:1 with the "ms-"
 	// record — appended here, removed at confirm — so pendingMigrationState scans only
 	// in-flight sweeps, never the unprivileged-inflatable TxSpendsList.
@@ -567,6 +569,8 @@ func (cs *ContractState) HandleRedriveSweep(txId string) (string, error) {
 		BuildHeight:      nowH,
 	}
 	sdk.StateSetObject(constants.MigrationSweepPrefix+newTxId, string(MarshalMigrationSweep(replRecord)))
+	// VR2-03: hold header retention open for this spend until it settles.
+	notePendingSpend(replRecord.BuildHeight)
 	cs.MigrationSweeps = append(cs.MigrationSweeps, newTxId)
 
 	// Spend group (D1-B): a first re-drive seeds it with {original, replacement}; a subsequent

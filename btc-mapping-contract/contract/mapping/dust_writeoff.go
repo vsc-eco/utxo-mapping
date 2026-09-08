@@ -242,3 +242,4 @@ func (cs *ContractState) HandleWriteOffDust(height uint32) (string, error) {
 	}
 	return "write-off: " + strings.Join(writtenOff, ","), nil
 }
+

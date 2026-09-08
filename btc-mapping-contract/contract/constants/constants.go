@@ -151,6 +151,37 @@ const VaultPurgeGraceBlocks = 144
 
 const LastHeightKey = "h"
 const SeedHeightKey = "sh"
+// PendingSpendFloorKey caches the lowest BuildHeight among live pending spends
+// (migration sweeps and unmaps), or is absent when there are none.
+//
+// VR2-03: header pruning must not delete a header a pending spend still needs to
+// settle. Deriving that floor by scanning every live record would put an O(N) read
+// on the addBlocks path — which runs on every block — so it is maintained
+// incrementally instead: set when a spend is recorded, recomputed only when a
+// spend group clears. Pruning then reads one key.
+const PendingSpendFloorKey = "psf"
+
+// MaxConcurrentPendingSpends caps how many spend records may be live at once.
+//
+// This is what makes the retention clamp safe to have. Unmap is permissionless —
+// rate-limited by satoshis per block, with no cap on COUNT or duration — so
+// without a bound an attacker could hold open an unbounded number of
+// never-confirming unmaps, each pinning header retention at its own build height
+// and growing contract state without limit. It also bounds the recompute that
+// runs when a spend group clears.
+const MaxConcurrentPendingSpends = 256
+
+// MaxRetentionWithPendingSpend is the absolute floor on header pruning, even
+// while a pending spend is holding retention open.
+//
+// A stopgap, and it should be read as one: it converts an unbounded retention pin
+// into a bounded one, and converts a CERTAIN permanent stranding at
+// MaxBlockRetention into a possible one at twice that. It does not make a spend
+// that outlives it recoverable — that needs the VR2-01 reconcile, which does not
+// exist yet. Operators should be alerted well before a live spend's build height
+// approaches this.
+const MaxRetentionWithPendingSpend = 2 * MaxBlockRetention
+
 const PruneFloorKey = "pf" // lowest unpruned block height, updated during pruning
 
 // BTC-C3: per-Hive-block withdrawal rate limit. The accumulator tracks

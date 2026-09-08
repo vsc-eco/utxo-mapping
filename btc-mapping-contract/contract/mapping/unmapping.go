@@ -744,6 +744,8 @@ func (cs *ContractState) HandleRedriveUnmap(txId string) (string, error) {
 		BuildHeight:   nowH,
 	}
 	sdk.StateSetObject(constants.PendingUnmapPrefix+newTxId, string(MarshalPendingUnmap(replRecord)))
+	// VR2-03: hold header retention open for this spend until it settles.
+	notePendingSpend(replRecord.BuildHeight)
 	if group == nil {
 		group = &SpendGroup{Members: []string{txId}}
 	}
