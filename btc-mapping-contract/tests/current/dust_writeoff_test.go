@@ -55,6 +55,48 @@ func loadSupply(t *testing.T, ct *test_utils.ContractTest, contractId string) ma
 	return *s
 }
 
+// seedReserve funds the operator fee reserve exactly as a real topUpFeeReserve would:
+// FeeSupply rises by `amount` AND a matching untagged UTXO is appended to the registry on
+// the ACTIVE generation. Both halves matter — crediting FeeSupply alone would leave the
+// fixture claiming backing that does not exist, so conservation I1
+// (Sigma(UTXO) == ActiveSupply + FeeSupply) would be false in the fixture and every I1
+// assertion downstream would be measuring a lie. APPENDS to the registry (never
+// overwrites), so it composes with seedGenUtxos.
+func seedReserve(t *testing.T, ct *test_utils.ContractTest, contractId string, activeGen uint32, id uint16, amount int64) {
+	t.Helper()
+	var reg mapping.UtxoRegistry
+	if raw := ct.StateGet(contractId, constants.UtxoRegistryKey); len(raw) > 0 {
+		r, err := mapping.UnmarshalUtxoRegistry([]byte(raw))
+		require.NoError(t, err)
+		reg = r
+	}
+	reg = append(reg, mapping.UtxoRegistryEntry{Id: id, Amount: amount})
+	u := mapping.Utxo{TxId: strings.Repeat("ef", 32), Vout: uint32(id), Amount: amount, Generation: activeGen}
+	blob := mapping.MarshalUtxo(&u)
+	require.NotNil(t, blob, "MarshalUtxo returned nil (bad txid length)")
+	ct.StateSet(contractId, constants.UtxoPrefix+strconv.FormatUint(uint64(id), 16), string(blob))
+	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(reg)))
+	sup := loadSupply(t, ct, contractId)
+	sup.FeeSupply += amount
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&sup)))
+}
+
+// sumRegistry totals the current UTXO registry — the left-hand side of I1.
+func sumRegistry(t *testing.T, ct *test_utils.ContractTest, contractId string) int64 {
+	t.Helper()
+	raw := ct.StateGet(contractId, constants.UtxoRegistryKey)
+	if len(raw) == 0 {
+		return 0
+	}
+	reg, err := mapping.UnmarshalUtxoRegistry([]byte(raw))
+	require.NoError(t, err)
+	var total int64
+	for _, e := range reg {
+		total += e.Amount
+	}
+	return total
+}
+
 // (a) ★ THE EXACT V-1 ATTACK, end-to-end: a sub-dust deposit lands on gen-0 while it is
 // still ACTIVE (the floor is inert pre-rotation, so this is credited exactly like today —
 // simulating the "legacy already-credited dust" case, e.g. a genuine small deposit that
@@ -129,11 +171,24 @@ func TestWriteOffDust_DefeatsGriefSequence(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, regStillDust, 1, "the un-swept dust UTXO is untouched by the failed build")
 
-	// writeOffDust clears the deadlock: the dust UTXO is deleted, Supply is debited, and
-	// gen-0 (was Retiring) flips to Draining so the existing reconciler can carry it onward.
+	// VR2-15: the write-off is charged to the operator's fee reserve, so it is REFUSED while
+	// the reserve is empty — a liveness stall, cleared by a top-up, never a solvency break.
 	supplyBefore := loadSupply(t, &ct, contractId)
 	require.Equal(t, dustAmount, supplyBefore.ActiveSupply)
 	require.Equal(t, dustAmount, supplyBefore.UserSupply)
+	require.Equal(t, int64(0), supplyBefore.FeeSupply)
+	starvedRes := callKeyAction(t, &ct, contractId, owner, "writeOffDust", []byte(""))
+	require.Empty(t, starvedRes.Err, starvedRes.ErrMsg)
+	require.Contains(t, starvedRes.Ret, "nothing to write off",
+		"a reserve-short write-off skips the generation rather than charging user principal")
+	regStarved, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
+	require.NoError(t, err)
+	require.Len(t, regStarved, 1, "a refused write-off writes no state — the dust UTXO is untouched")
+
+	// Fund the reserve (gen-1 is ACTIVE at this point), then writeOffDust clears the
+	// deadlock: the dust UTXO is deleted, the RESERVE is debited, and gen-0 (was Retiring)
+	// flips to Draining so the existing reconciler can carry it onward.
+	seedReserve(t, &ct, contractId, 1, 2048, dustAmount)
 
 	writeOffRes := callKeyAction(t, &ct, contractId, owner, "writeOffDust", []byte(""))
 	require.Empty(t, writeOffRes.Err, writeOffRes.ErrMsg)
@@ -141,10 +196,17 @@ func TestWriteOffDust_DefeatsGriefSequence(t *testing.T) {
 
 	regAfterWriteOff, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
 	require.NoError(t, err)
-	require.Len(t, regAfterWriteOff, 0, "the dust UTXO is deleted by writeOffDust")
+	require.Len(t, regAfterWriteOff, 1, "the dust UTXO is deleted; the reserve UTXO remains")
 	supplyAfter := loadSupply(t, &ct, contractId)
-	require.Equal(t, int64(0), supplyAfter.ActiveSupply, "ActiveSupply debited by exactly the written-off dust")
-	require.Equal(t, int64(0), supplyAfter.UserSupply, "UserSupply debited by exactly the written-off dust")
+	require.Equal(t, int64(0), supplyAfter.FeeSupply, "the RESERVE absorbed the written-off dust")
+	require.Equal(t, dustAmount, supplyAfter.ActiveSupply, "user principal is NOT debited by a write-off")
+	require.Equal(t, dustAmount, supplyAfter.UserSupply, "user principal is NOT debited by a write-off")
+	// I3 stays EXACT: the victim's credit still equals UserSupply, so no later withdrawal
+	// can underflow UserSupply and revert for an unrelated user.
+	require.Equal(t, encodeBalance(t, dustAmount), ct.StateGet(contractId, constants.BalancePrefix+"hive:legacy-victim"),
+		"the dust depositor keeps the credit the protocol still owes them")
+	require.Equal(t, sumRegistry(t, &ct, contractId), supplyAfter.ActiveSupply+supplyAfter.FeeSupply,
+		"I1 holds exact after the write-off")
 	vaultsAfterWriteOff, _, _ := loadVaults(t, &ct, contractId)
 	require.Equal(t, mapping.VaultStatusDraining, vaultsAfterWriteOff[0].Status,
 		"writeOffDust flips a Retiring gen carrying only dust to Draining")
@@ -186,18 +248,27 @@ func TestWriteOffDust_DefeatsGriefSequence(t *testing.T) {
 		"the repeat dust attack must NOT be credited — the floor is now live")
 	regFinal, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
 	require.NoError(t, err)
-	require.Len(t, regFinal, 0, "the repeat dust attack must not register a UTXO")
+	require.Len(t, regFinal, 1, "the repeat dust attack must not register a UTXO (only the reserve UTXO remains)")
+	require.Equal(t, uint16(2048), regFinal[0].Id, "the sole survivor is the fee-reserve UTXO, not the attacker's dust")
 }
 
-// (b) Legacy-dust write-off + conservation math. A sub-dust UTXO is injected directly onto
-// a DRAINING gen (simulating a pre-floor legacy deposit that WAS already credited: Active/
-// User supply and a depositor's balance are bumped by D exactly as a real map call would).
-// writeOffDust must debit ActiveSupply and UserSupply each by EXACTLY D, hold I1
-// (Σ(UTXO)==ActiveSupply+FeeSupply) and I2 (ActiveSupply==UserSupply) EXACT, and leave the
-// depositor's own balance untouched — the bounded I3 (Σ(balances)==UserSupply) slack of
-// exactly D that BUILD-MAP §3 option (b) accepts (the Utxo blob carries no recipient, so
-// an exact per-account claw-back of already-credited legacy dust is infeasible without a
-// schema change).
+// (b) VR2-15 — legacy-dust write-off conservation, the regression test for the solvency
+// break. A sub-dust UTXO is injected directly onto a DRAINING gen (simulating a pre-floor
+// legacy deposit that WAS already credited: Active/User supply and a depositor's balance
+// are bumped by D exactly as a real map call would).
+//
+// The write-off used to debit ActiveSupply+UserSupply by D. That held I1 and I2 but broke
+// I3 (Σ(balances)==UserSupply) by exactly D forever, because the depositor's own balance was
+// never debited — the Utxo blob carries no recipient. That slack is not cosmetic: HandleUnmap
+// decrements UserSupply with safeSubtract64 on every withdrawal, so once the aggregate ran
+// short of the balances it stood for, the LAST withdrawers underflowed and their withdrawals
+// reverted permanently. The victims were whichever users withdrew last, not the depositor.
+//
+// The write-off is now charged to the operator's FEE RESERVE instead, so this test asserts:
+// the write-off is REFUSED while the reserve is short (a liveness stall a permissionless
+// top-up clears, never a solvency break); once funded it debits FeeSupply by EXACTLY D and
+// leaves ActiveSupply, UserSupply and the depositor's balance untouched; and I1, I2 and I3
+// all hold EXACT afterwards rather than I3 acquiring slack.
 func TestWriteOffDust_LegacyResidualConservation(t *testing.T) {
 	ct, contractId, owner := newRetireCT(t)
 	const h = 900000
@@ -227,29 +298,49 @@ func TestWriteOffDust_LegacyResidualConservation(t *testing.T) {
 	require.NotEmpty(t, callKeyAction(t, ct, contractId, owner, "createKey", []byte("")).Err,
 		"createKey must be refused while gen-1 holds the un-drained legacy residual (NN#3)")
 
-	// writeOffDust: delete the residual, debit Supply in lock-step.
+	// RED-BEFORE: with an empty reserve the write-off must REFUSE this generation outright.
+	// The old code charged ActiveSupply+UserSupply here and "succeeded" — that success was
+	// the bug.
+	require.Equal(t, int64(0), loadSupply(t, ct, contractId).FeeSupply, "reserve starts empty")
+	starved := callKeyAction(t, ct, contractId, owner, "writeOffDust", []byte(""))
+	require.Empty(t, starved.Err, starved.ErrMsg)
+	require.Contains(t, starved.Ret, "nothing to write off",
+		"a reserve-short write-off must skip the generation, not charge user principal")
+	regStarved, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
+	require.NoError(t, err)
+	require.Len(t, regStarved, 1, "the refused write-off wrote no state")
+	supplyStarved := loadSupply(t, ct, contractId)
+	require.Equal(t, D, supplyStarved.ActiveSupply, "refused write-off leaves ActiveSupply alone")
+	require.Equal(t, D, supplyStarved.UserSupply, "refused write-off leaves UserSupply alone")
+
+	// Fund the reserve on the ACTIVE generation (gen-2), exactly as topUpFeeReserve would.
+	seedReserve(t, ct, contractId, 2, 2048, D)
+	require.Equal(t, D, loadSupply(t, ct, contractId).FeeSupply)
+
+	// GREEN-AFTER: delete the residual, debit the RESERVE by exactly D.
 	writeOffRes := callKeyAction(t, ct, contractId, owner, "writeOffDust", []byte(""))
 	require.Empty(t, writeOffRes.Err, writeOffRes.ErrMsg)
 	require.Contains(t, writeOffRes.Ret, "gen=1")
 
 	regAfter, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
 	require.NoError(t, err)
-	require.Len(t, regAfter, 0, "the legacy residual UTXO is deleted")
+	require.Len(t, regAfter, 1, "the legacy residual UTXO is deleted; the reserve UTXO remains")
 
 	supply := loadSupply(t, ct, contractId)
-	require.Equal(t, int64(0), supply.ActiveSupply, "ActiveSupply debited by exactly D")
-	require.Equal(t, int64(0), supply.UserSupply, "UserSupply debited by exactly D")
-	require.Equal(t, int64(0), supply.FeeSupply, "FeeSupply untouched (write-off is not a fee event)")
+	require.Equal(t, int64(0), supply.FeeSupply, "FeeSupply debited by exactly D — the reserve absorbed the write-off")
+	require.Equal(t, D, supply.ActiveSupply, "ActiveSupply is NOT touched: a write-off is not a user debit")
+	require.Equal(t, D, supply.UserSupply, "UserSupply is NOT touched: a write-off is not a user debit")
 
-	// I1: Σ(UTXO) == ActiveSupply + FeeSupply  → 0 == 0 + 0.
-	require.Equal(t, int64(0), supply.ActiveSupply+supply.FeeSupply, "I1 holds exact post write-off")
-	// I2: ActiveSupply == UserSupply  → 0 == 0.
+	// I1: Σ(UTXO) == ActiveSupply + FeeSupply  → D == D + 0.
+	require.Equal(t, sumRegistry(t, ct, contractId), supply.ActiveSupply+supply.FeeSupply, "I1 holds exact post write-off")
+	// I2: ActiveSupply == UserSupply  → D == D.
 	require.Equal(t, supply.ActiveSupply, supply.UserSupply, "I2 holds exact post write-off")
-	// I3: Σ(balances) == UserSupply + slack. The depositor's balance is untouched (D), while
-	// UserSupply dropped to 0 — the bounded, un-withdrawable (below the unmap dust floor)
-	// phantom-credit slack the write-off accepts for this rare legacy case.
+	// I3: Σ(balances) == UserSupply, EXACT — no slack. This is the whole point: the depositor
+	// keeps the credit the protocol still owes them, and UserSupply still stands for exactly
+	// the balances that exist, so no later withdrawal underflows it and reverts.
 	depositorBal := ct.StateGet(contractId, constants.BalancePrefix+legacyDepositor)
-	require.Equal(t, encodeBalance(t, D), depositorBal, "the legacy depositor's own balance is NOT touched by write-off")
+	require.Equal(t, encodeBalance(t, D), depositorBal, "the legacy depositor keeps their credit")
+	require.Equal(t, D, supply.UserSupply, "I3 holds EXACT: Σ(balances) == UserSupply, no phantom-credit slack")
 
 	// gen-1 stays Draining (it started Draining, not Retiring — write-off only flips a
 	// Retiring gen; Draining/Inactive are already mid-flow for the existing reconciler).
@@ -361,6 +452,9 @@ func TestWriteOffDust_SkipsInFlightInputs(t *testing.T) {
 	}
 	ct.StateSet(contractId, constants.MigrationSweepPrefix+sweepTxId, string(mapping.MarshalMigrationSweep(sweepRecord)))
 
+	// The write-off is charged to the reserve (VR2-15), so fund it on the ACTIVE gen (gen-2).
+	seedReserve(t, ct, contractId, 2, 2048, eligibleAmt)
+
 	writeOffRes := callKeyAction(t, ct, contractId, owner, "writeOffDust", []byte(""))
 	require.Empty(t, writeOffRes.Err, writeOffRes.ErrMsg)
 	require.Contains(t, writeOffRes.Ret, "gen=1")
@@ -369,19 +463,23 @@ func TestWriteOffDust_SkipsInFlightInputs(t *testing.T) {
 
 	reg, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
 	require.NoError(t, err)
-	require.Len(t, reg, 2, "the two in-flight UTXOs survive; only the eligible one is deleted")
+	require.Len(t, reg, 3, "the two in-flight UTXOs and the reserve UTXO survive; only the eligible one is deleted")
 	survivingIds := map[uint16]bool{}
 	for _, e := range reg {
 		survivingIds[e.Id] = true
 	}
 	require.True(t, survivingIds[1024], "the reserved (in-flight unmap) UTXO must survive")
 	require.True(t, survivingIds[1025], "the in-flight migration sweep's input must survive")
+	require.True(t, survivingIds[2048], "the reserve UTXO is untouched by a write-off")
 	require.False(t, survivingIds[1026], "the eligible dust UTXO must be deleted")
 
 	supply := loadSupply(t, ct, contractId)
-	require.Equal(t, reservedAmt+inFlightAmt, supply.ActiveSupply,
-		"Supply debited by EXACTLY the eligible residual — the two in-flight amounts are untouched")
-	require.Equal(t, reservedAmt+inFlightAmt, supply.UserSupply)
+	require.Equal(t, int64(0), supply.FeeSupply,
+		"the RESERVE is debited by EXACTLY the eligible residual — the two in-flight amounts are untouched")
+	require.Equal(t, reservedAmt+inFlightAmt+eligibleAmt, supply.ActiveSupply,
+		"user principal is untouched by a write-off")
+	require.Equal(t, reservedAmt+inFlightAmt+eligibleAmt, supply.UserSupply)
+	require.Equal(t, sumRegistry(t, ct, contractId), supply.ActiveSupply+supply.FeeSupply, "I1 holds exact")
 
 	// gen-1 is STILL funded (the two surviving in-flight UTXOs) — NN#3 correctly stays
 	// blocked; a second write-off call cannot free them either (idempotent no-op on them).

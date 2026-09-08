@@ -93,6 +93,30 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		return ce.NewContractError(ce.ErrInput, "amount below dust threshold")
 	}
 
+	// VR2-03: cap how many PERMISSIONLESS pending spends may be live at once.
+	//
+	// refreshPendingSpendFloor walks every live spend record on each settle, and the
+	// retention clamp keeps headers alive back to the oldest of them. Both were documented
+	// as "bounded by MaxConcurrentPendingSpends" while nothing actually enforced that bound,
+	// so N was set by whoever called unmap the most: a permissionless op whose only other
+	// limit is a per-block sats cap. Unbounded N turns a rare settle into an O(N) state walk
+	// and lets a stuck spend pin header retention indefinitely.
+	//
+	// The cap deliberately sits ONLY on this path. migrateVault and redriveSpend append to
+	// the same list but are operator-driven, and capping them would hand an attacker a
+	// rotation wedge: fill every slot with pending unmaps and the vault could never sweep.
+	// Bounding the permissionless producer while leaving the operator unbounded is what
+	// makes the bound safe to hold.
+	//
+	// Retryable, not terminal: entries clear as spends settle, and a caller who hits the cap
+	// re-submits the identical unmap once one does.
+	if len(cs.TxSpendsList) >= constants.MaxConcurrentPendingSpends {
+		return ce.NewContractError(ce.ErrTransaction,
+			"too many pending spends in flight ("+strconv.Itoa(len(cs.TxSpendsList))+
+				" of "+strconv.Itoa(constants.MaxConcurrentPendingSpends)+
+				"); retry once one settles")
+	}
+
 	vscFee, err := calcVscFee(amount)
 	if err != nil {
 		return err

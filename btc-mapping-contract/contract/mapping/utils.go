@@ -669,6 +669,12 @@ func notePendingSpend(buildHeight uint32) {
 // Deliberately here and not on the pruning path: this walks every live spend
 // record, which is bounded by MaxConcurrentPendingSpends but far too expensive to
 // repeat on every block. Settles are rare; blocks are not.
+//
+// That bound is real: HandleUnmap refuses to add a record once the list is at
+// MaxConcurrentPendingSpends. It is enforced ONLY on that permissionless path —
+// migrateVault and redriveSpend append here too, and capping them would let an
+// attacker fill every slot with pending unmaps and wedge rotation. So N here is
+// (attacker-bounded unmaps) + (operator-driven sweeps), never attacker-unbounded.
 func (cs *ContractState) refreshPendingSpendFloor() {
 	oldest := uint32(0)
 	found := false

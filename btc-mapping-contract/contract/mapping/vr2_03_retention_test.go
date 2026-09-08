@@ -40,6 +40,10 @@ func TestVR203_RetentionClampIsBounded(t *testing.T) {
 // of cheap never-confirming unmaps — each pinning retention at its own build
 // height — and both stall pruning and force the clear-time recompute to scale with
 // their spend.
+// NOTE ON WHAT THIS TEST CAN AND CANNOT SEE: it checks the constant's VALUE only. It
+// cannot tell whether anything reads it, and it passed for as long as the cap was declared
+// but never enforced. The test that fails if the cap goes dormant again drives the contract:
+// TestVR203_PendingSpendCapIsEnforced in tests/current/pending_spend_cap_test.go.
 func TestVR203_ConcurrentSpendsAreCapped(t *testing.T) {
 	if constants.MaxConcurrentPendingSpends <= 0 {
 		t.Fatal("an uncapped pending-spend count makes the retention clamp an " +

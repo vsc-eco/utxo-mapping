@@ -56,6 +56,18 @@ func (cs *ContractState) HandleTopUpFeeReserve(txData *VerificationRequest) erro
 	if err != nil {
 		return ce.WrapContractError(ce.ErrInput, err, "invalid raw tx hex")
 	}
+	// VR2-25: this is the THIRD permissionless SPV-crediting path, and it needs the same
+	// maturity gate as its two siblings (HandleMap's deposit gate, HandleConfirmSpend's
+	// spend gate — both call requireConfirmationDepth). A top-up both indexes a new
+	// confirmed UTXO and credits FeeSupply, so a reorg that orphans the top-up's block
+	// leaves a phantom UTXO in the registry and an inflated reserve: Σ(UTXO) then claims
+	// coins Bitcoin does not hold, the reserve gate passes on backing that does not exist,
+	// and a migration that selects the phantom input builds a sweep L1 will not accept.
+	// Merkle inclusion alone proves the tx was in A block, never that the block survived.
+	// Same helper, same number, so the three gates cannot drift apart.
+	if err := cs.requireConfirmationDepth(txData.BlockHeight, "fee-reserve deposit"); err != nil {
+		return err
+	}
 	if err := verifyTransaction(txData, rawTx); err != nil {
 		return ce.Prepend(err, "error verifying fee-reserve deposit")
 	}

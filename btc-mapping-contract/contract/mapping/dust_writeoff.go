@@ -22,18 +22,34 @@ import (
 // see BUILD-MAP §3.
 //
 // HandleWriteOffDust force-retires such a provably-un-sweepable residual: it deletes the
-// dust UTXO(s) from the registry and debits ActiveSupply+UserSupply in lock-step (I1
-// Σ(UTXO)==ActiveSupply+FeeSupply and I2 ActiveSupply==UserSupply both held EXACT), so the
-// gen can then drain via the existing DRAINING→INACTIVE→PURGED reconciler
-// (ReconcileRetiringVaults, vault_lifecycle.go, left UNCHANGED) and NN#3 releases. The
-// depositor's own VSC balance is deliberately NOT touched: the Utxo blob carries no
-// recipient (only AddressMetadata.Recipient does, consumed once at credit time and never
-// persisted per-UTXO), so an exact per-account claw-back of an ALREADY-credited legacy
-// dust UTXO is infeasible without a schema change. This accepts a bounded, sub-floor-
-// unrealizable I3 (Σ(balances)==UserSupply) slack for the rare legacy case — see the
-// doc comment on isResidualUnsweepableAtMinFee and BUILD-MAP §3 option (b). Magi has no
-// Reserve to fabricate backing from, so protocol solvency (I1) is what is protected, not
-// I3 exactness.
+// dust UTXO(s) from the registry and debits the operator's FEE RESERVE by the same amount,
+// so the gen can then drain via the existing DRAINING→INACTIVE→PURGED reconciler
+// (ReconcileRetiringVaults, vault_lifecycle.go, left UNCHANGED) and NN#3 releases.
+//
+// VR2-15 — WHY THE RESERVE AND NOT USER SUPPLY. The write-off used to debit
+// ActiveSupply+UserSupply in lock-step. That held I1 (Σ(UTXO)==ActiveSupply+FeeSupply) and
+// I2 (ActiveSupply==UserSupply), but it broke I3 (Σ(balances)==UserSupply): the dust
+// depositor's own balance was never debited, because the Utxo blob carries no recipient
+// (only AddressMetadata.Recipient does, consumed once at credit time and never persisted
+// per-UTXO). The resulting slack is NOT a reporting artifact — HandleUnmap decrements
+// UserSupply with safeSubtract64 on every withdrawal, so once the aggregate ran short of
+// the balances it stood for, the LAST withdrawers hit the underflow and their withdrawals
+// reverted permanently, with no in-band way to clear it. The victims were whichever users
+// withdrew last, not the depositor whose dust caused it.
+//
+// Clawing the credit back per-account was the other candidate and is strictly worse: it
+// needs a per-UTXO recipient in the blob, and it can still FAIL when the depositor has
+// already transferred the phantom credit away — at which point the write-off either
+// reverts (NN#3 stays wedged: the V-1 deadlock this whole file exists to break) or forces a
+// negative balance. A fix that can re-open the bug it was written for is not a fix.
+//
+// So the residual is charged where this contract already charges every other rotation cost
+// that must not touch principal: the operator-funded reserve (fee_reserve.go, whose own doc
+// names this exact failure — "a fractional vault where the last withdrawer cannot be
+// paid"). Σ(UTXO) and FeeSupply fall by the identical amount, so I1 still holds, while
+// ActiveSupply and UserSupply are untouched and I2 and I3 stay EXACT rather than acquiring
+// slack. The depositor keeps the credit the protocol genuinely still owes them; the
+// operator's BTC absorbs sats that were never economically recoverable by anyone.
 
 // isResidualUnsweepableAtMinFee reports whether sweeping a generation's residual (total
 // value `total` across `n` confirmed inputs) in a single tranche would abort EVEN AT the
@@ -206,21 +222,50 @@ func (cs *ContractState) HandleWriteOffDust(height uint32) (string, error) {
 			continue // genuinely sweepable — leave it for the normal migrateVault sweep
 		}
 
+		// VR2-15: the write-off is a ROTATION COST, so it is charged to the operator's
+		// fee reserve — never to user principal. Charge the whole residual or none of
+		// it; a partial write-off would delete UTXOs whose value no reserve covered and
+		// re-open exactly the solvency break this gate exists to prevent.
+		//
+		// Reserve-short is a LIVENESS stall, not a terminal state, and it is cleared the
+		// same way every other reserve shortage in this contract is: HandleTopUpFeeReserve
+		// is permissionless and not pause-gated, so anyone may fund the reserve and the
+		// NEXT writeOffDust call picks this generation up unchanged. Mirrors the migration
+		// reserve gate (migration.go) exactly: the check sits BEFORE any mutation, the
+		// skip writes no state, and the generation is left fully intact.
+		if cs.Supply.FeeSupply < a.sum {
+			sdk.Log("dust-writeoff|skip|gen=" + strconv.FormatUint(uint64(v.Generation), 10) +
+				"|sats=" + strconv.FormatInt(a.sum, 10) +
+				"|feeSupply=" + strconv.FormatInt(cs.Supply.FeeSupply, 10) +
+				"|reason=reserve-short")
+			continue
+		}
+
 		for _, id := range a.ids {
 			cs.UtxoList = slices.DeleteFunc(cs.UtxoList, func(e UtxoRegistryEntry) bool { return e.Id == id })
 			sdk.StateDeleteObject(getUtxoKey(id))
 		}
 
-		newActive, serr := safeSubtract64(cs.Supply.ActiveSupply, a.sum)
+		// Debit the RESERVE, not user principal (VR2-15). Conservation, exactly:
+		// Sigma(UTXO) fell by a.sum when the ids above were deleted, and FeeSupply falls by
+		// the same a.sum, so I1 (Sigma(UTXO) == ActiveSupply + FeeSupply) holds. ActiveSupply
+		// and UserSupply are untouched, so I2 (ActiveSupply == UserSupply) and I3
+		// (Sigma(balances) == UserSupply) both stay EXACT rather than acquiring slack.
+		//
+		// The old form debited ActiveSupply+UserSupply. That held I1 and I2 but silently
+		// broke I3: the dust depositor's balance was never debited (the Utxo blob carries no
+		// recipient), so Sigma(balances) exceeded UserSupply by a.sum forever. UserSupply is
+		// not merely a report — HandleUnmap decrements it with safeSubtract64 on every
+		// withdrawal, so once the aggregate ran short, the LAST withdrawers underflowed and
+		// their withdrawals reverted permanently. The victims were whichever users happened
+		// to withdraw last, not the depositor whose dust caused it. Charging the reserve
+		// removes the discrepancy at its source instead of trying to claw back a credit that
+		// may already have been transferred away.
+		newFee, serr := safeSubtract64(cs.Supply.FeeSupply, a.sum)
 		if serr != nil {
-			return "", ce.WrapContractError(ce.ErrArithmetic, serr, "dust write-off active supply underflow")
+			return "", ce.WrapContractError(ce.ErrArithmetic, serr, "dust write-off fee supply underflow")
 		}
-		cs.Supply.ActiveSupply = newActive
-		newUser, serr := safeSubtract64(cs.Supply.UserSupply, a.sum)
-		if serr != nil {
-			return "", ce.WrapContractError(ce.ErrArithmetic, serr, "dust write-off user supply underflow")
-		}
-		cs.Supply.UserSupply = newUser
+		cs.Supply.FeeSupply = newFee
 
 		// A Retiring gen that was carrying ONLY unsweepable dust has never transitioned to
 		// Draining (HandleMigrateVault's build aborts before that flip). Flip it here so the
@@ -234,7 +279,8 @@ func (cs *ContractState) HandleWriteOffDust(height uint32) (string, error) {
 		genStr := strconv.FormatUint(uint64(v.Generation), 10)
 		satsStr := strconv.FormatInt(a.sum, 10)
 		writtenOff = append(writtenOff, "gen="+genStr+":sats="+satsStr)
-		sdk.Log("dust-writeoff|gen=" + genStr + "|sats=" + satsStr)
+		sdk.Log("dust-writeoff|gen=" + genStr + "|sats=" + satsStr +
+			"|chargedTo=feeReserve|feeSupply=" + strconv.FormatInt(newFee, 10))
 	}
 
 	if len(writtenOff) == 0 {
