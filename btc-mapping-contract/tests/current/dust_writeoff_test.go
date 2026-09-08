@@ -453,7 +453,11 @@ func TestWriteOffDust_SkipsInFlightInputs(t *testing.T) {
 	ct.StateSet(contractId, constants.MigrationSweepPrefix+sweepTxId, string(mapping.MarshalMigrationSweep(sweepRecord)))
 
 	// The write-off is charged to the reserve (VR2-15), so fund it on the ACTIVE gen (gen-2).
-	seedReserve(t, ct, contractId, 2, 2048, eligibleAmt)
+	// It must be funded by eligibleAmt PLUS the in-flight sweep's own reserved fee: the
+	// write-off may only spend the reserve SURPLUS over what pending sweeps have claimed,
+	// or an already-broadcast sweep could not settle. sweepRecord below reserves BtcFee 10.
+	const pendingSweepFee = int64(10)
+	seedReserve(t, ct, contractId, 2, 2048, eligibleAmt+pendingSweepFee)
 
 	writeOffRes := callKeyAction(t, ct, contractId, owner, "writeOffDust", []byte(""))
 	require.Empty(t, writeOffRes.Err, writeOffRes.ErrMsg)
@@ -474,8 +478,9 @@ func TestWriteOffDust_SkipsInFlightInputs(t *testing.T) {
 	require.False(t, survivingIds[1026], "the eligible dust UTXO must be deleted")
 
 	supply := loadSupply(t, ct, contractId)
-	require.Equal(t, int64(0), supply.FeeSupply,
-		"the RESERVE is debited by EXACTLY the eligible residual — the two in-flight amounts are untouched")
+	require.Equal(t, pendingSweepFee, supply.FeeSupply,
+		"the RESERVE is debited by EXACTLY the eligible residual, leaving the in-flight sweep's "+
+			"reserved fee intact so its deferred confirm-side debit still cannot underflow")
 	require.Equal(t, reservedAmt+inFlightAmt+eligibleAmt, supply.ActiveSupply,
 		"user principal is untouched by a write-off")
 	require.Equal(t, reservedAmt+inFlightAmt+eligibleAmt, supply.UserSupply)
@@ -485,4 +490,70 @@ func TestWriteOffDust_SkipsInFlightInputs(t *testing.T) {
 	// blocked; a second write-off call cannot free them either (idempotent no-op on them).
 	require.NotEmpty(t, callKeyAction(t, ct, contractId, owner, "createKey", []byte("")).Err,
 		"createKey must stay refused: gen-1 still holds the two in-flight (excluded) UTXOs")
+}
+
+
+// (e) VR2-15 x BRK-1: a write-off may only spend the reserve SURPLUS over the fees that
+// in-flight migration sweeps have already claimed.
+//
+// Migration defers each sweep's FeeSupply debit to its confirm, and keeps that debit safe by
+// maintaining FeeSupply >= Σ(pending sweep fees) at every build — which is what makes the
+// confirm-side debit "GUARANTEED to succeed (never a post-L1 brick)". A write-off that spent
+// the reserve down to zero without respecting that sum would leave an ALREADY-BROADCAST
+// sweep unable to settle: the exact "permanent registry <-> L1 divergence + a wedged sweep
+// that re-aborts forever" the deferred debit exists to avoid.
+//
+// Here the reserve covers the residual EXACTLY but not the pending sweep's fee on top, so
+// the write-off must decline. The positive control is (d) above, which funds residual + fee
+// and proceeds — so this is not simply "write-off never runs".
+func TestWriteOffDust_LeavesPendingSweepFeesIntact(t *testing.T) {
+	ct, contractId, owner := newRetireCT(t)
+	const h = 900000
+	const inFlightAmt = int64(300)     // input committed to an in-flight sweep
+	const eligibleAmt = int64(300)     // genuinely un-owned dust
+	const pendingSweepFee = int64(10)  // the fee that sweep already reserved
+
+	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
+	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
+		ActiveSupply: inFlightAmt + eligibleAmt,
+		UserSupply:   inFlightAmt + eligibleAmt,
+		BaseFeeRate:  1,
+	})))
+	seedRetireState(ct, contractId, h, mapping.VaultRegistry{
+		{Generation: 1, Status: mapping.VaultStatusDraining, Predecessor: 0, RetiredHeight: h - 1000},
+		{Generation: 2, Status: mapping.VaultStatusActive, Predecessor: 1},
+	}, 3, 2)
+	seedGenUtxos(t, ct, contractId, 1, []utxoSeed{
+		{id: 1025, amount: inFlightAmt},
+		{id: 1026, amount: eligibleAmt},
+	})
+
+	sweepTxId := strings.Repeat("cd", 32)
+	ct.StateSet(contractId, constants.MigrationSweepRegistryKey,
+		string(mapping.MarshalTxSpendsRegistry(mapping.TxSpendsRegistry{sweepTxId})))
+	ct.StateSet(contractId, constants.MigrationSweepPrefix+sweepTxId,
+		string(mapping.MarshalMigrationSweep(&mapping.MigrationSweep{
+			InputIds: []uint16{1025}, BtcFee: pendingSweepFee,
+			SuccessorAddress: "irrelevant-for-this-test", SuccessorGen: 2,
+		})))
+
+	// Reserve covers the residual EXACTLY, with nothing left for the pending sweep's fee.
+	seedReserve(t, ct, contractId, 2, 2048, eligibleAmt)
+
+	res := callKeyAction(t, ct, contractId, owner, "writeOffDust", []byte(""))
+	require.Empty(t, res.Err, res.ErrMsg)
+	require.Contains(t, res.Ret, "nothing to write off",
+		"the write-off must decline rather than spend a pending sweep's reserved fee")
+
+	reg, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
+	require.NoError(t, err)
+	require.Len(t, reg, 3, "a declined write-off writes no state: both gen-1 UTXOs and the reserve UTXO remain")
+
+	supply := loadSupply(t, ct, contractId)
+	require.Equal(t, eligibleAmt, supply.FeeSupply,
+		"the reserve is untouched, so the in-flight sweep's deferred fee debit still cannot underflow")
+	require.Equal(t, inFlightAmt+eligibleAmt, supply.ActiveSupply, "user principal untouched")
+	require.Equal(t, inFlightAmt+eligibleAmt, supply.UserSupply)
+	require.Equal(t, sumRegistry(t, ct, contractId), supply.ActiveSupply+supply.FeeSupply, "I1 holds exact")
 }

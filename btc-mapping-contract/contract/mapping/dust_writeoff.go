@@ -164,11 +164,27 @@ func (cs *ContractState) HandleWriteOffDust(height uint32) (string, error) {
 	// consistent list even if FoldLegacyGen0IfNeeded just populated it this call.
 	cs.Vaults, cs.NextGen, cs.ActiveGen = vaults, nextGen, activeGen
 
-	// The exclusion set: every UTXO id already committed to an in-flight migration sweep.
-	// The fee sum (second return) is irrelevant here — this op never builds a sweep.
-	excluded, _, err := cs.pendingMigrationState()
+	// The exclusion set: every UTXO id already committed to an in-flight migration sweep,
+	// and the fees those sweeps have already reserved.
+	//
+	// The fee sum is NOT irrelevant here even though this op never builds a sweep. The
+	// migration design defers each sweep's FeeSupply debit to its confirm, and keeps that
+	// debit safe by maintaining FeeSupply >= Σ(pending sweep fees) at every build — which
+	// is what makes a confirm-side debit "GUARANTEED to succeed (never a post-L1 brick)"
+	// (migration.go). A write-off that spent the reserve down without respecting that sum
+	// could leave an ALREADY-BROADCAST sweep unable to settle: exactly the "permanent
+	// registry <-> L1 divergence + a wedged sweep that re-aborts forever" the deferred
+	// debit was designed to avoid. So the write-off may only ever spend the reserve
+	// SURPLUS over what in-flight sweeps have already claimed.
+	excluded, pendingFeeSum, err := cs.pendingMigrationState()
 	if err != nil {
 		return "", err
+	}
+	// Never negative in practice (the build-time gate maintains the invariant), but a
+	// corrupt or partially-migrated state must not wrap into a huge positive budget.
+	availableReserve := cs.Supply.FeeSupply - pendingFeeSum
+	if availableReserve < 0 {
+		availableReserve = 0
 	}
 
 	type genAccum struct {
@@ -233,10 +249,12 @@ func (cs *ContractState) HandleWriteOffDust(height uint32) (string, error) {
 		// NEXT writeOffDust call picks this generation up unchanged. Mirrors the migration
 		// reserve gate (migration.go) exactly: the check sits BEFORE any mutation, the
 		// skip writes no state, and the generation is left fully intact.
-		if cs.Supply.FeeSupply < a.sum {
+		if availableReserve < a.sum {
 			sdk.Log("dust-writeoff|skip|gen=" + strconv.FormatUint(uint64(v.Generation), 10) +
 				"|sats=" + strconv.FormatInt(a.sum, 10) +
 				"|feeSupply=" + strconv.FormatInt(cs.Supply.FeeSupply, 10) +
+				"|pendingSweepFees=" + strconv.FormatInt(pendingFeeSum, 10) +
+				"|available=" + strconv.FormatInt(availableReserve, 10) +
 				"|reason=reserve-short")
 			continue
 		}
@@ -266,6 +284,9 @@ func (cs *ContractState) HandleWriteOffDust(height uint32) (string, error) {
 			return "", ce.WrapContractError(ce.ErrArithmetic, serr, "dust write-off fee supply underflow")
 		}
 		cs.Supply.FeeSupply = newFee
+		// Keep the running budget in step, so writing off a SECOND generation in the same
+		// call cannot spend the same surplus twice.
+		availableReserve -= a.sum
 
 		// A Retiring gen that was carrying ONLY unsweepable dust has never transitioned to
 		// Draining (HandleMigrateVault's build aborts before that flip). Flip it here so the
