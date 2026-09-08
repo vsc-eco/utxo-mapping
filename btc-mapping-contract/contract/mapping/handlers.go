@@ -110,6 +110,22 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	//
 	// Retryable, not terminal: entries clear as spends settle, and a caller who hits the cap
 	// re-submits the identical unmap once one does.
+	//
+	// THE TAIL, stated rather than left to be discovered. Entries leave this list ONLY on
+	// settle, so spends that never confirm hold their slots, and 256 simultaneously-stuck
+	// spends would refuse further permissionless withdrawals until one clears. That is a
+	// real cost and it is the better side of the trade:
+	//   - it is not free to reach. Each unmap debits the caller's own balance at build, so
+	//     filling the list is self-harm before it is griefing.
+	//   - it is RECOVERABLE. redriveSpend re-drives a stuck unmap (not just a migration
+	//     sweep) with a bumped fee until L1 accepts it, and settle then clears the whole
+	//     spend group. The operator always has a way to drain this list.
+	//   - the alternative is worse and unbounded: without a cap, N is set by whoever calls
+	//     unmap the most, refreshPendingSpendFloor's per-settle walk scales with it, and a
+	//     stuck spend pins header retention with no ceiling at all.
+	// If live pending-spend volume ever approaches this number, the answer is a per-account
+	// cap rather than a bigger global one, so that one caller cannot consume everyone's
+	// headroom. That needs per-account state and is deliberately NOT built here.
 	if len(cs.TxSpendsList) >= constants.MaxConcurrentPendingSpends {
 		return ce.NewContractError(ce.ErrTransaction,
 			"too many pending spends in flight ("+strconv.Itoa(len(cs.TxSpendsList))+
