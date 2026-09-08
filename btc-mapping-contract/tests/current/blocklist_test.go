@@ -276,6 +276,18 @@ func TestAllOperations(t *testing.T) {
 	// Uses real BTC testnet3 block headers at heights 4888515 → 4888516 → 4888517.
 
 	t.Run("AddBlocks_RoundTrip_ChainContinuity", func(t *testing.T) {
+		// The artifacts are gitignored and built by the Makefile, so `make test` (which
+		// depends on `dev testnet3`) always has them while a bare `go test ./...` may not.
+		// loadWasmFile's error is DISCARDED at package init, so a missing artifact leaves
+		// Testnet3Wasm nil, the contract registers with no code, and every call comes back
+		// success=false errMsg="EOF" -- which reads exactly like a contract bug and cost a
+		// real investigation. Say what actually happened instead.
+		if len(btcMapping.Testnet3Wasm) == 0 {
+			t.Fatal("bin/testnet3.wasm is missing, so this contract would run with NO code " +
+				"and every call would fail with \"EOF\". This is a missing build artifact, " +
+				"not a contract failure. Run `make testnet3` (or just `make test`, which " +
+				"depends on it) instead of invoking `go test` directly.")
+		}
 		rtId := "roundtrip_blocklist"
 		// Use testnet3 WASM since we're testing with real testnet3 block headers
 		w.ct.RegisterContract(rtId, testOwner, btcMapping.Testnet3Wasm)
