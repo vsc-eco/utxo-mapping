@@ -24,11 +24,51 @@ import (
 // the cap (so the caller drains it in successive tranches — the C-F brick fix). It is
 // confirmed-only (THORChain guard: unconfirmed change from an in-flight tranche is swept
 // once it confirms). Deterministic: iterates the registry (cs.UtxoList) in slice order.
+// VR2-26: run the selection CONFIRMED-POOL FIRST, then fall back to the unconfirmed pool
+// only if the confirmed pass found nothing for this generation.
+//
+// The confirmed-only rule strands legacy funds permanently. A v1 unmap's CHANGE output was
+// allocated from the UNCONFIRMED pool (v1 handlers.go allocateUnconfirmedId) and promoted to
+// the confirmed pool by confirmSpend. Any change output that never got promoted keeps a low
+// id forever, and once its block passes MaxBlockRetention the header is gone and confirmSpend
+// can NEVER promote it. The v1->v2 fold does not rescue it either: main.go only remaps ids
+// at or above OldUtxoConfirmedPoolStart.
+//
+// Such a UTXO is then invisible to migration, so its generation can never drain,
+// AnyFundedSupersededGen (NN#3) stays true forever, every later createKey is refused and the
+// committee's bonds stay locked. On live mainnet this is 34 of 41 UTXOs holding 5,410,038 of
+// 6,176,311 sats - 87.6% of the vault - all verified unspent on Bitcoin and all confirmed at
+// heights already below the retention floor. Reproduced end to end by F21's upgrade path.
+//
+// Admitting them is ALIGNMENT, not a new trust assumption: selectUtxos (unmapping.go) already
+// spends unconfirmed-pool entries as a last resort when the confirmed set cannot cover a
+// withdrawal. Migration was the only consumer refusing what the withdrawal path already
+// accepts, and that asymmetry is the defect.
+//
+// The fallback is deliberately LAST-RESORT, mirroring selectUtxos: while a generation has any
+// selectable confirmed input, behaviour is byte-identical to before. Only a generation that
+// would otherwise be permanently stuck reaches the second pass. A phantom low-id entry (one
+// whose transaction never actually confirmed) can at worst produce a sweep Bitcoin will not
+// accept, which BRK-1 delete-at-confirm leaves fully recoverable - strictly better than funds
+// that are unreachable by construction.
 func (cs *ContractState) getMigrationInputs(gen uint32, excluded map[uint16]struct{}, maxTrancheValue int64) (inputIds []uint16, total int64, moreRemain bool, err error) {
+	inputIds, total, moreRemain, err = cs.gatherMigrationInputs(gen, excluded, maxTrancheValue, true)
+	if err != nil || len(inputIds) > 0 {
+		return inputIds, total, moreRemain, err
+	}
+	// Nothing selectable in the confirmed pool for this generation: it is stuck unless the
+	// legacy unconfirmed-pool entries are admitted.
+	return cs.gatherMigrationInputs(gen, excluded, maxTrancheValue, false)
+}
+
+// gatherMigrationInputs is one selection pass. confirmedOnly restricts it to the confirmed
+// pool; false admits legacy unconfirmed-pool ids as well. Every other rule is identical, so
+// the two passes cannot drift apart.
+func (cs *ContractState) gatherMigrationInputs(gen uint32, excluded map[uint16]struct{}, maxTrancheValue int64, confirmedOnly bool) (inputIds []uint16, total int64, moreRemain bool, err error) {
 	for i := range cs.UtxoList {
 		entry := cs.UtxoList[i]
-		if entry.Id < constants.UtxoConfirmedPoolStart {
-			continue // confirmed-only
+		if confirmedOnly && entry.Id < constants.UtxoConfirmedPoolStart {
+			continue
 		}
 		// BRK-1 (delete-at-confirm): the swept inputs of an in-flight sweep STAY in the
 		// registry until that sweep confirms, so they must be EXCLUDED here — otherwise a

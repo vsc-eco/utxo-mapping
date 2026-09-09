@@ -650,3 +650,90 @@ func TestWriteOffDust_MultiGenBudgetIsDeterministic(t *testing.T) {
 	require.Equal(t, 2*D, supply2.UserSupply, "user principal still untouched across both passes")
 	require.Equal(t, sumRegistry(t, ct, contractId), supply2.ActiveSupply+supply2.FeeSupply, "I1 still exact")
 }
+
+// VR2-26: a generation holding ONLY legacy unconfirmed-pool UTXOs must still be able to
+// drain, and a generation with confirmed inputs must be UNAFFECTED.
+//
+// A v1 unmap's change output was allocated from the unconfirmed pool and promoted by
+// confirmSpend. One that never got promoted keeps a low id forever, and once its block passes
+// MaxBlockRetention the header is gone and confirmSpend can never promote it. Under the old
+// confirmed-only rule migration could not see it, so its generation could never drain, NN#3
+// stayed true forever and the committee's bonds stayed locked. On live mainnet that was 34 of
+// 41 UTXOs holding 87.6% of the vault.
+//
+// Two halves, because the fallback must be LAST-RESORT and not a behaviour change:
+//   - a gen with only low-id inputs now drains (the fix);
+//   - a gen with a confirmed input still selects the CONFIRMED one (unchanged priority).
+func TestMigration_LegacyUnconfirmedPoolInputsCanDrain(t *testing.T) {
+	ct, contractId, owner := newRetireCT(t)
+	const h = 900000
+	const legacyAmt = int64(7_248_597) // the F21 shape: a real, large legacy change output
+
+	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
+	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
+		ActiveSupply: legacyAmt, UserSupply: legacyAmt, BaseFeeRate: 1,
+	})))
+	seedRetireState(ct, contractId, h, mapping.VaultRegistry{
+		{Generation: 0, Status: mapping.VaultStatusRetiring, RetiredHeight: h - 100},
+		{Generation: 1, Status: mapping.VaultStatusActive, Predecessor: 0},
+	}, 2, 1)
+	// id 3 is in the UNCONFIRMED pool (< UtxoConfirmedPoolStart): a legacy, unpromoted change
+	// output, exactly the mainnet and F21 shape.
+	seedGenUtxos(t, ct, contractId, 0, []utxoSeed{{id: 3, amount: legacyAmt}})
+	// migrateVault is reserve-gated (VR2-15 / BRK-1): fund it on the ACTIVE gen so the only
+	// thing under test is input SELECTION, not affordability.
+	seedReserve(t, ct, contractId, 1, 4096, 100_000)
+	seedTssKey(t, ct, contractId, "main", TestPrimaryPubKeyHex)
+	require.Less(t, uint16(3), uint16(constants.UtxoConfirmedPoolStart),
+		"precondition: the seeded id must be in the unconfirmed pool, or this proves nothing")
+
+	res := callKeyAction(t, ct, contractId, owner, "migrateVault", []byte(""))
+	require.Empty(t, res.Err, "migrateVault must build a sweep for a legacy-only generation: "+res.ErrMsg)
+
+	spends, err := mapping.UnmarshalTxSpendsRegistry([]byte(ct.StateGet(contractId, constants.TxSpendsRegistryKey)))
+	require.NoError(t, err)
+	require.Len(t, spends, 1,
+		"a sweep must be BUILT. Before VR2-26 migrateVault returned success and produced nothing, "+
+			"which is why the generation could never drain and NN#3 wedged rotation forever")
+}
+
+// The other half: the fallback must not change which input is chosen when a confirmed one is
+// available. Without this, the fix could silently start preferring legacy inputs, and the
+// first test would pass for the wrong reason.
+func TestMigration_ConfirmedInputStillPreferredOverLegacy(t *testing.T) {
+	ct, contractId, owner := newRetireCT(t)
+	const h = 900000
+	const legacyAmt = int64(500_000)
+	const confirmedAmt = int64(400_000)
+
+	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
+	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
+		ActiveSupply: legacyAmt + confirmedAmt, UserSupply: legacyAmt + confirmedAmt, BaseFeeRate: 1,
+	})))
+	seedRetireState(ct, contractId, h, mapping.VaultRegistry{
+		{Generation: 0, Status: mapping.VaultStatusRetiring, RetiredHeight: h - 100},
+		{Generation: 1, Status: mapping.VaultStatusActive, Predecessor: 0},
+	}, 2, 1)
+	// Both on the retiring gen: one legacy (low id), one confirmed-pool (high id).
+	seedGenUtxos(t, ct, contractId, 0, []utxoSeed{
+		{id: 3, amount: legacyAmt},
+		{id: uint16(constants.UtxoConfirmedPoolStart + 5), amount: confirmedAmt},
+	})
+	seedReserve(t, ct, contractId, 1, 4096, 100_000)
+	seedTssKey(t, ct, contractId, "main", TestPrimaryPubKeyHex)
+
+	mig := callKeyAction(t, ct, contractId, owner, "migrateVault", []byte(""))
+	require.Empty(t, mig.Err, mig.ErrMsg)
+
+	// The confirmed input is the one that moved: it is no longer selectable for a second
+	// tranche, while the legacy one still is.
+	sweeps, err := mapping.UnmarshalTxSpendsRegistry([]byte(ct.StateGet(contractId, constants.MigrationSweepRegistryKey)))
+	require.NoError(t, err)
+	require.Len(t, sweeps, 1)
+	rec, err := mapping.UnmarshalMigrationSweep([]byte(ct.StateGet(contractId, constants.MigrationSweepPrefix+sweeps[0])))
+	require.NoError(t, err)
+	require.Equal(t, []uint16{uint16(constants.UtxoConfirmedPoolStart + 5)}, rec.InputIds,
+		"the CONFIRMED-pool input must be swept first; the legacy fallback is last-resort only")
+}
