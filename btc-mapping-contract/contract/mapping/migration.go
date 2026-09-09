@@ -24,11 +24,51 @@ import (
 // the cap (so the caller drains it in successive tranches — the C-F brick fix). It is
 // confirmed-only (THORChain guard: unconfirmed change from an in-flight tranche is swept
 // once it confirms). Deterministic: iterates the registry (cs.UtxoList) in slice order.
+// VR2-26: run the selection CONFIRMED-POOL FIRST, then fall back to the unconfirmed pool
+// only if the confirmed pass found nothing for this generation.
+//
+// The confirmed-only rule strands legacy funds permanently. A v1 unmap's CHANGE output was
+// allocated from the UNCONFIRMED pool (v1 handlers.go allocateUnconfirmedId) and promoted to
+// the confirmed pool by confirmSpend. Any change output that never got promoted keeps a low
+// id forever, and once its block passes MaxBlockRetention the header is gone and confirmSpend
+// can NEVER promote it. The v1->v2 fold does not rescue it either: main.go only remaps ids
+// at or above OldUtxoConfirmedPoolStart.
+//
+// Such a UTXO is then invisible to migration, so its generation can never drain,
+// AnyFundedSupersededGen (NN#3) stays true forever, every later createKey is refused and the
+// committee's bonds stay locked. On live mainnet this is 34 of 41 UTXOs holding 5,410,038 of
+// 6,176,311 sats - 87.6% of the vault - all verified unspent on Bitcoin and all confirmed at
+// heights already below the retention floor. Reproduced end to end by F21's upgrade path.
+//
+// Admitting them is ALIGNMENT, not a new trust assumption: selectUtxos (unmapping.go) already
+// spends unconfirmed-pool entries as a last resort when the confirmed set cannot cover a
+// withdrawal. Migration was the only consumer refusing what the withdrawal path already
+// accepts, and that asymmetry is the defect.
+//
+// The fallback is deliberately LAST-RESORT, mirroring selectUtxos: while a generation has any
+// selectable confirmed input, behaviour is byte-identical to before. Only a generation that
+// would otherwise be permanently stuck reaches the second pass. A phantom low-id entry (one
+// whose transaction never actually confirmed) can at worst produce a sweep Bitcoin will not
+// accept, which BRK-1 delete-at-confirm leaves fully recoverable - strictly better than funds
+// that are unreachable by construction.
 func (cs *ContractState) getMigrationInputs(gen uint32, excluded map[uint16]struct{}, maxTrancheValue int64) (inputIds []uint16, total int64, moreRemain bool, err error) {
+	inputIds, total, moreRemain, err = cs.gatherMigrationInputs(gen, excluded, maxTrancheValue, true)
+	if err != nil || len(inputIds) > 0 {
+		return inputIds, total, moreRemain, err
+	}
+	// Nothing selectable in the confirmed pool for this generation: it is stuck unless the
+	// legacy unconfirmed-pool entries are admitted.
+	return cs.gatherMigrationInputs(gen, excluded, maxTrancheValue, false)
+}
+
+// gatherMigrationInputs is one selection pass. confirmedOnly restricts it to the confirmed
+// pool; false admits legacy unconfirmed-pool ids as well. Every other rule is identical, so
+// the two passes cannot drift apart.
+func (cs *ContractState) gatherMigrationInputs(gen uint32, excluded map[uint16]struct{}, maxTrancheValue int64, confirmedOnly bool) (inputIds []uint16, total int64, moreRemain bool, err error) {
 	for i := range cs.UtxoList {
 		entry := cs.UtxoList[i]
-		if entry.Id < constants.UtxoConfirmedPoolStart {
-			continue // confirmed-only
+		if confirmedOnly && entry.Id < constants.UtxoConfirmedPoolStart {
+			continue
 		}
 		// BRK-1 (delete-at-confirm): the swept inputs of an in-flight sweep STAY in the
 		// registry until that sweep confirms, so they must be EXCLUDED here — otherwise a
@@ -206,7 +246,50 @@ func (cs *ContractState) buildMigrationTransaction(inputs []*Utxo, totalInputs i
 	// UTXOs, recoverable; abort leaves no state change). For a re-drive this is ALSO the
 	// affordability gate: a bump that can't fit under the ceiling routes to the dust residual.
 	if fee > totalInputs/2 {
-		return nil, nil, 0, ce.NewContractError(ce.ErrTransaction, "migration fee exceeds half the tranche value — sweep deferred")
+		// VR2-11: rather than deferring indefinitely, retry at the highest rate the
+		// ceiling actually allows.
+		//
+		// The old behaviour deadlocked a whole class of residuals. A tranche whose
+		// sweep is affordable at the protocol minimum but not at a spiked oracle rate
+		// was deferred here, while write-off correctly declined to touch it (it IS
+		// sweepable at the minimum), so nothing moved until fees happened to fall —
+		// and meanwhile NN#3 blocked every rotation and the committee's bond stayed
+		// locked. Nobody had to attack anything; a fee spike was enough.
+		//
+		// The rate is DERIVED, never chosen: the largest rate whose fee fits under the
+		// same ceiling. So this does not weaken V5-4 — the fee still never exceeds
+		// half the tranche, which is exactly the protection V5-4 exists to give. It
+		// only stops the contract insisting on the oracle's rate when a lower one
+		// would clear the same bar. Paying under the going rate means slower
+		// confirmation, which is what the re-drive path is for.
+		//
+		// Redrives are excluded: a replacement must out-fee its original, so lowering
+		// the rate there is meaningless, and the existing defer is the right answer.
+		if prevFee > 0 {
+			return nil, nil, 0, ce.NewContractError(ce.ErrTransaction, "migration fee exceeds half the tranche value — sweep deferred")
+		}
+		oracleRate := clampedFeeRate(cs.Supply.BaseFeeRate)
+		vSize := fee / oracleRate // exact: calculateSegwitFee returns vSize*rate
+		affordableRate := int64(0)
+		if vSize > 0 {
+			affordableRate = (totalInputs / 2) / vSize
+		}
+		if affordableRate < 1 {
+			// Unaffordable even at the protocol minimum. This is the genuinely stuck
+			// residual, and it is write-off's to judge, not this builder's.
+			return nil, nil, 0, ce.NewContractError(ce.ErrTransaction, "migration fee exceeds half the tranche value even at the minimum rate — sweep deferred")
+		}
+		reducedFee, rErr := calculateSegwitFeeAt(affordableRate, int64(tx.SerializeSize()), witnessScripts)
+		if rErr != nil {
+			return nil, nil, 0, rErr
+		}
+		if reducedFee > totalInputs/2 {
+			// Belt and braces: the ceiling is the invariant, not the arithmetic above.
+			return nil, nil, 0, ce.NewContractError(ce.ErrTransaction, "migration fee exceeds half the tranche value — sweep deferred")
+		}
+		sdk.Log("migrate-fee-reduced|rate=" + strconv.FormatInt(affordableRate, 10) +
+			"|oracle=" + strconv.FormatInt(oracleRate, 10))
+		fee = reducedFee
 	}
 	sendAmount, err := safeSubtract64(totalInputs, fee)
 	if err != nil || sendAmount <= dustThreshold {
@@ -376,6 +459,8 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 		BuildHeight:      currentLastHeight(), // L7-01: re-drive staleness clock
 	}
 	sdk.StateSetObject(constants.MigrationSweepPrefix+txId, string(MarshalMigrationSweep(sweepRecord)))
+	// VR2-03: hold header retention open for this spend until it settles.
+	notePendingSpend(sweepRecord.BuildHeight)
 	// Dedicated migration-sweep index (BRK-1 council A-1): paired 1:1 with the "ms-"
 	// record — appended here, removed at confirm — so pendingMigrationState scans only
 	// in-flight sweeps, never the unprivileged-inflatable TxSpendsList.
@@ -524,6 +609,8 @@ func (cs *ContractState) HandleRedriveSweep(txId string) (string, error) {
 		BuildHeight:      nowH,
 	}
 	sdk.StateSetObject(constants.MigrationSweepPrefix+newTxId, string(MarshalMigrationSweep(replRecord)))
+	// VR2-03: hold header retention open for this spend until it settles.
+	notePendingSpend(replRecord.BuildHeight)
 	cs.MigrationSweeps = append(cs.MigrationSweeps, newTxId)
 
 	// Spend group (D1-B): a first re-drive seeds it with {original, replacement}; a subsequent

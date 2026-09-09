@@ -101,6 +101,7 @@ func IntializeContractState(publicKeys PublicKeys, networkMode string) (*Contrac
 	}
 
 	cs := &ContractState{
+		MinConfirmations:  constants.MinConfirmationDepth(networkMode),
 		UtxoList:          utxos,
 		ConfirmedNextId:   confirmedNextId,
 		UnconfirmedNextId: unconfirmedNextId,

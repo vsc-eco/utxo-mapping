@@ -857,12 +857,62 @@ func RegisterPublicKey(keyStr *string) *string {
 	}
 	writeFlat := !hasPending || isGenesis
 
+	// VR2-21: whether a MISTYPED key pair can still be replaced. This used to be
+	// `constants.IsTestnet(NetworkMode)` — a build flag, which asked the wrong
+	// question in both directions: it let a testnet operator re-point the keys of a
+	// FUNDED contract, and it refused a mainnet operator a correction even when the
+	// contract was provably empty. The pair is correctable exactly while no coins are
+	// riding on it, and that is the same rule on every network.
+	//
+	// Read ONCE, before any write, so both key slots decide on identical state.
+	correctable := mapping.VaultKeysCorrectable()
+
+	// VR2-21 (second gap, found on devnet): the flat slots may MIRROR the active
+	// generation's keys but must never DISAGREE with them.
+	//
+	// The value gate above is not sufficient on its own. Once the genesis
+	// generation has activated there is no pending vault left, so RegisterVaultKeys
+	// returns a clean no-op instead of refusing — and on an EMPTY contract
+	// `correctable` is true, so a second registerPublicKey with a different key
+	// silently overwrote the flat slot while the vault list kept the real one.
+	//
+	// That divergence is not cosmetic. It is exactly the state the devnet ledger
+	// recorded as leaving a generation unactivatable even after the correct key was
+	// restored: the vault list is the source of truth for address derivation, but a
+	// flat slot disagreeing with it poisons activation downstream.
+	//
+	// So: while an Active generation holds the authoritative pair, a flat write is
+	// permitted only if it agrees with that pair. This is what makes the regtest
+	// build behave like mainnet, where the flat slots were never rewritable at all.
+	// ORDER MATTERS. The generation is corrected FIRST, then the flat slots are made
+	// to agree with the result.
+	//
+	// RegisterVaultKeys ran FoldLegacyGen0IfNeeded above, which froze the PREVIOUS
+	// flat pair into vaults[0] on this very call. Reading the active generation
+	// before correcting it would therefore compare the incoming key against the very
+	// mistake being corrected, and refuse the correction — so the mirror rule has to
+	// look at the CORRECTED generation, not the folded one.
+	//
+	// The correction is itself narrow: only a lone, Active, genesis generation, only
+	// while the contract holds no value, and where a TSS ceremony key exists only to
+	// make the generation AGREE with it.
+	genZeroCorrected := false
+	if writeFlat {
+		corrected, cerr := mapping.CorrectGenesisVaultKeys(primaryPtr, backupPtr)
+		if cerr != nil {
+			ce.CustomAbort(cerr)
+		}
+		genZeroCorrected = corrected
+	}
+	activePrimary, activeBackup, haveActiveGen := mapping.ActiveGenerationKeys()
+
 	var resultBuilder strings.Builder
 
 	if primaryPtr != nil {
 		if writeFlat {
 			existingPrimary := sdk.StateGetObject(constants.PrimaryPublicKeyStateKey)
-			if *existingPrimary == "" || constants.IsTestnet(NetworkMode) {
+			mirrorsActive := !haveActiveGen || *primaryPtr == activePrimary
+			if mirrorsActive && (*existingPrimary == "" || correctable) {
 				sdk.StateSetObject(constants.PrimaryPublicKeyStateKey, string(primaryPtr[:]))
 				resultBuilder.WriteString("set primary key to: " + keys.PrimaryPubKey)
 			} else {
@@ -879,7 +929,8 @@ func RegisterPublicKey(keyStr *string) *string {
 		}
 		if writeFlat {
 			existingBackup := sdk.StateGetObject(constants.BackupPublicKeyStateKey)
-			if *existingBackup == "" || constants.IsTestnet(NetworkMode) {
+			mirrorsActive := !haveActiveGen || *backupPtr == activeBackup
+			if mirrorsActive && (*existingBackup == "" || correctable) {
 				sdk.StateSetObject(constants.BackupPublicKeyStateKey, string(backupPtr[:]))
 				resultBuilder.WriteString("set backup key to: " + keys.BackupPubKey)
 			} else {
@@ -888,6 +939,10 @@ func RegisterPublicKey(keyStr *string) *string {
 		} else {
 			resultBuilder.WriteString("set backup key for generation " + strconv.FormatUint(uint64(targetGen), 10))
 		}
+	}
+
+	if genZeroCorrected {
+		resultBuilder.WriteString(" (generation 0 corrected)")
 	}
 
 	return mapping.StrPtr(resultBuilder.String())
@@ -1202,12 +1257,23 @@ func RegisterRouter(input *string) *string {
 	var resultBuilder strings.Builder
 
 	if router.ContractId != "" {
-		existingPrimary := sdk.StateGetObject(constants.RouterContractIdKey)
-		if *existingPrimary == "" || constants.IsTestnet(NetworkMode) {
+		existingRouter := sdk.StateGetObject(constants.RouterContractIdKey)
+		// VR2-20: set-once on EVERY network, testnet and regtest included.
+		//
+		// The other two set-once keys relaxed for testnet (primary/backup public
+		// keys) are re-derived from the vault list on every init, so re-pointing
+		// them does not stick. This one has no such backstop: it is read straight
+		// off state on the deposit path, where a swap-tagged deposit credits the
+		// contract itself with the freshly mapped amount and then grants the
+		// registered router an ALLOWANCE over exactly that credit. Re-pointing it
+		// therefore handed an arbitrary contract a live spend authority over real
+		// deposits, and a router that returns a plausible non-zero amount_out is
+		// treated as SUCCESS — so the theft commits rather than rolling back.
+		if *existingRouter == "" {
 			sdk.StateSetObject(constants.RouterContractIdKey, router.ContractId)
 			resultBuilder.WriteString("set router contract ID to: " + router.ContractId)
 		} else {
-			resultBuilder.WriteString("router contract ID already registered: " + *existingPrimary)
+			resultBuilder.WriteString("router contract ID already registered: " + *existingRouter)
 		}
 	}
 

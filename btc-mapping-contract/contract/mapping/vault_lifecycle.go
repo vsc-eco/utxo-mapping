@@ -122,6 +122,166 @@ func FoldLegacyGen0IfNeeded() bool {
 	return true
 }
 
+// VaultKeysCorrectable reports whether the contract provably holds NO value, so
+// re-registering the vault key pair cannot strand or redirect anyone's coins.
+//
+// VR2-21. This replaces the IsTestnet build-flag escape that used to guard the flat
+// key writes. A build flag is the wrong question twice over: it let a testnet
+// operator re-point the keys of a FUNDED contract, and it refused a mainnet operator
+// a correction even when nothing whatsoever was at stake. What actually matters is
+// whether any BTC is riding on the current pair, and the contract can answer that
+// directly — the same answer on every network.
+//
+// Deliberately conservative: an unreadable supply blob counts as value at risk. The
+// UTXO registry is only tested for EMPTINESS, never unmarshalled, so this stays a
+// cheap state read on the key-ceremony path.
+func VaultKeysCorrectable() bool {
+	if raw := sdk.StateGetObject(constants.UtxoRegistryKey); raw != nil && len(*raw) > 0 {
+		return false // the vault is tracking coins
+	}
+	if raw := sdk.StateGetObject(constants.SupplyKey); raw != nil && len(*raw) > 0 {
+		supply, err := UnmarshalSupply([]byte(*raw))
+		if err != nil {
+			return false // unreadable supply — assume value at risk
+		}
+		// BaseFeeRate is configuration, not value, so it is deliberately not tested.
+		if supply.ActiveSupply != 0 || supply.UserSupply != 0 || supply.FeeSupply != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// ActiveGenerationKeys returns the ACTIVE generation's key pair, and whether one
+// exists.
+//
+// The vault list is the source of truth: IntializeContractState resolves the
+// contract's public keys from it whenever an Active generation matches ActiveGen,
+// and the flat slots are only a legacy fallback for a contract that has no vault
+// list yet. So once a generation holds the authoritative pair, the flat slots may
+// MIRROR it but must never disagree with it.
+func ActiveGenerationKeys() (primary, backup CompressedPubKey, ok bool) {
+	vaults, _, activeGen, err := LoadVaultState()
+	if err != nil {
+		return primary, backup, false
+	}
+	for i := range vaults {
+		v := &vaults[i]
+		if v.Generation == activeGen && v.Status == VaultStatusActive && !isZeroKey(v.Primary) {
+			return v.Primary, v.Backup, true
+		}
+	}
+	return primary, backup, false
+}
+
+// CorrectGenesisVaultKeys re-points a folded generation 0 at a corrected key pair,
+// and reports whether it changed anything.
+//
+// VR2-21. FoldLegacyGen0IfNeeded freezes whatever flat pair exists into vaults[0],
+// and it fires on the very call an operator makes to FIX a mistyped key — so without
+// this the corrected flat key is dead state, because IntializeContractState resolves
+// the contract's keys from the vault list. The backup half has no other escape at
+// all: MintNextGeneration pins every successor's backup to the active vault's (F1)
+// and RegisterVaultKeys rejects a different one as immutable, so a wrong backup
+// folded into gen-0 is inherited by every future generation, permanently.
+//
+// Narrow by construction: it touches ONLY a lone, Active, genesis generation 0 — the
+// exact shape the fold produces — and only while VaultKeysCorrectable() holds. It
+// never runs once a rotation has minted a successor, and never once value exists.
+func CorrectGenesisVaultKeys(primary, backup *CompressedPubKey) (bool, error) {
+	if !VaultKeysCorrectable() {
+		return false, nil
+	}
+	vaults, nextGen, activeGen, err := LoadVaultState()
+	if err != nil {
+		return false, err
+	}
+	if len(vaults) != 1 {
+		return false, nil // a successor exists — lineage is live, never rewrite it
+	}
+	v := &vaults[0]
+	if v.Generation != 0 || v.Status != VaultStatusActive || !isGenesisVault(v) {
+		return false, nil
+	}
+
+	// THE GATE THAT KEEPS THIS FROM BEING A KEY-SUBSTITUTION PRIMITIVE.
+	//
+	// "Holds no value" is a point-in-time fact, not "was never used". A live,
+	// never-rotated vault sits at exactly one Active genesis generation and reaches
+	// zero UTXOs and zero supply every time the last outstanding withdrawal clears.
+	// Without this, that window would let the owner key swap the vault's spending
+	// primary for a self-generated one — and the deposit script is a bare
+	// OP_IF <primary> OP_CHECKSIG (createP2WSHAddressWithBackup), so Bitcoin has no
+	// notion of "this pubkey must belong to a TSS quorum". Every later deposit would
+	// be unilaterally spendable by whoever supplied the replacement. Rotation cannot
+	// do that — it routes through attestPrimaryKey — and this path must not become
+	// the exception.
+	//
+	// So: a generation whose primary IS the ceremony output is FROZEN, and where a
+	// ceremony output exists the only correction permitted is the one that makes the
+	// generation AGREE with it. That grants no new power — the key was always going
+	// to be the ceremony's. Only a generation with no ceremony key at all (the
+	// legacy flat bootstrap, which never ran createKey and is the sole scenario
+	// VR2-21 documents) stays freely correctable, and there the owner already chose
+	// the key unilaterally.
+	attested, hasActiveKey, readable := attestedGenerationPrimary(v.Generation)
+	if !readable {
+		return false, nil // an active ceremony key we cannot read — fail closed
+	}
+	if hasActiveKey {
+		if v.Primary == attested {
+			return false, nil // already agrees with the ceremony: immutable
+		}
+		if primary == nil || *primary != attested {
+			return false, nil // the only permitted correction is "agree with the ceremony"
+		}
+	}
+
+	changed := false
+	if primary != nil && v.Primary != *primary {
+		v.Primary = *primary
+		changed = true
+	}
+	if backup != nil && v.Backup != *backup {
+		v.Backup = *backup
+		changed = true
+	}
+	if !changed {
+		return false, nil
+	}
+	SaveVaultState(vaults, nextGen, activeGen)
+	sdk.Log("gen0-corrected")
+	return true, nil
+}
+
+// attestedGenerationPrimary reads the TSS ceremony's ACTIVE output for a
+// generation.
+//
+// Returns (key, hasActiveKey, readable). `readable` is false only when there IS an
+// active ceremony key whose pubkey cannot be decoded — callers must treat that as
+// "do not proceed", so an unreadable keystore refuses a correction rather than
+// permitting one. A generation with no active ceremony key at all is reported
+// positively as (zero, false, true): that is the legacy flat bootstrap, not an
+// error.
+//
+// This is deliberately narrower than attestPrimaryKey, which additionally requires
+// a verified BRK-2 check-signature before ACTIVATING a generation. Nothing is
+// being activated here — generation 0 is already Active — and requiring a
+// check-signature would block precisely the legacy-bootstrap correction this
+// serves, since a folded gen-0 never went through attestation in the first place.
+func attestedGenerationPrimary(gen uint32) (key CompressedPubKey, hasActiveKey bool, readable bool) {
+	parts := strings.Split(sdk.TssGetKey(VaultKeyId(gen)), ",")
+	if len(parts) < 2 || parts[0] != tssKeyActiveStatus {
+		return key, false, true // no active ceremony key for this generation
+	}
+	raw, derr := hex.DecodeString(parts[1])
+	if derr != nil || len(raw) != 33 {
+		return key, true, false
+	}
+	copy(key[:], raw)
+	return key, true, true
+}
+
 // isGenesisVault reports whether a vault is a bootstrap (genesis) vault — one with
 // no ancestor, marked by a self-referential predecessor. Rotation successors have
 // Predecessor < Generation (the active gen they descend from), so this cleanly

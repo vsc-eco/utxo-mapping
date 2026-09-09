@@ -647,6 +647,62 @@ func removeTxid(list []string, txId string) []string {
 // group key). LAZY: with no re-drive the group object is absent → members == {confirmedTxId},
 // byte-identical to the pre-L7-01 single-txid cleanup. The confirmed member's own settle
 // already deleted the shared inputs + released reservations; this only deletes bookkeeping.
+// notePendingSpend records that a spend was built at buildHeight, so header
+// pruning knows not to delete the header that spend will need to settle.
+//
+// VR2-03. Only ever lowers the floor, and in practice only sets it when absent:
+// build heights come from the chain tip, which is monotonic, so a newly recorded
+// spend can never be older than one already outstanding. Keeping the comparison
+// anyway makes the invariant explicit rather than relying on that.
+func notePendingSpend(buildHeight uint32) {
+	if raw := sdk.StateGetObject(constants.PendingSpendFloorKey); raw != nil && *raw != "" {
+		if existing, err := strconv.ParseUint(*raw, 10, 32); err == nil && uint32(existing) <= buildHeight {
+			return
+		}
+	}
+	sdk.StateSetObject(constants.PendingSpendFloorKey, strconv.FormatUint(uint64(buildHeight), 10))
+}
+
+// refreshPendingSpendFloor recomputes the retention floor after spends have
+// cleared, and deletes it when none remain so pruning resumes normally.
+//
+// Deliberately here and not on the pruning path: this walks every live spend
+// record, which is bounded by MaxConcurrentPendingSpends but far too expensive to
+// repeat on every block. Settles are rare; blocks are not.
+//
+// That bound is real: HandleUnmap refuses to add a record once the list is at
+// MaxConcurrentPendingSpends. It is enforced ONLY on that permissionless path —
+// migrateVault and redriveSpend append here too, and capping them would let an
+// attacker fill every slot with pending unmaps and wedge rotation. So N here is
+// (attacker-bounded unmaps) + (operator-driven sweeps), never attacker-unbounded.
+func (cs *ContractState) refreshPendingSpendFloor() {
+	oldest := uint32(0)
+	found := false
+	for _, txid := range cs.TxSpendsList {
+		var buildHeight uint32
+		if raw := sdk.StateGetObject(constants.PendingUnmapPrefix + txid); raw != nil && *raw != "" {
+			if u, err := UnmarshalPendingUnmap([]byte(*raw)); err == nil {
+				buildHeight = u.BuildHeight
+			}
+		} else if raw := sdk.StateGetObject(constants.MigrationSweepPrefix + txid); raw != nil && *raw != "" {
+			if m, err := UnmarshalMigrationSweep([]byte(*raw)); err == nil {
+				buildHeight = m.BuildHeight
+			}
+		}
+		if buildHeight == 0 {
+			continue // no readable record: nothing to anchor retention on
+		}
+		if !found || buildHeight < oldest {
+			oldest, found = buildHeight, true
+		}
+	}
+	if !found {
+		sdk.StateDeleteObject(constants.PendingSpendFloorKey)
+		return
+	}
+	sdk.StateSetObject(constants.PendingSpendFloorKey, strconv.FormatUint(uint64(oldest), 10))
+}
+
 func (cs *ContractState) clearSpendGroup(confirmedTxId string, inputIds []uint16) {
 	members := []string{confirmedTxId}
 	gk := spendGroupKey(inputIds)
@@ -675,6 +731,8 @@ func (cs *ContractState) clearSpendGroup(confirmedTxId string, inputIds []uint16
 		cs.TxSpendsList = removeTxid(cs.TxSpendsList, m)
 		cs.MigrationSweeps = removeTxid(cs.MigrationSweeps, m)
 	}
+	// VR2-03: the cleared group may have been the one holding retention open.
+	cs.refreshPendingSpendFloor()
 }
 
 // ---------------------------------------------------------------------------

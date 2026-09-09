@@ -55,6 +55,48 @@ func loadSupply(t *testing.T, ct *test_utils.ContractTest, contractId string) ma
 	return *s
 }
 
+// seedReserve funds the operator fee reserve exactly as a real topUpFeeReserve would:
+// FeeSupply rises by `amount` AND a matching untagged UTXO is appended to the registry on
+// the ACTIVE generation. Both halves matter — crediting FeeSupply alone would leave the
+// fixture claiming backing that does not exist, so conservation I1
+// (Sigma(UTXO) == ActiveSupply + FeeSupply) would be false in the fixture and every I1
+// assertion downstream would be measuring a lie. APPENDS to the registry (never
+// overwrites), so it composes with seedGenUtxos.
+func seedReserve(t *testing.T, ct *test_utils.ContractTest, contractId string, activeGen uint32, id uint16, amount int64) {
+	t.Helper()
+	var reg mapping.UtxoRegistry
+	if raw := ct.StateGet(contractId, constants.UtxoRegistryKey); len(raw) > 0 {
+		r, err := mapping.UnmarshalUtxoRegistry([]byte(raw))
+		require.NoError(t, err)
+		reg = r
+	}
+	reg = append(reg, mapping.UtxoRegistryEntry{Id: id, Amount: amount})
+	u := mapping.Utxo{TxId: strings.Repeat("ef", 32), Vout: uint32(id), Amount: amount, Generation: activeGen}
+	blob := mapping.MarshalUtxo(&u)
+	require.NotNil(t, blob, "MarshalUtxo returned nil (bad txid length)")
+	ct.StateSet(contractId, constants.UtxoPrefix+strconv.FormatUint(uint64(id), 16), string(blob))
+	ct.StateSet(contractId, constants.UtxoRegistryKey, string(mapping.MarshalUtxoRegistry(reg)))
+	sup := loadSupply(t, ct, contractId)
+	sup.FeeSupply += amount
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&sup)))
+}
+
+// sumRegistry totals the current UTXO registry — the left-hand side of I1.
+func sumRegistry(t *testing.T, ct *test_utils.ContractTest, contractId string) int64 {
+	t.Helper()
+	raw := ct.StateGet(contractId, constants.UtxoRegistryKey)
+	if len(raw) == 0 {
+		return 0
+	}
+	reg, err := mapping.UnmarshalUtxoRegistry([]byte(raw))
+	require.NoError(t, err)
+	var total int64
+	for _, e := range reg {
+		total += e.Amount
+	}
+	return total
+}
+
 // (a) ★ THE EXACT V-1 ATTACK, end-to-end: a sub-dust deposit lands on gen-0 while it is
 // still ACTIVE (the floor is inert pre-rotation, so this is credited exactly like today —
 // simulating the "legacy already-credited dust" case, e.g. a genuine small deposit that
@@ -74,7 +116,8 @@ func TestWriteOffDust_DefeatsGriefSequence(t *testing.T) {
 	contractId, owner := "mapping_contract", "hive:milo-hpr"
 	ct.RegisterContract(contractId, owner, ContractWasm)
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
-	ct.StateSet(contractId, constants.LastHeightKey, strconv.FormatUint(uint64(blockHeight), 10))
+	// VR2-07: seed the tip above the deposit block so the maturity gate is met.
+	ct.StateSet(contractId, constants.LastHeightKey, strconv.FormatUint(uint64(blockHeight)+2, 10))
 
 	legacyDustInstr := "deposit_to=hive:legacy-victim"
 	legacyFixture := buildMapFixture(t, legacyDustInstr, dustAmount, blockHeight)
@@ -128,11 +171,24 @@ func TestWriteOffDust_DefeatsGriefSequence(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, regStillDust, 1, "the un-swept dust UTXO is untouched by the failed build")
 
-	// writeOffDust clears the deadlock: the dust UTXO is deleted, Supply is debited, and
-	// gen-0 (was Retiring) flips to Draining so the existing reconciler can carry it onward.
+	// VR2-15: the write-off is charged to the operator's fee reserve, so it is REFUSED while
+	// the reserve is empty — a liveness stall, cleared by a top-up, never a solvency break.
 	supplyBefore := loadSupply(t, &ct, contractId)
 	require.Equal(t, dustAmount, supplyBefore.ActiveSupply)
 	require.Equal(t, dustAmount, supplyBefore.UserSupply)
+	require.Equal(t, int64(0), supplyBefore.FeeSupply)
+	starvedRes := callKeyAction(t, &ct, contractId, owner, "writeOffDust", []byte(""))
+	require.Empty(t, starvedRes.Err, starvedRes.ErrMsg)
+	require.Contains(t, starvedRes.Ret, "nothing to write off",
+		"a reserve-short write-off skips the generation rather than charging user principal")
+	regStarved, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
+	require.NoError(t, err)
+	require.Len(t, regStarved, 1, "a refused write-off writes no state — the dust UTXO is untouched")
+
+	// Fund the reserve (gen-1 is ACTIVE at this point), then writeOffDust clears the
+	// deadlock: the dust UTXO is deleted, the RESERVE is debited, and gen-0 (was Retiring)
+	// flips to Draining so the existing reconciler can carry it onward.
+	seedReserve(t, &ct, contractId, 1, 2048, dustAmount)
 
 	writeOffRes := callKeyAction(t, &ct, contractId, owner, "writeOffDust", []byte(""))
 	require.Empty(t, writeOffRes.Err, writeOffRes.ErrMsg)
@@ -140,10 +196,17 @@ func TestWriteOffDust_DefeatsGriefSequence(t *testing.T) {
 
 	regAfterWriteOff, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
 	require.NoError(t, err)
-	require.Len(t, regAfterWriteOff, 0, "the dust UTXO is deleted by writeOffDust")
+	require.Len(t, regAfterWriteOff, 1, "the dust UTXO is deleted; the reserve UTXO remains")
 	supplyAfter := loadSupply(t, &ct, contractId)
-	require.Equal(t, int64(0), supplyAfter.ActiveSupply, "ActiveSupply debited by exactly the written-off dust")
-	require.Equal(t, int64(0), supplyAfter.UserSupply, "UserSupply debited by exactly the written-off dust")
+	require.Equal(t, int64(0), supplyAfter.FeeSupply, "the RESERVE absorbed the written-off dust")
+	require.Equal(t, dustAmount, supplyAfter.ActiveSupply, "user principal is NOT debited by a write-off")
+	require.Equal(t, dustAmount, supplyAfter.UserSupply, "user principal is NOT debited by a write-off")
+	// I3 stays EXACT: the victim's credit still equals UserSupply, so no later withdrawal
+	// can underflow UserSupply and revert for an unrelated user.
+	require.Equal(t, encodeBalance(t, dustAmount), ct.StateGet(contractId, constants.BalancePrefix+"hive:legacy-victim"),
+		"the dust depositor keeps the credit the protocol still owes them")
+	require.Equal(t, sumRegistry(t, &ct, contractId), supplyAfter.ActiveSupply+supplyAfter.FeeSupply,
+		"I1 holds exact after the write-off")
 	vaultsAfterWriteOff, _, _ := loadVaults(t, &ct, contractId)
 	require.Equal(t, mapping.VaultStatusDraining, vaultsAfterWriteOff[0].Status,
 		"writeOffDust flips a Retiring gen carrying only dust to Draining")
@@ -162,6 +225,9 @@ func TestWriteOffDust_DefeatsGriefSequence(t *testing.T) {
 	repeatBlockHeight := uint32(101)
 	repeatFixture := buildMapFixture(t, repeatInstr, dustAmount, repeatBlockHeight)
 	ct.StateSet(contractId, constants.BlockPrefix+strconv.FormatUint(uint64(repeatBlockHeight), 10), decodeHex(t, repeatFixture.BlockHeaderHex))
+	// VR2-07: advance the tip past this second deposit too, so the maturity gate is
+	// satisfied and the assertion below tests the DUST floor rather than depth.
+	ct.StateSet(contractId, constants.LastHeightKey, strconv.FormatUint(uint64(repeatBlockHeight)+2, 10))
 	repeatParams := mapping.MapParams{
 		TxData: &mapping.VerificationRequest{
 			BlockHeight: repeatBlockHeight, RawTxHex: repeatFixture.RawTxHex,
@@ -182,18 +248,27 @@ func TestWriteOffDust_DefeatsGriefSequence(t *testing.T) {
 		"the repeat dust attack must NOT be credited — the floor is now live")
 	regFinal, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
 	require.NoError(t, err)
-	require.Len(t, regFinal, 0, "the repeat dust attack must not register a UTXO")
+	require.Len(t, regFinal, 1, "the repeat dust attack must not register a UTXO (only the reserve UTXO remains)")
+	require.Equal(t, uint16(2048), regFinal[0].Id, "the sole survivor is the fee-reserve UTXO, not the attacker's dust")
 }
 
-// (b) Legacy-dust write-off + conservation math. A sub-dust UTXO is injected directly onto
-// a DRAINING gen (simulating a pre-floor legacy deposit that WAS already credited: Active/
-// User supply and a depositor's balance are bumped by D exactly as a real map call would).
-// writeOffDust must debit ActiveSupply and UserSupply each by EXACTLY D, hold I1
-// (Σ(UTXO)==ActiveSupply+FeeSupply) and I2 (ActiveSupply==UserSupply) EXACT, and leave the
-// depositor's own balance untouched — the bounded I3 (Σ(balances)==UserSupply) slack of
-// exactly D that BUILD-MAP §3 option (b) accepts (the Utxo blob carries no recipient, so
-// an exact per-account claw-back of already-credited legacy dust is infeasible without a
-// schema change).
+// (b) VR2-15 — legacy-dust write-off conservation, the regression test for the solvency
+// break. A sub-dust UTXO is injected directly onto a DRAINING gen (simulating a pre-floor
+// legacy deposit that WAS already credited: Active/User supply and a depositor's balance
+// are bumped by D exactly as a real map call would).
+//
+// The write-off used to debit ActiveSupply+UserSupply by D. That held I1 and I2 but broke
+// I3 (Σ(balances)==UserSupply) by exactly D forever, because the depositor's own balance was
+// never debited — the Utxo blob carries no recipient. That slack is not cosmetic: HandleUnmap
+// decrements UserSupply with safeSubtract64 on every withdrawal, so once the aggregate ran
+// short of the balances it stood for, the LAST withdrawers underflowed and their withdrawals
+// reverted permanently. The victims were whichever users withdrew last, not the depositor.
+//
+// The write-off is now charged to the operator's FEE RESERVE instead, so this test asserts:
+// the write-off is REFUSED while the reserve is short (a liveness stall a permissionless
+// top-up clears, never a solvency break); once funded it debits FeeSupply by EXACTLY D and
+// leaves ActiveSupply, UserSupply and the depositor's balance untouched; and I1, I2 and I3
+// all hold EXACT afterwards rather than I3 acquiring slack.
 func TestWriteOffDust_LegacyResidualConservation(t *testing.T) {
 	ct, contractId, owner := newRetireCT(t)
 	const h = 900000
@@ -223,29 +298,49 @@ func TestWriteOffDust_LegacyResidualConservation(t *testing.T) {
 	require.NotEmpty(t, callKeyAction(t, ct, contractId, owner, "createKey", []byte("")).Err,
 		"createKey must be refused while gen-1 holds the un-drained legacy residual (NN#3)")
 
-	// writeOffDust: delete the residual, debit Supply in lock-step.
+	// RED-BEFORE: with an empty reserve the write-off must REFUSE this generation outright.
+	// The old code charged ActiveSupply+UserSupply here and "succeeded" — that success was
+	// the bug.
+	require.Equal(t, int64(0), loadSupply(t, ct, contractId).FeeSupply, "reserve starts empty")
+	starved := callKeyAction(t, ct, contractId, owner, "writeOffDust", []byte(""))
+	require.Empty(t, starved.Err, starved.ErrMsg)
+	require.Contains(t, starved.Ret, "nothing to write off",
+		"a reserve-short write-off must skip the generation, not charge user principal")
+	regStarved, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
+	require.NoError(t, err)
+	require.Len(t, regStarved, 1, "the refused write-off wrote no state")
+	supplyStarved := loadSupply(t, ct, contractId)
+	require.Equal(t, D, supplyStarved.ActiveSupply, "refused write-off leaves ActiveSupply alone")
+	require.Equal(t, D, supplyStarved.UserSupply, "refused write-off leaves UserSupply alone")
+
+	// Fund the reserve on the ACTIVE generation (gen-2), exactly as topUpFeeReserve would.
+	seedReserve(t, ct, contractId, 2, 2048, D)
+	require.Equal(t, D, loadSupply(t, ct, contractId).FeeSupply)
+
+	// GREEN-AFTER: delete the residual, debit the RESERVE by exactly D.
 	writeOffRes := callKeyAction(t, ct, contractId, owner, "writeOffDust", []byte(""))
 	require.Empty(t, writeOffRes.Err, writeOffRes.ErrMsg)
 	require.Contains(t, writeOffRes.Ret, "gen=1")
 
 	regAfter, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
 	require.NoError(t, err)
-	require.Len(t, regAfter, 0, "the legacy residual UTXO is deleted")
+	require.Len(t, regAfter, 1, "the legacy residual UTXO is deleted; the reserve UTXO remains")
 
 	supply := loadSupply(t, ct, contractId)
-	require.Equal(t, int64(0), supply.ActiveSupply, "ActiveSupply debited by exactly D")
-	require.Equal(t, int64(0), supply.UserSupply, "UserSupply debited by exactly D")
-	require.Equal(t, int64(0), supply.FeeSupply, "FeeSupply untouched (write-off is not a fee event)")
+	require.Equal(t, int64(0), supply.FeeSupply, "FeeSupply debited by exactly D — the reserve absorbed the write-off")
+	require.Equal(t, D, supply.ActiveSupply, "ActiveSupply is NOT touched: a write-off is not a user debit")
+	require.Equal(t, D, supply.UserSupply, "UserSupply is NOT touched: a write-off is not a user debit")
 
-	// I1: Σ(UTXO) == ActiveSupply + FeeSupply  → 0 == 0 + 0.
-	require.Equal(t, int64(0), supply.ActiveSupply+supply.FeeSupply, "I1 holds exact post write-off")
-	// I2: ActiveSupply == UserSupply  → 0 == 0.
+	// I1: Σ(UTXO) == ActiveSupply + FeeSupply  → D == D + 0.
+	require.Equal(t, sumRegistry(t, ct, contractId), supply.ActiveSupply+supply.FeeSupply, "I1 holds exact post write-off")
+	// I2: ActiveSupply == UserSupply  → D == D.
 	require.Equal(t, supply.ActiveSupply, supply.UserSupply, "I2 holds exact post write-off")
-	// I3: Σ(balances) == UserSupply + slack. The depositor's balance is untouched (D), while
-	// UserSupply dropped to 0 — the bounded, un-withdrawable (below the unmap dust floor)
-	// phantom-credit slack the write-off accepts for this rare legacy case.
+	// I3: Σ(balances) == UserSupply, EXACT — no slack. This is the whole point: the depositor
+	// keeps the credit the protocol still owes them, and UserSupply still stands for exactly
+	// the balances that exist, so no later withdrawal underflows it and reverts.
 	depositorBal := ct.StateGet(contractId, constants.BalancePrefix+legacyDepositor)
-	require.Equal(t, encodeBalance(t, D), depositorBal, "the legacy depositor's own balance is NOT touched by write-off")
+	require.Equal(t, encodeBalance(t, D), depositorBal, "the legacy depositor keeps their credit")
+	require.Equal(t, D, supply.UserSupply, "I3 holds EXACT: Σ(balances) == UserSupply, no phantom-credit slack")
 
 	// gen-1 stays Draining (it started Draining, not Retiring — write-off only flips a
 	// Retiring gen; Draining/Inactive are already mid-flow for the existing reconciler).
@@ -283,7 +378,8 @@ func TestMapDustFloor_InertPreRotation(t *testing.T) {
 	contractId, owner := "mapping_contract", "hive:milo-hpr"
 	ct.RegisterContract(contractId, owner, ContractWasm)
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
-	ct.StateSet(contractId, constants.LastHeightKey, strconv.FormatUint(uint64(blockHeight), 10))
+	// VR2-07: seed the tip above the deposit block so the maturity gate is met.
+	ct.StateSet(contractId, constants.LastHeightKey, strconv.FormatUint(uint64(blockHeight)+2, 10))
 	ct.StateSet(contractId, constants.BlockPrefix+strconv.FormatUint(uint64(blockHeight), 10), decodeHex(t, fixture.BlockHeaderHex))
 	seedActiveGen0(t, &ct, contractId, owner) // gen-0 ACTIVE only — no rotation has ever happened
 
@@ -356,6 +452,13 @@ func TestWriteOffDust_SkipsInFlightInputs(t *testing.T) {
 	}
 	ct.StateSet(contractId, constants.MigrationSweepPrefix+sweepTxId, string(mapping.MarshalMigrationSweep(sweepRecord)))
 
+	// The write-off is charged to the reserve (VR2-15), so fund it on the ACTIVE gen (gen-2).
+	// It must be funded by eligibleAmt PLUS the in-flight sweep's own reserved fee: the
+	// write-off may only spend the reserve SURPLUS over what pending sweeps have claimed,
+	// or an already-broadcast sweep could not settle. sweepRecord below reserves BtcFee 10.
+	const pendingSweepFee = int64(10)
+	seedReserve(t, ct, contractId, 2, 2048, eligibleAmt+pendingSweepFee)
+
 	writeOffRes := callKeyAction(t, ct, contractId, owner, "writeOffDust", []byte(""))
 	require.Empty(t, writeOffRes.Err, writeOffRes.ErrMsg)
 	require.Contains(t, writeOffRes.Ret, "gen=1")
@@ -364,22 +467,273 @@ func TestWriteOffDust_SkipsInFlightInputs(t *testing.T) {
 
 	reg, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
 	require.NoError(t, err)
-	require.Len(t, reg, 2, "the two in-flight UTXOs survive; only the eligible one is deleted")
+	require.Len(t, reg, 3, "the two in-flight UTXOs and the reserve UTXO survive; only the eligible one is deleted")
 	survivingIds := map[uint16]bool{}
 	for _, e := range reg {
 		survivingIds[e.Id] = true
 	}
 	require.True(t, survivingIds[1024], "the reserved (in-flight unmap) UTXO must survive")
 	require.True(t, survivingIds[1025], "the in-flight migration sweep's input must survive")
+	require.True(t, survivingIds[2048], "the reserve UTXO is untouched by a write-off")
 	require.False(t, survivingIds[1026], "the eligible dust UTXO must be deleted")
 
 	supply := loadSupply(t, ct, contractId)
-	require.Equal(t, reservedAmt+inFlightAmt, supply.ActiveSupply,
-		"Supply debited by EXACTLY the eligible residual — the two in-flight amounts are untouched")
-	require.Equal(t, reservedAmt+inFlightAmt, supply.UserSupply)
+	require.Equal(t, pendingSweepFee, supply.FeeSupply,
+		"the RESERVE is debited by EXACTLY the eligible residual, leaving the in-flight sweep's "+
+			"reserved fee intact so its deferred confirm-side debit still cannot underflow")
+	require.Equal(t, reservedAmt+inFlightAmt+eligibleAmt, supply.ActiveSupply,
+		"user principal is untouched by a write-off")
+	require.Equal(t, reservedAmt+inFlightAmt+eligibleAmt, supply.UserSupply)
+	require.Equal(t, sumRegistry(t, ct, contractId), supply.ActiveSupply+supply.FeeSupply, "I1 holds exact")
 
 	// gen-1 is STILL funded (the two surviving in-flight UTXOs) — NN#3 correctly stays
 	// blocked; a second write-off call cannot free them either (idempotent no-op on them).
 	require.NotEmpty(t, callKeyAction(t, ct, contractId, owner, "createKey", []byte("")).Err,
 		"createKey must stay refused: gen-1 still holds the two in-flight (excluded) UTXOs")
+}
+
+
+// (e) VR2-15 x BRK-1: a write-off may only spend the reserve SURPLUS over the fees that
+// in-flight migration sweeps have already claimed.
+//
+// Migration defers each sweep's FeeSupply debit to its confirm, and keeps that debit safe by
+// maintaining FeeSupply >= Σ(pending sweep fees) at every build — which is what makes the
+// confirm-side debit "GUARANTEED to succeed (never a post-L1 brick)". A write-off that spent
+// the reserve down to zero without respecting that sum would leave an ALREADY-BROADCAST
+// sweep unable to settle: the exact "permanent registry <-> L1 divergence + a wedged sweep
+// that re-aborts forever" the deferred debit exists to avoid.
+//
+// Here the reserve covers the residual EXACTLY but not the pending sweep's fee on top, so
+// the write-off must decline. The positive control is (d) above, which funds residual + fee
+// and proceeds — so this is not simply "write-off never runs".
+func TestWriteOffDust_LeavesPendingSweepFeesIntact(t *testing.T) {
+	ct, contractId, owner := newRetireCT(t)
+	const h = 900000
+	const inFlightAmt = int64(300)     // input committed to an in-flight sweep
+	const eligibleAmt = int64(300)     // genuinely un-owned dust
+	const pendingSweepFee = int64(10)  // the fee that sweep already reserved
+
+	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
+	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
+		ActiveSupply: inFlightAmt + eligibleAmt,
+		UserSupply:   inFlightAmt + eligibleAmt,
+		BaseFeeRate:  1,
+	})))
+	seedRetireState(ct, contractId, h, mapping.VaultRegistry{
+		{Generation: 1, Status: mapping.VaultStatusDraining, Predecessor: 0, RetiredHeight: h - 1000},
+		{Generation: 2, Status: mapping.VaultStatusActive, Predecessor: 1},
+	}, 3, 2)
+	seedGenUtxos(t, ct, contractId, 1, []utxoSeed{
+		{id: 1025, amount: inFlightAmt},
+		{id: 1026, amount: eligibleAmt},
+	})
+
+	sweepTxId := strings.Repeat("cd", 32)
+	ct.StateSet(contractId, constants.MigrationSweepRegistryKey,
+		string(mapping.MarshalTxSpendsRegistry(mapping.TxSpendsRegistry{sweepTxId})))
+	ct.StateSet(contractId, constants.MigrationSweepPrefix+sweepTxId,
+		string(mapping.MarshalMigrationSweep(&mapping.MigrationSweep{
+			InputIds: []uint16{1025}, BtcFee: pendingSweepFee,
+			SuccessorAddress: "irrelevant-for-this-test", SuccessorGen: 2,
+		})))
+
+	// Reserve covers the residual EXACTLY, with nothing left for the pending sweep's fee.
+	seedReserve(t, ct, contractId, 2, 2048, eligibleAmt)
+
+	res := callKeyAction(t, ct, contractId, owner, "writeOffDust", []byte(""))
+	require.Empty(t, res.Err, res.ErrMsg)
+	require.Contains(t, res.Ret, "nothing to write off",
+		"the write-off must decline rather than spend a pending sweep's reserved fee")
+
+	reg, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
+	require.NoError(t, err)
+	require.Len(t, reg, 3, "a declined write-off writes no state: both gen-1 UTXOs and the reserve UTXO remain")
+
+	supply := loadSupply(t, ct, contractId)
+	require.Equal(t, eligibleAmt, supply.FeeSupply,
+		"the reserve is untouched, so the in-flight sweep's deferred fee debit still cannot underflow")
+	require.Equal(t, inFlightAmt+eligibleAmt, supply.ActiveSupply, "user principal untouched")
+	require.Equal(t, inFlightAmt+eligibleAmt, supply.UserSupply)
+	require.Equal(t, sumRegistry(t, ct, contractId), supply.ActiveSupply+supply.FeeSupply, "I1 holds exact")
+}
+
+
+// (f) DETERMINISM of the reserve budget across MULTIPLE eligible generations.
+//
+// The VR2-15 budget is a RUNNING one: each written-off generation decrements it, so when the
+// reserve can cover one eligible residual but not both, WHICH generation wins is decided by
+// iteration order. That is a consensus property, not a cosmetic one -- every node
+// re-executes this contract, and two nodes that picked different generations would write
+// different state, produce different CIDs and fork.
+//
+// The order is cs.Vaults, the packed vault-registry slice in stored order, which is
+// identical on every node. This test pins that: with room for exactly one, the FIRST
+// eligible generation in registry order is written off and the second is left untouched,
+// with the second's UTXO still present and the reserve exhausted rather than overdrawn.
+//
+// It exists so that a future refactor to a map-based scan (the obvious "tidy-up") fails here
+// instead of on mainnet. Go randomises map iteration, so that change would be silently
+// non-deterministic and this is the only place it would show up.
+func TestWriteOffDust_MultiGenBudgetIsDeterministic(t *testing.T) {
+	ct, contractId, owner := newRetireCT(t)
+	const h = 900000
+	const D = int64(300) // sub-dust: unsweepable at the fixed minimum rate
+
+	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
+	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
+		ActiveSupply: 2 * D, UserSupply: 2 * D, BaseFeeRate: 1,
+	})))
+	// TWO superseded generations, each holding one un-sweepable residual.
+	seedRetireState(ct, contractId, h, mapping.VaultRegistry{
+		{Generation: 1, Status: mapping.VaultStatusDraining, Predecessor: 0, RetiredHeight: h - 2000},
+		{Generation: 2, Status: mapping.VaultStatusDraining, Predecessor: 1, RetiredHeight: h - 1000},
+		{Generation: 3, Status: mapping.VaultStatusActive, Predecessor: 2},
+	}, 4, 3)
+	seedGenUtxos(t, ct, contractId, 1, []utxoSeed{{id: 1024, amount: D}})
+	// seedGenUtxos overwrites the registry, so add gen-2's residual additively.
+	seedReserve(t, ct, contractId, 2, 1025, D)
+	// seedReserve credited FeeSupply by D for that UTXO; undo the credit so the entry is a
+	// gen-2 RESIDUAL, not reserve backing. FeeSupply is set explicitly below.
+	sup := loadSupply(t, ct, contractId)
+	sup.FeeSupply = 0
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&sup)))
+	// Now fund the reserve on the ACTIVE gen with room for EXACTLY ONE residual.
+	seedReserve(t, ct, contractId, 3, 2048, D)
+	require.Equal(t, D, loadSupply(t, ct, contractId).FeeSupply, "reserve covers exactly one residual")
+
+	res := callKeyAction(t, ct, contractId, owner, "writeOffDust", []byte(""))
+	require.Empty(t, res.Err, res.ErrMsg)
+
+	// Exactly ONE generation written off, and it is the FIRST in registry order.
+	require.Contains(t, res.Ret, "gen=1", "the first eligible generation in registry order is written off")
+	require.NotContains(t, res.Ret, "gen=2", "the second must be left: the budget only covered one")
+
+	reg, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
+	require.NoError(t, err)
+	ids := map[uint16]bool{}
+	for _, e := range reg {
+		ids[e.Id] = true
+	}
+	require.False(t, ids[1024], "gen-1's residual is deleted")
+	require.True(t, ids[1025], "gen-2's residual survives: the reserve could not cover it")
+	require.True(t, ids[2048], "the reserve UTXO itself is never written off")
+
+	supply := loadSupply(t, ct, contractId)
+	require.Equal(t, int64(0), supply.FeeSupply, "the reserve is exhausted, never overdrawn")
+	require.Equal(t, 2*D, supply.ActiveSupply, "user principal untouched")
+	require.Equal(t, 2*D, supply.UserSupply)
+	require.Equal(t, sumRegistry(t, ct, contractId), supply.ActiveSupply+supply.FeeSupply, "I1 holds exact")
+
+	// ★ POSITIVE CONTROL. Everything above is consistent with gen-2 simply not being
+	// ELIGIBLE -- in which case the test proves nothing about ordering, only that an
+	// ineligible generation is skipped. Top the reserve back up and re-run: gen-2 must now
+	// be written off too. That is what establishes it was eligible all along and was left
+	// solely because the budget ran out.
+	seedReserve(t, ct, contractId, 3, 2049, D)
+	res2 := callKeyAction(t, ct, contractId, owner, "writeOffDust", []byte(""))
+	require.Empty(t, res2.Err, res2.ErrMsg)
+	require.Contains(t, res2.Ret, "gen=2",
+		"gen-2 WAS eligible: with the reserve refunded it is written off, so the first pass "+
+			"left it for want of budget and not for want of eligibility")
+
+	reg2, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
+	require.NoError(t, err)
+	ids2 := map[uint16]bool{}
+	for _, e := range reg2 {
+		ids2[e.Id] = true
+	}
+	require.False(t, ids2[1025], "gen-2's residual is deleted on the second pass")
+	supply2 := loadSupply(t, ct, contractId)
+	require.Equal(t, int64(0), supply2.FeeSupply, "the top-up is consumed by exactly the second residual")
+	require.Equal(t, 2*D, supply2.UserSupply, "user principal still untouched across both passes")
+	require.Equal(t, sumRegistry(t, ct, contractId), supply2.ActiveSupply+supply2.FeeSupply, "I1 still exact")
+}
+
+// VR2-26: a generation holding ONLY legacy unconfirmed-pool UTXOs must still be able to
+// drain, and a generation with confirmed inputs must be UNAFFECTED.
+//
+// A v1 unmap's change output was allocated from the unconfirmed pool and promoted by
+// confirmSpend. One that never got promoted keeps a low id forever, and once its block passes
+// MaxBlockRetention the header is gone and confirmSpend can never promote it. Under the old
+// confirmed-only rule migration could not see it, so its generation could never drain, NN#3
+// stayed true forever and the committee's bonds stayed locked. On live mainnet that was 34 of
+// 41 UTXOs holding 87.6% of the vault.
+//
+// Two halves, because the fallback must be LAST-RESORT and not a behaviour change:
+//   - a gen with only low-id inputs now drains (the fix);
+//   - a gen with a confirmed input still selects the CONFIRMED one (unchanged priority).
+func TestMigration_LegacyUnconfirmedPoolInputsCanDrain(t *testing.T) {
+	ct, contractId, owner := newRetireCT(t)
+	const h = 900000
+	const legacyAmt = int64(7_248_597) // the F21 shape: a real, large legacy change output
+
+	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
+	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
+		ActiveSupply: legacyAmt, UserSupply: legacyAmt, BaseFeeRate: 1,
+	})))
+	seedRetireState(ct, contractId, h, mapping.VaultRegistry{
+		{Generation: 0, Status: mapping.VaultStatusRetiring, RetiredHeight: h - 100},
+		{Generation: 1, Status: mapping.VaultStatusActive, Predecessor: 0},
+	}, 2, 1)
+	// id 3 is in the UNCONFIRMED pool (< UtxoConfirmedPoolStart): a legacy, unpromoted change
+	// output, exactly the mainnet and F21 shape.
+	seedGenUtxos(t, ct, contractId, 0, []utxoSeed{{id: 3, amount: legacyAmt}})
+	// migrateVault is reserve-gated (VR2-15 / BRK-1): fund it on the ACTIVE gen so the only
+	// thing under test is input SELECTION, not affordability.
+	seedReserve(t, ct, contractId, 1, 4096, 100_000)
+	seedTssKey(t, ct, contractId, "main", TestPrimaryPubKeyHex)
+	require.Less(t, uint16(3), uint16(constants.UtxoConfirmedPoolStart),
+		"precondition: the seeded id must be in the unconfirmed pool, or this proves nothing")
+
+	res := callKeyAction(t, ct, contractId, owner, "migrateVault", []byte(""))
+	require.Empty(t, res.Err, "migrateVault must build a sweep for a legacy-only generation: "+res.ErrMsg)
+
+	spends, err := mapping.UnmarshalTxSpendsRegistry([]byte(ct.StateGet(contractId, constants.TxSpendsRegistryKey)))
+	require.NoError(t, err)
+	require.Len(t, spends, 1,
+		"a sweep must be BUILT. Before VR2-26 migrateVault returned success and produced nothing, "+
+			"which is why the generation could never drain and NN#3 wedged rotation forever")
+}
+
+// The other half: the fallback must not change which input is chosen when a confirmed one is
+// available. Without this, the fix could silently start preferring legacy inputs, and the
+// first test would pass for the wrong reason.
+func TestMigration_ConfirmedInputStillPreferredOverLegacy(t *testing.T) {
+	ct, contractId, owner := newRetireCT(t)
+	const h = 900000
+	const legacyAmt = int64(500_000)
+	const confirmedAmt = int64(400_000)
+
+	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
+	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
+	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{
+		ActiveSupply: legacyAmt + confirmedAmt, UserSupply: legacyAmt + confirmedAmt, BaseFeeRate: 1,
+	})))
+	seedRetireState(ct, contractId, h, mapping.VaultRegistry{
+		{Generation: 0, Status: mapping.VaultStatusRetiring, RetiredHeight: h - 100},
+		{Generation: 1, Status: mapping.VaultStatusActive, Predecessor: 0},
+	}, 2, 1)
+	// Both on the retiring gen: one legacy (low id), one confirmed-pool (high id).
+	seedGenUtxos(t, ct, contractId, 0, []utxoSeed{
+		{id: 3, amount: legacyAmt},
+		{id: uint16(constants.UtxoConfirmedPoolStart + 5), amount: confirmedAmt},
+	})
+	seedReserve(t, ct, contractId, 1, 4096, 100_000)
+	seedTssKey(t, ct, contractId, "main", TestPrimaryPubKeyHex)
+
+	mig := callKeyAction(t, ct, contractId, owner, "migrateVault", []byte(""))
+	require.Empty(t, mig.Err, mig.ErrMsg)
+
+	// The confirmed input is the one that moved: it is no longer selectable for a second
+	// tranche, while the legacy one still is.
+	sweeps, err := mapping.UnmarshalTxSpendsRegistry([]byte(ct.StateGet(contractId, constants.MigrationSweepRegistryKey)))
+	require.NoError(t, err)
+	require.Len(t, sweeps, 1)
+	rec, err := mapping.UnmarshalMigrationSweep([]byte(ct.StateGet(contractId, constants.MigrationSweepPrefix+sweeps[0])))
+	require.NoError(t, err)
+	require.Equal(t, []uint16{uint16(constants.UtxoConfirmedPoolStart + 5)}, rec.InputIds,
+		"the CONFIRMED-pool input must be swept first; the legacy fallback is last-resort only")
 }

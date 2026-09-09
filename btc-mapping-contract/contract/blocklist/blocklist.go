@@ -175,6 +175,37 @@ func PruneOldHeaders(lastHeight uint32) int {
 	if retainFrom <= 0 {
 		return 0
 	}
+	// VR2-03: never prune below the oldest live pending spend.
+	//
+	// confirmSpend needs the exact header at the height its transaction was mined,
+	// and pruning had no idea any spend was still waiting for one. A sweep mined on
+	// Bitcoin but not reported to the contract within the retention window lost its
+	// proof permanently: it could never settle, redrive could not help (the coins
+	// had already moved), and the generation stayed "funded" forever — blocking
+	// every future rotation and holding every witness's bond.
+	//
+	// Anchoring on BUILD height is sound and conservative: a transaction cannot be
+	// mined below the tip it was built against, so its confirmation height is always
+	// at or above the height retained here. Clamping rather than SKIPPING keeps the
+	// pruned region contiguous, so the existing single floor cursor still works and
+	// no header is stranded behind a hole.
+	//
+	// The clamp is itself bounded. Retention is held open at most
+	// MaxRetentionWithPendingSpend, so a stuck spend cannot pin state growth
+	// forever. That bound is a stopgap, not a fix: past it the original stranding
+	// returns on a longer timer, and recovering such a spend needs a reconcile
+	// operation that does not exist yet.
+	if raw := sdk.StateGetObject(constants.PendingSpendFloorKey); raw != nil && *raw != "" {
+		if pending, perr := strconv.ParseInt(*raw, 10, 64); perr == nil && pending > 0 && pending < retainFrom {
+			floor := int64(lastHeight) - int64(constants.MaxRetentionWithPendingSpend) + 1
+			if pending > floor {
+				retainFrom = pending
+			} else if floor > 0 {
+				retainFrom = floor
+			}
+		}
+	}
+
 	pruneFloor := pruneFloorFromState()
 	if pruneFloor == 0 {
 		pruneFloor = seedHeightFromState()

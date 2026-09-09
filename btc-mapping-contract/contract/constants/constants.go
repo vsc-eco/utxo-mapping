@@ -151,6 +151,37 @@ const VaultPurgeGraceBlocks = 144
 
 const LastHeightKey = "h"
 const SeedHeightKey = "sh"
+// PendingSpendFloorKey caches the lowest BuildHeight among live pending spends
+// (migration sweeps and unmaps), or is absent when there are none.
+//
+// VR2-03: header pruning must not delete a header a pending spend still needs to
+// settle. Deriving that floor by scanning every live record would put an O(N) read
+// on the addBlocks path — which runs on every block — so it is maintained
+// incrementally instead: set when a spend is recorded, recomputed only when a
+// spend group clears. Pruning then reads one key.
+const PendingSpendFloorKey = "psf"
+
+// MaxConcurrentPendingSpends caps how many spend records may be live at once.
+//
+// This is what makes the retention clamp safe to have. Unmap is permissionless —
+// rate-limited by satoshis per block, with no cap on COUNT or duration — so
+// without a bound an attacker could hold open an unbounded number of
+// never-confirming unmaps, each pinning header retention at its own build height
+// and growing contract state without limit. It also bounds the recompute that
+// runs when a spend group clears.
+const MaxConcurrentPendingSpends = 256
+
+// MaxRetentionWithPendingSpend is the absolute floor on header pruning, even
+// while a pending spend is holding retention open.
+//
+// A stopgap, and it should be read as one: it converts an unbounded retention pin
+// into a bounded one, and converts a CERTAIN permanent stranding at
+// MaxBlockRetention into a possible one at twice that. It does not make a spend
+// that outlives it recoverable — that needs the VR2-01 reconcile, which does not
+// exist yet. Operators should be alerted well before a live spend's build height
+// approaches this.
+const MaxRetentionWithPendingSpend = 2 * MaxBlockRetention
+
 const PruneFloorKey = "pf" // lowest unpruned block height, updated during pruning
 
 // BTC-C3: per-Hive-block withdrawal rate limit. The accumulator tracks
@@ -275,6 +306,46 @@ const MigrationCanaryValue int64 = 1_000_000
 // FS-1/FS-2/FS-4/FS-5 H-3 — a recoverable freeze that would otherwise degrade
 // past the primary path). 4608 = 4320 (mainnet CSV) + 288 (~2-day reorg margin);
 // on testnet (CSV=2) this is harmless headroom. Header storage ≈ 4608*80 B ≈ 369 KB.
+// MinConfirmationDepth is how far an L1 event's block must be buried under the
+// contract's own chain tip before the contract acts on it as final: crediting a
+// deposit (VR2-07) or settling a spend (VR2-06).
+//
+// Without it a deposit is creditable the instant its header lands, which is only
+// the oracle's own relay threshold — 2 confirmations on mainnet. A 2-block
+// Bitcoin reorg is routine, and the contract can only follow reorgs 2 deep
+// (HandleReplaceBlocks is hard-capped at 2 on mainnet), so a deposit orphaned by
+// one keeps its L2 credit while the backing coins cease to exist: an
+// un-reconcilable inflation of user supply against a vault that never received
+// them.
+//
+// This stacks on the oracle's threshold rather than replacing it, so mainnet
+// requires roughly 6 real confirmations end to end — the conventional Bitcoin
+// settlement bar.
+//
+// Deliberately FLAT, not scaled by deposit value. Value-scaling is defeated by
+// splitting one deposit across sub-threshold outputs: indexOutputs makes one UTXO
+// per output with no aggregation, so there is nothing to accumulate against
+// without a new per-address rolling window. A flat floor cannot be split around.
+//
+// It must stay strictly below RedriveStaleBlocks. A settle waiting for depth keeps
+// its spend record live, so if the redrive window opened first an operator could
+// RBF a transaction that is already mined — producing a replacement that can never
+// confirm, because Bitcoin has already spent its inputs.
+//
+// Regtest deliberately enforces a NON-ZERO depth. Setting it to zero there would
+// leave the entire test suite running with the gate inert — testnet unable to
+// prove what mainnet enforces, which is exactly the shape of finding VR2-20.
+func MinConfirmationDepth(networkMode string) uint32 {
+	switch networkMode {
+	case Testnet3, Testnet4:
+		return 2
+	case Regtest:
+		return 2
+	default: // mainnet
+		return 4
+	}
+}
+
 const MaxBlockRetention = 4608
 
 // MaxPrunePerCall limits how many old headers are deleted in a single

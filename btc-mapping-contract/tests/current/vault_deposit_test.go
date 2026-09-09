@@ -46,7 +46,9 @@ func confirmMigrationSweep(
 	txHash := sweepTx.TxHash()
 	header := buildRegtestHeader(chainhash.Hash{}, txHash, time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC))
 	ct.StateSet(contractId, constants.BlockPrefix+strconv.FormatUint(uint64(blockHeight), 10), serializeHeaderRaw(t, header))
-	ct.StateSet(contractId, constants.LastHeightKey, strconv.FormatUint(uint64(blockHeight), 10))
+	// VR2-07: the tip must sit MinDepositConfirmations above the deposit's block
+	// or the maturity gate refuses it. Seed the margin rather than the bare height.
+	ct.StateSet(contractId, constants.LastHeightKey, strconv.FormatUint(uint64(blockHeight)+2, 10))
 
 	params := mapping.ConfirmSpendParams{
 		TxData: &mapping.VerificationRequest{
@@ -94,7 +96,7 @@ func TestMigrateVaultSweepsRetiringGen(t *testing.T) {
 	// FeeSupply reserve seeded so the sweep's miner fee is funded from the reserve (X-2),
 	// not user principal.
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1, FeeSupply: 100000})))
-	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.LastHeightKey, "102")
 	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
 	seedActiveGen0(t, &ct, contractId, owner)
 
@@ -231,7 +233,7 @@ func TestMigrateSweepSurvivesMapThenPause(t *testing.T) {
 	contractId, owner := "mapping_contract", "hive:milo-hpr"
 	ct.RegisterContract(contractId, owner, ContractWasm)
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1, FeeSupply: 100000})))
-	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.LastHeightKey, "102")
 	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
 	seedActiveGen0(t, &ct, contractId, owner)
 
@@ -260,7 +262,7 @@ func TestMigrateSweepSurvivesMapThenPause(t *testing.T) {
 	require.NoError(t, sweepTx.Deserialize(bytes.NewReader(sd.Tx)))
 	header := buildRegtestHeader(chainhash.Hash{}, sweepTx.TxHash(), time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC))
 	ct.StateSet(contractId, constants.BlockPrefix+"101", serializeHeaderRaw(t, header))
-	ct.StateSet(contractId, constants.LastHeightKey, "101")
+	ct.StateSet(contractId, constants.LastHeightKey, "103")
 
 	// Submit the confirmed sweep tx via the PERMISSIONLESS map path, as an unrelated caller.
 	// (No deposit instructions — this just drives HandleMap→updateUtxoSpends over the txid.)
@@ -336,7 +338,7 @@ func TestMigrateVaultRejectsExcessiveFee(t *testing.T) {
 	ct.RegisterContract(contractId, owner, ContractWasm)
 	// High BaseFeeRate → the ~146 vB sweep fee (~73000 sats) exceeds half the deposit.
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 500})))
-	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.LastHeightKey, "102")
 	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
 	seedActiveGen0(t, &ct, contractId, owner)
 
@@ -378,7 +380,7 @@ func TestMigrateVaultRejectsWithoutFeeReserve(t *testing.T) {
 	ct.RegisterContract(contractId, owner, ContractWasm)
 	// FeeSupply reserve = 0 → the sweep fee cannot be funded.
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
-	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.LastHeightKey, "102")
 	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
 	seedActiveGen0(t, &ct, contractId, owner)
 
@@ -419,7 +421,7 @@ func TestDoubleRotationRequiresDrain(t *testing.T) {
 	contractId, owner := "mapping_contract", "hive:milo-hpr"
 	ct.RegisterContract(contractId, owner, ContractWasm)
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1, FeeSupply: 100000})))
-	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.LastHeightKey, "102")
 	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
 	seedActiveGen0(t, &ct, contractId, owner)
 
@@ -492,7 +494,7 @@ func TestMapCreditsRetiringGenDeposit(t *testing.T) {
 	owner := "hive:milo-hpr"
 	ct.RegisterContract(contractId, owner, ContractWasm)
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
-	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.LastHeightKey, "102")
 	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
 
 	// Mainnet starting point: post-fold gen-0 ACTIVE with the legacy keys + seeded
@@ -571,7 +573,7 @@ func TestUnmapExcludesRetiringGenUtxo(t *testing.T) {
 	contractId, owner := "mapping_contract", "hive:milo-hpr"
 	ct.RegisterContract(contractId, owner, ContractWasm)
 	ct.StateSet(contractId, constants.SupplyKey, string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
-	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	ct.StateSet(contractId, constants.LastHeightKey, "102")
 	ct.StateSet(contractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
 	seedActiveGen0(t, &ct, contractId, owner)
 

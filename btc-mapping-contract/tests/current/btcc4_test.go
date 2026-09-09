@@ -71,7 +71,7 @@ func TestBTCC4_RouterFailureRefundsDepositor(t *testing.T) {
 	// Standard mapping-contract state seed (mirrors TestMap).
 	ct.StateSet(btcContractId, constants.SupplyKey,
 		string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
-	ct.StateSet(btcContractId, constants.LastHeightKey, "100")
+	ct.StateSet(btcContractId, constants.LastHeightKey, "102")
 	ct.StateSet(btcContractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
 	ct.StateSet(btcContractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(btcContractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))

@@ -24,6 +24,31 @@ func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 		return ce.Prepend(err, "error verifying tranasction")
 	}
 
+	// VR2-07: refuse a deposit that is not yet buried deep enough, rather than
+	// crediting it and trying to claw it back later.
+	//
+	// A deposit used to be creditable the instant its header landed, which is only
+	// the oracle's own relay threshold — 2 confirmations on mainnet. A 2-block
+	// reorg is routine, and the contract can follow reorgs at most 2 deep
+	// (HandleReplaceBlocks is hard-capped at 2 on mainnet), so a deposit orphaned
+	// by one kept its L2 credit while the backing coins ceased to exist.
+	//
+	// Refusing BEFORE indexing, rather than crediting-then-holding, is what makes
+	// this implementable at all. Balance is one fungible integer, so "hold the top
+	// N sats" would need a parallel pending-credit ledger; and un-crediting after
+	// the fact runs into a worse bug — the depositor may already have moved the
+	// phantom credit, and the subtraction guards only integer wrap, not a negative
+	// result, which is the exact class that halted the fleet before. Nothing is
+	// indexed, nothing is credited, and the depositor simply re-submits the same
+	// permissionless SPV proof once the depth clears.
+	//
+	// It also closes the swap escape for free: a swap-tagged deposit self-credits
+	// and calls the router synchronously inside this same call, so no
+	// withdrawal-side hold could ever have fired in time.
+	if err := ms.requireConfirmationDepth(txData.BlockHeight, "deposit"); err != nil {
+		return err
+	}
+
 	var msgTx wire.MsgTx
 	err = msgTx.Deserialize(bytes.NewReader(rawTx))
 	if err != nil {
@@ -66,6 +91,46 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	}
 	if amount <= dustThreshold {
 		return ce.NewContractError(ce.ErrInput, "amount below dust threshold")
+	}
+
+	// VR2-03: cap how many PERMISSIONLESS pending spends may be live at once.
+	//
+	// refreshPendingSpendFloor walks every live spend record on each settle, and the
+	// retention clamp keeps headers alive back to the oldest of them. Both were documented
+	// as "bounded by MaxConcurrentPendingSpends" while nothing actually enforced that bound,
+	// so N was set by whoever called unmap the most: a permissionless op whose only other
+	// limit is a per-block sats cap. Unbounded N turns a rare settle into an O(N) state walk
+	// and lets a stuck spend pin header retention indefinitely.
+	//
+	// The cap deliberately sits ONLY on this path. migrateVault and redriveSpend append to
+	// the same list but are operator-driven, and capping them would hand an attacker a
+	// rotation wedge: fill every slot with pending unmaps and the vault could never sweep.
+	// Bounding the permissionless producer while leaving the operator unbounded is what
+	// makes the bound safe to hold.
+	//
+	// Retryable, not terminal: entries clear as spends settle, and a caller who hits the cap
+	// re-submits the identical unmap once one does.
+	//
+	// THE TAIL, stated rather than left to be discovered. Entries leave this list ONLY on
+	// settle, so spends that never confirm hold their slots, and 256 simultaneously-stuck
+	// spends would refuse further permissionless withdrawals until one clears. That is a
+	// real cost and it is the better side of the trade:
+	//   - it is not free to reach. Each unmap debits the caller's own balance at build, so
+	//     filling the list is self-harm before it is griefing.
+	//   - it is RECOVERABLE. redriveSpend re-drives a stuck unmap (not just a migration
+	//     sweep) with a bumped fee until L1 accepts it, and settle then clears the whole
+	//     spend group. The operator always has a way to drain this list.
+	//   - the alternative is worse and unbounded: without a cap, N is set by whoever calls
+	//     unmap the most, refreshPendingSpendFloor's per-settle walk scales with it, and a
+	//     stuck spend pins header retention with no ceiling at all.
+	// If live pending-spend volume ever approaches this number, the answer is a per-account
+	// cap rather than a bigger global one, so that one caller cannot consume everyone's
+	// headroom. That needs per-account state and is deliberately NOT built here.
+	if len(cs.TxSpendsList) >= constants.MaxConcurrentPendingSpends {
+		return ce.NewContractError(ce.ErrTransaction,
+			"too many pending spends in flight ("+strconv.Itoa(len(cs.TxSpendsList))+
+				" of "+strconv.Itoa(constants.MaxConcurrentPendingSpends)+
+				"); retry once one settles")
 	}
 
 	vscFee, err := calcVscFee(amount)
@@ -241,6 +306,8 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		BuildHeight:   currentLastHeight(), // L7-01: re-drive staleness clock
 	}
 	sdk.StateSetObject(constants.PendingUnmapPrefix+txId, string(MarshalPendingUnmap(unmapRecord)))
+	// VR2-03: hold header retention open for this spend until it settles.
+	notePendingSpend(unmapRecord.BuildHeight)
 	for _, inputId := range inputUtxoIds {
 		reserveUtxo(inputId)
 	}
@@ -312,6 +379,35 @@ func HandleDecreaseAllowance(owner, spender string, amount int64) error {
 	return nil
 }
 
+// requireConfirmationDepth refuses an L1 event whose block is not yet buried
+// MinConfirmations deep under the contract's own tip.
+//
+// One helper for both the deposit and the settle side, so the two gates cannot
+// drift apart: they are the same question — has this event had enough
+// proof-of-work stacked on it to treat as final — and the answer must be the same
+// number in both places.
+//
+// The refusal is a clean, retryable error rather than a silent skip. Both callers
+// take a permissionless SPV proof, so "not yet" has to be distinguishable from
+// "never": the submitter re-sends the identical proof once the depth accrues.
+func (cs *ContractState) requireConfirmationDepth(minedHeight uint32, what string) error {
+	tip := currentLastHeight()
+	depth := uint32(0)
+	if tip > minedHeight {
+		depth = tip - minedHeight
+	}
+	if depth < cs.MinConfirmations {
+		return ce.NewContractError(ce.ErrInput,
+			what+" is not confirmed deeply enough yet: block "+
+				strconv.FormatUint(uint64(minedHeight), 10)+" sits "+
+				strconv.FormatUint(uint64(depth), 10)+" below a tip of "+
+				strconv.FormatUint(uint64(tip), 10)+", and "+
+				strconv.FormatUint(uint64(cs.MinConfirmations), 10)+
+				" is required (re-submit the same proof once it matures)")
+	}
+	return nil
+}
+
 // HandleConfirmSpend confirms a pending spend transaction by verifying its
 // Merkle inclusion proof against the stored block headers, then promoting the
 // unconfirmed change UTXOs at the specified output indices to the confirmed pool.
@@ -328,6 +424,28 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 	if err := verifyTransaction(txData, rawTx); err != nil {
 		return ce.Prepend(err, "error verifying transaction")
 	}
+
+	// VR2-06: a settle is as irreversible as a credit, so it waits for the same
+	// depth.
+	//
+	// Settling deletes the spent inputs from the registry and promotes the
+	// transaction's outputs. If that transaction is then reorged out, the contract
+	// believes coins moved that did not: the inputs are gone from its books while
+	// the coins still sit at the old address, so the generation reads as empty
+	// while holding funds — a phantom that nothing in-band can reconcile. Waiting
+	// the same MinConfirmations as a deposit makes the two sides of the ledger
+	// equally hard to reorg.
+	//
+	// The wait is deliberately shorter than RedriveStaleBlocks. A settle waiting on
+	// depth keeps its spend record live, so if the redrive window opened first an
+	// operator could RBF a transaction Bitcoin has already mined — producing a
+	// replacement that can never confirm because its inputs are spent. Keeping the
+	// depth strictly inside the staleness window means the settle always resolves
+	// before redrive becomes possible.
+	if err := cs.requireConfirmationDepth(txData.BlockHeight, "spend"); err != nil {
+		return err
+	}
+
 	var msgTx wire.MsgTx
 	if err := msgTx.Deserialize(bytes.NewReader(rawTx)); err != nil {
 		return ce.WrapContractError(ce.ErrInput, err, "could not deserialize transaction")
@@ -427,15 +545,17 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 	// unconfirmed UTXOs at all) that makes settleMigrationSweep/settleUnmap unreachable and
 	// strands every sweep and withdrawal. Only treat an empty promotion as a griefing/no-op
 	// confirm when there is ALSO no pending spend record to settle.
-	hasSettleRecord := false
-	if ms := sdk.StateGetObject(constants.MigrationSweepPrefix + txId); ms != nil && *ms != "" {
-		hasSettleRecord = true
-	}
-	if !hasSettleRecord {
-		if us := sdk.StateGetObject(constants.PendingUnmapPrefix + txId); us != nil && *us != "" {
-			hasSettleRecord = true
-		}
-	}
+	//
+	// INTEGRATION NOTE: upstream's guard is kept verbatim in meaning. The two records
+	// are read into locals here rather than re-read inside the settle branches below,
+	// because those branches need the record CONTENTS anyway and re-reading state in a
+	// gas-metered contract is pure waste. hasSettleRecord is exactly the disjunction
+	// upstream computed, so the guard's behaviour is unchanged.
+	msRaw := sdk.StateGetObject(constants.MigrationSweepPrefix + txId)
+	hasMigrationSweep := msRaw != nil && *msRaw != ""
+	usRaw := sdk.StateGetObject(constants.PendingUnmapPrefix + txId)
+	hasPendingUnmap := usRaw != nil && *usRaw != ""
+	hasSettleRecord := hasMigrationSweep || hasPendingUnmap
 	// Only delete the pending spend's signing data once at least one of its
 	// unconfirmed outputs has actually been promoted to the confirmed pool. If
 	// nothing matched (empty/non-matching indices, or the outputs are no longer
@@ -465,7 +585,7 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 	// the two settle paths fires. settledInputs captures the confirmed record's input set —
 	// the L7-01 spend-group key used for the group-aware cleanup below.
 	var settledInputs []uint16
-	if msRaw := sdk.StateGetObject(constants.MigrationSweepPrefix + txId); msRaw != nil && *msRaw != "" {
+	if hasMigrationSweep {
 		rec, err := UnmarshalMigrationSweep([]byte(*msRaw))
 		if err != nil {
 			return ce.NewContractError(ce.ErrStateAccess, "error decoding migration sweep record: "+err.Error())
@@ -480,7 +600,7 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 	// perform the finish HandleUnmap deferred — index the change output(s) as confirmed, delete
 	// the swept inputs, clear their reservations — under the SPV proof verified above.
 	// Pause-EXEMPT (isPending is true for an in-flight unmap).
-	if usRaw := sdk.StateGetObject(constants.PendingUnmapPrefix + txId); usRaw != nil && *usRaw != "" {
+	if hasPendingUnmap {
 		rec, err := UnmarshalPendingUnmap([]byte(*usRaw))
 		if err != nil {
 			return ce.NewContractError(ce.ErrStateAccess, "error decoding pending unmap record: "+err.Error())
