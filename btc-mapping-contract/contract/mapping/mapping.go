@@ -263,18 +263,31 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 				// get router id and check it only if there is a swap in the tx
 				if routerId == "" {
 					r := sdk.StateGetObject(constants.RouterContractIdKey)
-					if *r == "" {
-						return ce.NewContractError(ce.ErrInitialization, "router contract not initialized")
-					}
 					routerId = *r
 				}
 
-				if metadata.Params == nil {
-					return ce.NewContractError(ce.ErrInput, "swap instruction missing parameters")
+				// STRAND-2: a swap that cannot be attempted (no router registered, no
+				// params, no asset out) used to return an error here, which reverted the
+				// whole map call, including the registration of this already SPV-verified
+				// deposit: real BTC on chain, no credit, no registry entry, and every
+				// retry fails the same way. Credit it as a plain deposit instead, the
+				// same outcome as a swap the router refuses (VR2-23 refund below).
+				unusable := ""
+				switch {
+				case routerId == "":
+					unusable = "router contract not initialized"
+				case metadata.Params == nil:
+					unusable = "swap instruction missing parameters"
+				case !metadata.Params.Has(constants.SwapAssetOut):
+					unusable = "asset out required to execute a swap"
 				}
-				ok := metadata.Params.Has(constants.SwapAssetOut)
-				if !ok {
-					return ce.NewContractError(ce.ErrInput, "asset out required to execute a swap")
+				if unusable != "" {
+					if err := incAccBalance(metadata.Recipient, utxo.Amount); err != nil {
+						return ce.Prepend(err, "error crediting deposit balance")
+					}
+					sdk.Log("deposit-swap not attempted (" + unusable + "); credited " +
+						strconv.FormatInt(utxo.Amount, 10) + " sats to depositor")
+					break
 				}
 				assetOut := metadata.Params.Get(constants.SwapAssetOut)
 
