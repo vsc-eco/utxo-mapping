@@ -463,7 +463,8 @@ func (cs *ContractState) buildSpendTransaction(
 	// the size fee at HandleUnmap under-collateralizes the vault (Σ(UTXO) drops MORE than
 	// ActiveSupply at settle → I1 breaks in the unsafe direction). Charging inputs−outputs
 	// makes the balance debit match the BTC that actually leaves → conservation holds exactly
-	// (add-fee) and stays over-collateralized (deduct-fee, safe). Equals `fee` whenever a
+	// in both modes (deduct-fee debits vscFee + sendAmount + this, ACCT-1; before that it
+	// debited `amount`, which drifted both ways). Equals `fee` whenever a
 	// change output IS added. `fee` above still drives the change calc, so the tx is byte-identical.
 	var outputTotal int64
 	for _, o := range tx.TxOut {

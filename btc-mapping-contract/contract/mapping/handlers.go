@@ -247,7 +247,25 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 
 	var finalAmt int64
 	if instructions.DeductFee {
-		finalAmt = amount
+		// ACCT-1: debit what actually leaves the vault, not `amount`. sendAmount was
+		// derived from an ESTIMATE of the miner fee and the built tx's true fee
+		// (inputs - outputs) differs both ways. With a change output the estimate is
+		// higher and the difference stayed in change, counted by no supply bucket
+		// (over-backed drift). With sub-dust leftover change the remainder is burned to
+		// the miner, so the vault lost more than the user was charged (under-backed by
+		// up to the dust threshold per withdrawal, repeatable by anyone). Debiting
+		// vscFee + sendAmount + trueFee keeps Σ(UTXO) == Active+Fee exactly, as the
+		// add-fee path already does: the unused estimate stays with the user and a
+		// burned remainder is charged to them. A balance that cannot cover it fails
+		// below; the user retries with a smaller amount.
+		finalAmt, err = safeAdd64(vscFee, sendAmount)
+		if err != nil {
+			return ce.WrapContractError(ce.ErrArithmetic, err, "error computing final amount")
+		}
+		finalAmt, err = safeAdd64(finalAmt, btcFee)
+		if err != nil {
+			return ce.WrapContractError(ce.ErrArithmetic, err, "error computing final amount")
+		}
 	} else {
 		finalAmt, err = safeAdd64(amount, vscFee)
 		if err != nil {
