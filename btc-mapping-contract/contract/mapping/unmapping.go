@@ -371,6 +371,15 @@ func (cs *ContractState) buildSpendTransaction(
 			"error decoding destination btc address ["+destAddress+"]",
 		)
 	}
+	// ADDR-1: DecodeAddress checks the network of a base58 address but accepts a
+	// bech32 address of ANY registered network (bc1, tb1, bcrt1), so a withdrawal to
+	// another network's address was accepted and paid. Covers the DEX settle path too.
+	if !destAddr.IsForNet(cs.NetworkParams) {
+		return nil, nil, 0, ce.NewContractError(
+			ce.ErrInput,
+			"destination btc address ["+destAddress+"] is not a "+cs.NetworkParams.Name+" address",
+		)
+	}
 
 	// Create output script for destination
 	destScript, err := txscript.PayToAddrScript(destAddr)
