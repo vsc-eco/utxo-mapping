@@ -504,6 +504,13 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 			isPending = true
 		}
 	}
+	// H-2: a member of an abandoned sweep that confirms late is an already-broadcast spend
+	// too; settling it only restores backing, so it is pause-exempt like the ones above.
+	saRaw := sdk.StateGetObject(constants.AbandonedSweepPrefix + txId)
+	hasAbandonedSweep := saRaw != nil && *saRaw != ""
+	if hasAbandonedSweep {
+		isPending = true
+	}
 	if !isPending {
 		if p := sdk.StateGetObject(constants.PausedKey); p != nil && *p != "" {
 			return ce.NewContractError(ce.ErrTransaction, "contract is paused")
@@ -573,7 +580,7 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 	hasMigrationSweep := msRaw != nil && *msRaw != ""
 	usRaw := sdk.StateGetObject(constants.PendingUnmapPrefix + txId)
 	hasPendingUnmap := usRaw != nil && *usRaw != ""
-	hasSettleRecord := hasMigrationSweep || hasPendingUnmap
+	hasSettleRecord := hasMigrationSweep || hasPendingUnmap || hasAbandonedSweep
 	// Only delete the pending spend's signing data once at least one of its
 	// unconfirmed outputs has actually been promoted to the confirmed pool. If
 	// nothing matched (empty/non-matching indices, or the outputs are no longer
@@ -612,6 +619,18 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 			return err
 		}
 		settledInputs = rec.InputIds
+	}
+
+	// H-2: a member of an abandoned sweep confirmed after all. Its "ms-" record is gone, so
+	// the branch above did not run; settle it against its "sa-" record instead.
+	if hasAbandonedSweep {
+		ab, err := UnmarshalAbandonedSweep([]byte(*saRaw))
+		if err != nil {
+			return ce.NewContractError(ce.ErrStateAccess, "error decoding abandoned sweep record: "+err.Error())
+		}
+		if err := cs.settleAbandonedSweep(&msgTx, ab, txData.BlockHeight); err != nil {
+			return err
+		}
 	}
 
 	// Guard 1 (delete-at-confirm unmap settle): if this confirmed tx has a "us-" record,

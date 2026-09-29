@@ -32,6 +32,28 @@ const (
 	RedriveIncRelayFeeRate int64  = 2
 )
 
+// H-2 (VR2-27): legacy-input isolation and the stuck-sweep abandon.
+//
+// MaxLegacyInputsPerTranche: a migration tranche drawn from the legacy unconfirmed pool
+// (the VR2-26 fallback) spends at most this many inputs. Those entries predate the
+// SPV-indexed registry, so one of them may not exist on Bitcoin (the shared testnet vault
+// holds one); inside a batch it makes the whole tranche unconfirmable. One per tranche
+// confines such an entry to its own sweep.
+//
+// SweepAbandonBlocks: how long a sweep that spends only legacy inputs must have stayed
+// unconfirmed after its most recent re-drive before anyone may abandon it, writing its
+// input off against the fee reserve. A real input's fee-bumped sweep confirms well
+// inside this; a sweep of an input that does not exist never does. A late confirmation
+// of an abandoned sweep still settles, reversing the write-off net of the miner fee.
+const (
+	MaxLegacyInputsPerTranche        = 1
+	SweepAbandonBlocks        uint32 = 432 // about 3 days of Bitcoin blocks
+)
+
+// AbandonedSweepPrefix ("sa-"+txid): one record per member txid of an abandoned sweep
+// spend group, kept so a late confirmation of any member can still settle.
+const AbandonedSweepPrefix = "sa" + DirPathDelimiter
+
 // MaxSpendGroupMembers caps the members of an L7-01 spend group (original + RBF
 // replacements). Re-drives are owner-gated and each bump raises the fee ≥ 2 sat/vByte
 // under a totalInputs/2 ceiling, so an honest operator needs only a handful before a

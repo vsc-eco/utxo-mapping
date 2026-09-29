@@ -1127,6 +1127,37 @@ func RedriveSpend(input *string) *string {
 	return mapping.StrPtr(result)
 }
 
+//go:wasmexport abandonSweep
+func AbandonSweep(input *string) *string {
+	// H-2 (VR2-27): PERMISSIONLESS. Every condition is on-chain state (a single legacy
+	// input, re-driven at least once, unconfirmed SweepAbandonBlocks after its latest build,
+	// the write-off covered by the reserve surplus), so no trusted caller is needed, the
+	// way Chainflip aborts a broadcast no authority can land. PAUSE-GATED: it deletes a
+	// registry entry and debits the reserve; the late settle of an abandoned sweep stays
+	// pause-exempt in confirmSpend.
+	checkNotPaused()
+	if input == nil || *input == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "abandonSweep requires the stuck sweep txid"))
+	}
+	publicKeys, err := loadPublicKeys()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	contractState, err := mapping.IntializeContractState(publicKeys, NetworkMode)
+	if err != nil {
+		ce.CustomAbort(ce.Prepend(err, "error initializing contract state"))
+	}
+	result, err := contractState.HandleAbandonStuckSweep(*input)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	err = contractState.SaveToState()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	return mapping.StrPtr(result)
+}
+
 //go:wasmexport retireVault
 func RetireVault(_ *string) *string {
 	// Owner or the appointed vault operator (see checkOperator). retireVault is

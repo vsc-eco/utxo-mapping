@@ -53,12 +53,40 @@ import (
 // that are unreachable by construction.
 func (cs *ContractState) getMigrationInputs(gen uint32, excluded map[uint16]struct{}, maxTrancheValue int64) (inputIds []uint16, total int64, moreRemain bool, err error) {
 	inputIds, total, moreRemain, err = cs.gatherMigrationInputs(gen, excluded, maxTrancheValue, true)
-	if err != nil || len(inputIds) > 0 {
+	if err != nil {
 		return inputIds, total, moreRemain, err
+	}
+	if len(inputIds) > 0 {
+		// H-2: a confirmed tranche that cannot be built even at the minimum fee rate would
+		// be selected again on every call and abort, and the legacy entries behind it would
+		// never be reached. Sweep a legacy entry first when there is one; the confirmed
+		// dust is left for the dust write-off once nothing sweepable remains.
+		if trancheBuildableAtMinFee(cs.trancheAmounts(inputIds)) {
+			return inputIds, total, moreRemain, nil
+		}
+		legacyIds, legacyTotal, legacyMore, lerr := cs.gatherMigrationInputs(gen, excluded, maxTrancheValue, false)
+		if lerr != nil || len(legacyIds) == 0 {
+			return inputIds, total, moreRemain, lerr
+		}
+		return legacyIds, legacyTotal, legacyMore, nil
 	}
 	// Nothing selectable in the confirmed pool for this generation: it is stuck unless the
 	// legacy unconfirmed-pool entries are admitted.
 	return cs.gatherMigrationInputs(gen, excluded, maxTrancheValue, false)
+}
+
+// trancheAmounts returns the registry amounts of the given ids, in the given order.
+func (cs *ContractState) trancheAmounts(ids []uint16) []int64 {
+	out := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		for _, e := range cs.UtxoList {
+			if e.Id == id {
+				out = append(out, e.Amount)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // gatherMigrationInputs is one selection pass. confirmedOnly restricts it to the confirmed
@@ -68,6 +96,12 @@ func (cs *ContractState) gatherMigrationInputs(gen uint32, excluded map[uint16]s
 	for i := range cs.UtxoList {
 		entry := cs.UtxoList[i]
 		if confirmedOnly && entry.Id < constants.UtxoConfirmedPoolStart {
+			continue
+		}
+		// H-2: the legacy pass takes legacy entries only. It runs when nothing confirmed of
+		// this generation is selectable, or when the confirmed tranche cannot be built at the
+		// minimum fee (getMigrationInputs), and must not pick that tranche up again.
+		if !confirmedOnly && entry.Id >= constants.UtxoConfirmedPoolStart {
 			continue
 		}
 		// BRK-1 (delete-at-confirm): the swept inputs of an in-flight sweep STAY in the
@@ -98,6 +132,13 @@ func (cs *ContractState) gatherMigrationInputs(gen uint32, excluded map[uint16]s
 			continue
 		}
 		if len(inputIds) >= constants.MaxMigrationInputs {
+			moreRemain = true
+			break
+		}
+		// H-2 (VR2-27): legacy entries predate the SPV-indexed registry, and one that does not
+		// exist on Bitcoin makes its sweep unconfirmable forever. One per tranche confines it
+		// to its own sweep, which HandleAbandonStuckSweep can then retire.
+		if !confirmedOnly && len(inputIds) >= constants.MaxLegacyInputsPerTranche {
 			moreRemain = true
 			break
 		}

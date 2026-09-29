@@ -127,6 +127,47 @@ func isResidualUnsweepableAtMinFee(amounts []int64) bool {
 	return true
 }
 
+// trancheBuildableAtMinFee reports whether a sweep spending exactly these inputs could be
+// built at the fixed minimum fee rate: buildMigrationTransaction's two abort conditions,
+// priced at 1 sat/vbyte, the same sizing as isResidualUnsweepableAtMinFee.
+func trancheBuildableAtMinFee(amounts []int64) bool {
+	k := int64(len(amounts))
+	if k == 0 {
+		return false
+	}
+	var total int64
+	for _, a := range amounts {
+		total += a
+	}
+	fee1 := estimateVSize(10+k*41+43, k*(72+112+5))
+	return fee1 <= total/2 && total-fee1 > dustThreshold
+}
+
+// residualStuckAtMinFee judges a generation's residual by what migration can actually
+// build from it (H-2): confirmed-pool inputs are batched (the best-prefix judgment of
+// isResidualUnsweepableAtMinFee), legacy unconfirmed-pool entries are swept one per
+// tranche (MaxLegacyInputsPerTranche), so a legacy entry is sweepable only on its own.
+// Pricing legacy entries as a batch would call two entries that can only be swept
+// together "sweepable", migration would never sweep them, and the generation would wedge.
+func residualStuckAtMinFee(batchable, legacy []int64) bool {
+	anyLegacy := false
+	for _, a := range legacy {
+		if a <= 0 {
+			continue
+		}
+		anyLegacy = true
+		if trancheBuildableAtMinFee([]int64{a}) {
+			return false
+		}
+	}
+	for _, a := range batchable {
+		if a > 0 {
+			return isResidualUnsweepableAtMinFee(batchable)
+		}
+	}
+	return anyLegacy
+}
+
 // HandleWriteOffDust scans every SUPERSEDED (retiring/draining/inactive) generation's
 // confirmed residual and force-retires (deletes + debits Supply for) any generation whose
 // TOTAL residual is provably un-sweepable at the fixed minimum fee rate
@@ -196,6 +237,8 @@ func (cs *ContractState) HandleWriteOffDust(height uint32) (string, error) {
 		// aggregate. Pricing the sum alone condemned — and deleted — residuals that
 		// ordinary migration could still drain.
 		amounts []int64
+		// H-2: legacy unconfirmed-pool entries, swept one per tranche, judged apart.
+		legacy []int64
 	}
 	accum := make(map[uint32]*genAccum)
 	for _, entry := range cs.UtxoList {
@@ -221,7 +264,11 @@ func (cs *ContractState) HandleWriteOffDust(height uint32) (string, error) {
 		a.sum = newSum
 		a.n++
 		a.ids = append(a.ids, entry.Id)
-		a.amounts = append(a.amounts, u.Amount)
+		if entry.Id < constants.UtxoConfirmedPoolStart {
+			a.legacy = append(a.legacy, u.Amount)
+		} else {
+			a.amounts = append(a.amounts, u.Amount)
+		}
 	}
 
 	var writtenOff []string
@@ -234,7 +281,7 @@ func (cs *ContractState) HandleWriteOffDust(height uint32) (string, error) {
 		if !ok || a.sum <= 0 {
 			continue // nothing held by this generation (after exclusions)
 		}
-		if !isResidualUnsweepableAtMinFee(a.amounts) {
+		if !residualStuckAtMinFee(a.amounts, a.legacy) {
 			continue // genuinely sweepable — leave it for the normal migrateVault sweep
 		}
 
