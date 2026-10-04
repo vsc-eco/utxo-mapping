@@ -62,7 +62,10 @@ func setupConfirmSpendContract(t *testing.T) (*test_utils.ContractTest, string, 
 		UserSupply:   5000,
 		BaseFeeRate:  1,
 	})))
-	ct.StateSet(contractId, constants.LastHeightKey, "101")
+	// VR2-06: a settle waits the same MinConfirmations as a deposit, so the tip has
+	// to sit above the spend's block. 104 leaves both the block at 101 and the
+	// alternate at 102 (TestConfirmSpendUnknownTxId) comfortably mature.
+	ct.StateSet(contractId, constants.LastHeightKey, "104")
 	ct.StateSet(contractId, constants.BlockPrefix+"100", buildSeedHeaderRaw(t, time.Unix(0, 0)))
 	ct.StateSet(contractId, constants.BlockPrefix+"101", fixture.BlockHeaderRaw)
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
@@ -126,6 +129,32 @@ func TestConfirmSpend(t *testing.T) {
 		assert.NoError(t, err)
 		assert.NotContains(t, txSpends, fixture.TxId, "spendTxId should be removed from registry")
 	}
+}
+
+// TestConfirmSpendPendingExemptFromPause — BRK-4b (brick council FS-1/V-8): a
+// confirm of an ALREADY-PENDING spend must succeed even while the contract is
+// PAUSED (it only reconciles an already-authorized, already-broadcast spend;
+// freezing it merely strands an in-flight migration/withdrawal).
+func TestConfirmSpendPendingExemptFromPause(t *testing.T) {
+	ct, contractId, fixture := setupConfirmSpendContract(t)
+	ct.StateSet(contractId, constants.PausedKey, "1") // pause the contract
+
+	params := mapping.ConfirmSpendParams{
+		TxData: &mapping.VerificationRequest{
+			BlockHeight:    fixture.BlockHeight,
+			RawTxHex:       fixture.RawTxHex,
+			MerkleProofHex: fixture.MerkleProofHex,
+			TxIndex:        fixture.TxIndex,
+		},
+		Indices: []uint32{0},
+	}
+	r := callConfirmSpend(t, ct, contractId, "hive:milo-hpr", params)
+	if r.Err != "" {
+		fmt.Printf("%s: %s\n", r.Err, r.ErrMsg)
+	}
+	assert.True(t, r.Success, "confirmSpend of a PENDING spend must succeed while paused (BRK-4b)")
+	assert.Equal(t, "", ct.StateGet(contractId, constants.TxSpendsPrefix+fixture.TxId),
+		"the pending spend should be reconciled and removed even under pause")
 }
 
 // TestConfirmSpendUnknownTxId verifies that confirmSpend with a valid proof for

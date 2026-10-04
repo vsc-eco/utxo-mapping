@@ -76,12 +76,29 @@ func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) ([]Utxo, error) {
 					strconv.FormatInt(txOut.Value, 10)+" > "+
 					strconv.FormatInt(constants.MaxUtxoAmount, 10)+")")
 			}
+			// V-1 dust-escape prevention (INERT-GATED): once rotation has happened at least
+			// once (a superseded generation exists), never credit a sub-MinDepositSats
+			// output — it can never be swept economically and, landed on a superseded gen,
+			// would permanently deadlock rotation (NN#3). A per-output SKIP, not a tx abort:
+			// a tx with one legit + one dust output must still credit the legit one. Gated on
+			// hasSupersededGen so a pre-rotation deploy's map behavior is BYTE-IDENTICAL to
+			// before this slice (see constants.MinDepositSats doc + BUILD-MAP §4/§7 — this is
+			// the one deliberately non-inert-once-rotated behavior change, by design).
+			if hasSupersededGen(ms.Vaults) && txOut.Value < constants.MinDepositSats {
+				sdk.Log("dust-skip|addr=" + addr + "|sats=" + strconv.FormatInt(txOut.Value, 10))
+				continue
+			}
 			utxo := Utxo{
 				TxId:     msgTx.TxID(),
 				Vout:     uint32(index),
 				Amount:   txOut.Value,
 				PkScript: txOut.PkScript,
 				Tag:      ms.AddressRegistry[addr].Tag, // raw bytes, not hex
+				// S1.3 C-1: tag the deposit with the generation whose address it hit,
+				// so the spend path resolves the correct per-generation witness keys +
+				// TSS keyId. Without this, a post-rotation gen-1 deposit recorded as
+				// gen-0 would build an unspendable witness while the balance is deducted.
+				Generation: ms.AddressRegistry[addr].Generation,
 			}
 			outputsForVsc = append(outputsForVsc, utxo)
 		}
@@ -94,7 +111,34 @@ func (ms *MappingState) indexOutputs(msgTx *wire.MsgTx) ([]Utxo, error) {
 // If so, it confirms matching unconfirmed UTXOs by transitioning them from the
 // unconfirmed pool (IDs 0–63) to the confirmed pool (IDs 64–255), and removes
 // the signing data entry.
-func (cs *ContractState) updateUtxoSpends(txId string) error {
+func (cs *ContractState) updateUtxoSpends(txId string, blockHeight uint32) error {
+	// BRK-1 (methodology M1/M4 S2-1): a MIGRATION sweep — one with a live "ms-" record —
+	// must be reconciled ONLY through confirmSpend's settle (index output → successor,
+	// delete inputs, debit fee), NEVER stripped here. If the permissionless `map` path
+	// stripped its "d-"/TxSpendsList entry, the sweep would vanish from the pending-spend
+	// list while still unsettled in "ms-"/MigrationSweeps — losing the BRK-4b pause-exempt
+	// on the later confirmSpend AND making a TxSpendsList-keyed monitor read it as
+	// reconciled so confirmSpend may never fire → NN#3 rotation freeze (funds-safe,
+	// recoverable, but a liveness hazard). Leave the migration sweep fully intact for
+	// confirmSpend. (A migration sweep indexes no unconfirmed change, so there is nothing
+	// to promote here anyway.)
+	if ms := sdk.StateGetObject(constants.MigrationSweepPrefix + txId); ms != nil && *ms != "" {
+		return nil
+	}
+
+	// Guard 1 (delete-at-confirm unmap): an UNMAP with a live "us-" record must LIKEWISE be
+	// reconciled ONLY through confirmSpend's settleUnmap, NEVER stripped here. Its inputs
+	// stay registered (and reserved) until settle; if the permissionless `map` path stripped
+	// its "d-"/TxSpendsList entry while the inputs remain registered, the tx's txid would
+	// leave the authorised set (cs.TxSpendsList) while its inputs are still in the registry —
+	// exactly the state HandleReportUnauthorizedSpend trips on (spendsRegistered &&
+	// !authorized) → a permissionless false theft-halt of the whole vault (the identical
+	// landmine the reverted release-stale-sweep guard armed, council finding A1/F3). Leave the
+	// unmap fully intact for confirmSpend; its change is indexed by settleUnmap, not here.
+	if us := sdk.StateGetObject(constants.PendingUnmapPrefix + txId); us != nil && *us != "" {
+		return nil
+	}
+
 	utxoSpendJson := sdk.StateGetObject(constants.TxSpendsPrefix + txId)
 	if utxoSpendJson == nil || len(*utxoSpendJson) < 1 {
 		return nil
@@ -123,9 +167,18 @@ func (cs *ContractState) updateUtxoSpends(txId string) error {
 		}
 	}
 
+	promotedVouts := []uint32{}
 	for _, sigHash := range utxoSpend.UnsignedSigHashes {
 		for _, unconfirmed := range unconfirmedEntries {
 			if txId == unconfirmed.utxo.TxId && sigHash.Index == unconfirmed.utxo.Vout {
+				// B-1 (council): never re-id a UTXO reserved by an in-flight unmap — its "us-"
+				// record references this input by its current id; re-iding it strands that unmap at
+				// settle and leaves the promoted id unreserved (double-select). Leave it unconfirmed +
+				// reserved; its unmap deletes it at settleUnmap. (Upgrade-path only; a fresh Guard-1
+				// deploy holds no unconfirmed UTXOs.)
+				if isUtxoReserved(cs.UtxoList[unconfirmed.indexInRegistry].Id) {
+					continue
+				}
 				// Promote to confirmed pool: allocate a new confirmed ID,
 				// write data at new key, delete old key, update registry.
 				newId, err := cs.allocateConfirmedId()
@@ -135,9 +188,16 @@ func (cs *ContractState) updateUtxoSpends(txId string) error {
 				saveUtxo(newId, unconfirmed.utxo)
 				sdk.StateDeleteObject(getUtxoKey(cs.UtxoList[unconfirmed.indexInRegistry].Id))
 				cs.UtxoList[unconfirmed.indexInRegistry].Id = newId
+				promotedVouts = append(promotedVouts, unconfirmed.utxo.Vout)
 				continue
 			}
 		}
+	}
+	// D-1/C-1 (council HIGH): a promoted output belongs to this confirmed tx (txId) at this
+	// block; record it observed so topUp cannot double-credit a legacy unconfirmed change
+	// promoted on the upgrade path.
+	if err := markOutpointsObserved(blockHeight, txId, promotedVouts); err != nil {
+		return err
 	}
 
 	sdk.StateDeleteObject(constants.TxSpendsPrefix + txId)
@@ -203,18 +263,31 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 				// get router id and check it only if there is a swap in the tx
 				if routerId == "" {
 					r := sdk.StateGetObject(constants.RouterContractIdKey)
-					if *r == "" {
-						return ce.NewContractError(ce.ErrInitialization, "router contract not initialized")
-					}
 					routerId = *r
 				}
 
-				if metadata.Params == nil {
-					return ce.NewContractError(ce.ErrInput, "swap instruction missing parameters")
+				// STRAND-2: a swap that cannot be attempted (no router registered, no
+				// params, no asset out) used to return an error here, which reverted the
+				// whole map call, including the registration of this already SPV-verified
+				// deposit: real BTC on chain, no credit, no registry entry, and every
+				// retry fails the same way. Credit it as a plain deposit instead, the
+				// same outcome as a swap the router refuses (VR2-23 refund below).
+				unusable := ""
+				switch {
+				case routerId == "":
+					unusable = "router contract not initialized"
+				case metadata.Params == nil:
+					unusable = "swap instruction missing parameters"
+				case !metadata.Params.Has(constants.SwapAssetOut):
+					unusable = "asset out required to execute a swap"
 				}
-				ok := metadata.Params.Has(constants.SwapAssetOut)
-				if !ok {
-					return ce.NewContractError(ce.ErrInput, "asset out required to execute a swap")
+				if unusable != "" {
+					if err := incAccBalance(metadata.Recipient, utxo.Amount); err != nil {
+						return ce.Prepend(err, "error crediting deposit balance")
+					}
+					sdk.Log("deposit-swap not attempted (" + unusable + "); credited " +
+						strconv.FormatInt(utxo.Amount, 10) + " sats to depositor")
+					break
 				}
 				assetOut := metadata.Params.Get(constants.SwapAssetOut)
 
@@ -248,30 +321,77 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 				// reverting swap traps as before — the legacy strand-on-permanent-
 				// failure behaviour, until the network activates the feature.)
 				res := sdk.TryContractCall(routerId, "execute", string(instrJson), nil)
+				// PER-SWAP PROVENANCE: capture how much of THIS swap's allowance the
+				// router did NOT consume, BEFORE clearing it. checkAndDeductBalance
+				// decrements the allowance on every third-party pull, so the remainder
+				// is exactly the portion of THIS deposit still held by the contract.
+				//
+				// This must NOT be inferred from getAccBal(selfAddr): "contract:<id>" is
+				// a SHARED, PERSISTENT account across every output in this call and every
+				// future call, so an unrelated deposit's leftover credit can mask a
+				// router that drained this one — refunding value the router already took.
+				unspentAllowance := getAllowance(selfAddr, routerAddr)
+				if unspentAllowance > utxo.Amount {
+					unspentAllowance = utxo.Amount
+				}
+				if unspentAllowance < 0 {
+					unspentAllowance = 0
+				}
 				// Clean up any remaining allowance after swap to prevent lingering authorization
 				setAllowance(selfAddr, routerAddr, 0)
 
+				// VR2-23: ALL router-failure shapes converge on the SAME refund.
+				//
+				// A router can fail three ways: it reverts, it returns something
+				// unparseable, or it "succeeds" while producing zero output (a drained
+				// pool is enough — no malice required). The original BTC-C4 fix
+				// refunded the depositor in all three cases; a later refactor to
+				// TryContractCall kept only the revert branch, on the stated assumption
+				// that zero output would always surface as a revert. That assumption is
+				// false, and the repo ships a mock router specifically to prove it.
+				//
+				// With only the revert branch, a zero-output swap hard-errored and
+				// reverted the ENTIRE map call — including registration of the
+				// already-SPV-verified L1 deposit. Real Bitcoin that had landed on
+				// chain got no credit and no registry entry: stranded.
+				//
+				// Refunding is safe on the success path too, because the underflow check
+				// below only pays out if the contract STILL HOLDS the funds. If the
+				// router already pulled them through its allowance, selfBal is short and
+				// we fail closed rather than paying twice.
+				routerFailure := ""
 				if !res.Ok {
-					// The swap rolled back; the BTC drawn for it is still credited to
-					// the contract account (incAccBalance above ran in THIS frame, not
-					// the rolled-back callee). Move it to the depositor as wrapped BTC.
-					selfBal := getAccBal(selfAddr)
-					if selfBal < utxo.Amount {
-						return ce.NewContractError(ce.ErrStateAccess, "swap refund: contract balance underflow")
-					}
-					setAccBal(selfAddr, selfBal-utxo.Amount)
-					if err := incAccBalance(metadata.Recipient, utxo.Amount); err != nil {
-						return ce.Prepend(err, "swap refund: crediting depositor")
-					}
-					sdk.Log("deposit-swap reverted (" + res.Error + "); refunded depositor wrapped BTC")
+					routerFailure = "reverted: " + res.Error
 				} else {
 					var swapResult SwapResult
 					if err := tinyjson.Unmarshal([]byte(res.Result), &swapResult); err != nil {
-						return ce.WrapContractError(ce.ErrJson, err, "error unmarshalling swap result")
+						routerFailure = "unparseable result"
+					} else if swapResult.AmountOut == "" || swapResult.AmountOut == "0" {
+						routerFailure = "zero amount out"
 					}
-					if swapResult.AmountOut == "" || swapResult.AmountOut == "0" {
-						return ce.NewContractError(ce.ErrInput, "swap returned zero amount out")
+				}
+				if routerFailure != "" {
+					// Refund ONLY the part of THIS deposit the router did not take.
+					//
+					// A reverting router consumed nothing, so unspentAllowance is the
+					// full amount and the depositor is made whole. A router that
+					// "succeeded" while pulling the funds and reporting zero output has
+					// already been paid through the allowance it was granted; refunding
+					// the full amount there would pay the same sats twice and, as proven
+					// by PoC, could be funded out of an UNRELATED depositor's stranded
+					// credit — silently zeroing an innocent third party's deposit.
+					if unspentAllowance > 0 {
+						selfBal := getAccBal(selfAddr)
+						if selfBal < unspentAllowance {
+							return ce.NewContractError(ce.ErrStateAccess, "swap refund: contract balance underflow")
+						}
+						setAccBal(selfAddr, selfBal-unspentAllowance)
+						if err := incAccBalance(metadata.Recipient, unspentAllowance); err != nil {
+							return ce.Prepend(err, "swap refund: crediting depositor")
+						}
 					}
+					sdk.Log("deposit-swap failed (" + routerFailure + "); refunded " +
+						strconv.FormatInt(unspentAllowance, 10) + " unspent sats to depositor")
 				}
 			default:
 				// should never happen

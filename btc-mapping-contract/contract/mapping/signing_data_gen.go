@@ -43,45 +43,10 @@ func (z *SigningData) DecodeMsg(dc *msgp.Reader) (err error) {
 				z.UnsignedSigHashes = make([]UnsignedSigHash, zb0002)
 			}
 			for za0001 := range z.UnsignedSigHashes {
-				var zb0003 uint32
-				zb0003, err = dc.ReadMapHeader()
+				err = z.UnsignedSigHashes[za0001].DecodeMsg(dc)
 				if err != nil {
 					err = msgp.WrapError(err, "UnsignedSigHashes", za0001)
 					return
-				}
-				for zb0003 > 0 {
-					zb0003--
-					field, err = dc.ReadMapKeyPtr()
-					if err != nil {
-						err = msgp.WrapError(err, "UnsignedSigHashes", za0001)
-						return
-					}
-					switch msgp.UnsafeString(field) {
-					case "i":
-						z.UnsignedSigHashes[za0001].Index, err = dc.ReadUint32()
-						if err != nil {
-							err = msgp.WrapError(err, "UnsignedSigHashes", za0001, "Index")
-							return
-						}
-					case "hs":
-						z.UnsignedSigHashes[za0001].SigHash, err = dc.ReadBytes(z.UnsignedSigHashes[za0001].SigHash)
-						if err != nil {
-							err = msgp.WrapError(err, "UnsignedSigHashes", za0001, "SigHash")
-							return
-						}
-					case "ws":
-						z.UnsignedSigHashes[za0001].WitnessScript, err = dc.ReadBytes(z.UnsignedSigHashes[za0001].WitnessScript)
-						if err != nil {
-							err = msgp.WrapError(err, "UnsignedSigHashes", za0001, "WitnessScript")
-							return
-						}
-					default:
-						err = dc.Skip()
-						if err != nil {
-							err = msgp.WrapError(err, "UnsignedSigHashes", za0001)
-							return
-						}
-					}
 				}
 			}
 		default:
@@ -119,35 +84,9 @@ func (z *SigningData) EncodeMsg(en *msgp.Writer) (err error) {
 		return
 	}
 	for za0001 := range z.UnsignedSigHashes {
-		// map header, size 3
-		// write "i"
-		err = en.Append(0x83, 0xa1, 0x69)
+		err = z.UnsignedSigHashes[za0001].EncodeMsg(en)
 		if err != nil {
-			return
-		}
-		err = en.WriteUint32(z.UnsignedSigHashes[za0001].Index)
-		if err != nil {
-			err = msgp.WrapError(err, "UnsignedSigHashes", za0001, "Index")
-			return
-		}
-		// write "hs"
-		err = en.Append(0xa2, 0x68, 0x73)
-		if err != nil {
-			return
-		}
-		err = en.WriteBytes(z.UnsignedSigHashes[za0001].SigHash)
-		if err != nil {
-			err = msgp.WrapError(err, "UnsignedSigHashes", za0001, "SigHash")
-			return
-		}
-		// write "ws"
-		err = en.Append(0xa2, 0x77, 0x73)
-		if err != nil {
-			return
-		}
-		err = en.WriteBytes(z.UnsignedSigHashes[za0001].WitnessScript)
-		if err != nil {
-			err = msgp.WrapError(err, "UnsignedSigHashes", za0001, "WitnessScript")
+			err = msgp.WrapError(err, "UnsignedSigHashes", za0001)
 			return
 		}
 	}
@@ -165,16 +104,11 @@ func (z *SigningData) MarshalMsg(b []byte) (o []byte, err error) {
 	o = append(o, 0xa2, 0x75, 0x68)
 	o = msgp.AppendArrayHeader(o, uint32(len(z.UnsignedSigHashes)))
 	for za0001 := range z.UnsignedSigHashes {
-		// map header, size 3
-		// string "i"
-		o = append(o, 0x83, 0xa1, 0x69)
-		o = msgp.AppendUint32(o, z.UnsignedSigHashes[za0001].Index)
-		// string "hs"
-		o = append(o, 0xa2, 0x68, 0x73)
-		o = msgp.AppendBytes(o, z.UnsignedSigHashes[za0001].SigHash)
-		// string "ws"
-		o = append(o, 0xa2, 0x77, 0x73)
-		o = msgp.AppendBytes(o, z.UnsignedSigHashes[za0001].WitnessScript)
+		o, err = z.UnsignedSigHashes[za0001].MarshalMsg(o)
+		if err != nil {
+			err = msgp.WrapError(err, "UnsignedSigHashes", za0001)
+			return
+		}
 	}
 	return
 }
@@ -216,45 +150,10 @@ func (z *SigningData) UnmarshalMsg(bts []byte) (o []byte, err error) {
 				z.UnsignedSigHashes = make([]UnsignedSigHash, zb0002)
 			}
 			for za0001 := range z.UnsignedSigHashes {
-				var zb0003 uint32
-				zb0003, bts, err = msgp.ReadMapHeaderBytes(bts)
+				bts, err = z.UnsignedSigHashes[za0001].UnmarshalMsg(bts)
 				if err != nil {
 					err = msgp.WrapError(err, "UnsignedSigHashes", za0001)
 					return
-				}
-				for zb0003 > 0 {
-					zb0003--
-					field, bts, err = msgp.ReadMapKeyZC(bts)
-					if err != nil {
-						err = msgp.WrapError(err, "UnsignedSigHashes", za0001)
-						return
-					}
-					switch msgp.UnsafeString(field) {
-					case "i":
-						z.UnsignedSigHashes[za0001].Index, bts, err = msgp.ReadUint32Bytes(bts)
-						if err != nil {
-							err = msgp.WrapError(err, "UnsignedSigHashes", za0001, "Index")
-							return
-						}
-					case "hs":
-						z.UnsignedSigHashes[za0001].SigHash, bts, err = msgp.ReadBytesBytes(bts, z.UnsignedSigHashes[za0001].SigHash)
-						if err != nil {
-							err = msgp.WrapError(err, "UnsignedSigHashes", za0001, "SigHash")
-							return
-						}
-					case "ws":
-						z.UnsignedSigHashes[za0001].WitnessScript, bts, err = msgp.ReadBytesBytes(bts, z.UnsignedSigHashes[za0001].WitnessScript)
-						if err != nil {
-							err = msgp.WrapError(err, "UnsignedSigHashes", za0001, "WitnessScript")
-							return
-						}
-					default:
-						bts, err = msgp.Skip(bts)
-						if err != nil {
-							err = msgp.WrapError(err, "UnsignedSigHashes", za0001)
-							return
-						}
-					}
 				}
 			}
 		default:
@@ -273,7 +172,7 @@ func (z *SigningData) UnmarshalMsg(bts []byte) (o []byte, err error) {
 func (z *SigningData) Msgsize() (s int) {
 	s = 1 + 3 + msgp.BytesPrefixSize + len(z.Tx) + 3 + msgp.ArrayHeaderSize
 	for za0001 := range z.UnsignedSigHashes {
-		s += 1 + 2 + msgp.Uint32Size + 3 + msgp.BytesPrefixSize + len(z.UnsignedSigHashes[za0001].SigHash) + 3 + msgp.BytesPrefixSize + len(z.UnsignedSigHashes[za0001].WitnessScript)
+		s += z.UnsignedSigHashes[za0001].Msgsize()
 	}
 	return
 }
@@ -314,6 +213,12 @@ func (z *UnsignedSigHash) DecodeMsg(dc *msgp.Reader) (err error) {
 				err = msgp.WrapError(err, "WitnessScript")
 				return
 			}
+		case "am":
+			z.Amount, err = dc.ReadInt64()
+			if err != nil {
+				err = msgp.WrapError(err, "Amount")
+				return
+			}
 		default:
 			err = dc.Skip()
 			if err != nil {
@@ -327,9 +232,9 @@ func (z *UnsignedSigHash) DecodeMsg(dc *msgp.Reader) (err error) {
 
 // EncodeMsg implements msgp.Encodable
 func (z *UnsignedSigHash) EncodeMsg(en *msgp.Writer) (err error) {
-	// map header, size 3
+	// map header, size 4
 	// write "i"
-	err = en.Append(0x83, 0xa1, 0x69)
+	err = en.Append(0x84, 0xa1, 0x69)
 	if err != nil {
 		return
 	}
@@ -358,15 +263,25 @@ func (z *UnsignedSigHash) EncodeMsg(en *msgp.Writer) (err error) {
 		err = msgp.WrapError(err, "WitnessScript")
 		return
 	}
+	// write "am"
+	err = en.Append(0xa2, 0x61, 0x6d)
+	if err != nil {
+		return
+	}
+	err = en.WriteInt64(z.Amount)
+	if err != nil {
+		err = msgp.WrapError(err, "Amount")
+		return
+	}
 	return
 }
 
 // MarshalMsg implements msgp.Marshaler
 func (z *UnsignedSigHash) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
-	// map header, size 3
+	// map header, size 4
 	// string "i"
-	o = append(o, 0x83, 0xa1, 0x69)
+	o = append(o, 0x84, 0xa1, 0x69)
 	o = msgp.AppendUint32(o, z.Index)
 	// string "hs"
 	o = append(o, 0xa2, 0x68, 0x73)
@@ -374,6 +289,9 @@ func (z *UnsignedSigHash) MarshalMsg(b []byte) (o []byte, err error) {
 	// string "ws"
 	o = append(o, 0xa2, 0x77, 0x73)
 	o = msgp.AppendBytes(o, z.WitnessScript)
+	// string "am"
+	o = append(o, 0xa2, 0x61, 0x6d)
+	o = msgp.AppendInt64(o, z.Amount)
 	return
 }
 
@@ -413,6 +331,12 @@ func (z *UnsignedSigHash) UnmarshalMsg(bts []byte) (o []byte, err error) {
 				err = msgp.WrapError(err, "WitnessScript")
 				return
 			}
+		case "am":
+			z.Amount, bts, err = msgp.ReadInt64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Amount")
+				return
+			}
 		default:
 			bts, err = msgp.Skip(bts)
 			if err != nil {
@@ -427,6 +351,6 @@ func (z *UnsignedSigHash) UnmarshalMsg(bts []byte) (o []byte, err error) {
 
 // Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
 func (z *UnsignedSigHash) Msgsize() (s int) {
-	s = 1 + 2 + msgp.Uint32Size + 3 + msgp.BytesPrefixSize + len(z.SigHash) + 3 + msgp.BytesPrefixSize + len(z.WitnessScript)
+	s = 1 + 2 + msgp.Uint32Size + 3 + msgp.BytesPrefixSize + len(z.SigHash) + 3 + msgp.BytesPrefixSize + len(z.WitnessScript) + 3 + msgp.Int64Size
 	return
 }
