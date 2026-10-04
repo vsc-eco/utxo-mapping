@@ -16,28 +16,15 @@ package current_test
 // export (so the swap call reverts), fires a deposit-swap, and asserts the map
 // SUCCEEDS and the depositor is credited the full amount.
 //
-// Two run-time requirements (hence the env-var guard — by default it skips so it
-// never breaks a normal `make test` against the pinned upstream node):
-//
-//  1. A try/catch-enabled go-vsc-node. The feature activates at consensus version
-//     0.2.0; NewContractTest enables it in-process. The node pinned in go.mod does
-//     NOT have it, so point vsc-node at the feat/trycatch-icc tree via a go.work:
-//
-//	go 1.25.7
-//	use .
-//	use /abs/path/to/go-vsc-node      // the feat/trycatch-icc tree
-//
-//  2. A dev.wasm built for the REGTEST network (NetworkMode=regtest), matching the
-//     regtest fixtures — `make dev`. A default/MainNet build derives a different
-//     deposit address, so the fixture UTXO is never matched and the swap branch
-//     never runs (this is why the other balance-asserting map tests need it too).
-//
-//	make dev   # builds bin/dev.wasm with -X main.NetworkMode=regtest
-//	UTXO_TRYCATCH=1 go test ./tests/current/ -run TestReview8_DXH6 -v
+// It needs a dev.wasm built for the REGTEST network (NetworkMode=regtest), matching
+// the regtest fixtures (`make dev`). A default/MainNet build derives a different
+// deposit address, so the fixture UTXO is never matched and the swap branch never
+// runs (this is why the other balance-asserting map tests need it too). Try/catch
+// (consensus 0.2.0) is in the go-vsc-node pinned in go.mod, so the test no longer
+// needs a go.work override or an env-var guard.
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 
@@ -54,11 +41,6 @@ import (
 )
 
 func TestReview8_DXH6_DepositSwapRefund(t *testing.T) {
-	if os.Getenv("UTXO_TRYCATCH") == "" {
-		t.Skip("DX-H6 refund requires a try/catch-enabled go-vsc-node (consensus 0.2.0). " +
-			"Point vsc-node at the feat/trycatch-icc tree via go.work and set UTXO_TRYCATCH=1.")
-	}
-
 	// swap_to a hive address (VerifyAddress -> user:hive, accepted by the swap
 	// path); an unreachable min_amount_out doesn't matter — the router reverts
 	// regardless because it has no `execute` entrypoint.
@@ -136,11 +118,12 @@ func TestReview8_DXH6_DepositSwapRefund(t *testing.T) {
 	self := ct.StateGet(contractId, constants.BalancePrefix+"contract:"+contractId)
 	assert.Equal(t, "", self, "contract must not retain the refunded coins")
 
-	// 4. The refund is recorded in the logs.
+	// 4. The refund is recorded in the logs, with the amount actually returned.
+	refundLog := fmt.Sprintf("refunded %d unspent sats to depositor", amount)
 	var refundLogged bool
 	for _, out := range r.Logs {
 		for _, l := range out.Logs {
-			if strings.Contains(l, "refunded depositor") {
+			if strings.Contains(l, refundLog) {
 				refundLogged = true
 			}
 		}
