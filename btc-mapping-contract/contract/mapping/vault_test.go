@@ -392,3 +392,30 @@ func TestCheckSigVerified(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildSpendRefusesOtherNetworkDestination (ADDR-1): a bech32 destination of
+// another network decodes fine (btcutil accepts any registered HRP), so it must be
+// refused explicitly; the same keys' own-network address still builds.
+func TestBuildSpendRefusesOtherNetworkDestination(t *testing.T) {
+	net := &chaincfg.TestNet3Params
+	p, b := pk(0x31), pk(0x32)
+	cs := &ContractState{
+		NetworkParams: net,
+		Supply:        SystemSupply{BaseFeeRate: 1},
+		Vaults:        VaultRegistry{{Generation: 0, Primary: p, Backup: b, Status: VaultStatusActive}},
+		PublicKeys:    PublicKeys{Primary: p, Backup: b},
+	}
+	changeAddr, _, _ := createP2WSHAddressWithBackup(p, b, nil, net)
+	mainnetDest, _, _ := createP2WSHAddressWithBackup(pk(0x41), pk(0x42), nil, &chaincfg.MainNetParams)
+	regtestDest, _, _ := createP2WSHAddressWithBackup(pk(0x41), pk(0x42), nil, &chaincfg.RegressionNetParams)
+	testnetDest, _, _ := createP2WSHAddressWithBackup(pk(0x41), pk(0x42), nil, net)
+	in := &Utxo{TxId: testTxId64, Vout: 0, Amount: 100000, Generation: 0}
+	for _, dest := range []string{mainnetDest, regtestDest} {
+		if _, _, _, err := cs.buildSpendTransaction([]*Utxo{in}, 100000, dest, changeAddr, 50000); err == nil {
+			t.Fatalf("a testnet3 withdrawal to %s must be refused", dest)
+		}
+	}
+	if _, _, _, err := cs.buildSpendTransaction([]*Utxo{in}, 100000, testnetDest, changeAddr, 50000); err != nil {
+		t.Fatalf("a testnet3 withdrawal to its own network's address must build: %v", err)
+	}
+}

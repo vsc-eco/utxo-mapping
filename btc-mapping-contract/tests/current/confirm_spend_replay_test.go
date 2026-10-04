@@ -47,7 +47,10 @@ func TestConfirmSpendReplayRefused(t *testing.T) {
 	}
 	mapPayload, err := tinyjson.Marshal(mapParams)
 	require.NoError(t, err)
-	ct.StateSet(contractId, constants.LastHeightKey, "100")
+	// VR2-07: a deposit is refused until its block is MinConfirmationDepth below the
+	// contract's tip, so the tip must sit above the deposit's block. Only the header
+	// at 100 is needed for the proof; the margin just has to exist.
+	ct.StateSet(contractId, constants.LastHeightKey, "102")
 	require.True(t, ct.Call(stateEngine.TxVscCallContract{
 		Self: stateEngine.TxSelf{TxId: "map-dep", BlockId: "block:map", Index: 70, OpIndex: 0,
 			Timestamp: "2025-10-14T00:00:00", RequiredAuths: []string{owner}, RequiredPostingAuths: []string{}},
@@ -76,7 +79,9 @@ func TestConfirmSpendReplayRefused(t *testing.T) {
 	require.NoError(t, sweepTx.Deserialize(bytes.NewReader(sd.Tx)))
 	header := buildRegtestHeader(chainhash.Hash{}, sweepTx.TxHash(), time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC))
 	ct.StateSet(contractId, constants.BlockPrefix+strconv.FormatUint(uint64(confirmHeight), 10), serializeHeaderRaw(t, header))
-	ct.StateSet(contractId, constants.LastHeightKey, strconv.FormatUint(uint64(confirmHeight), 10))
+	// VR2-06: a settle waits the same depth as a credit, so the tip must clear the
+	// spend's block by the same margin.
+	ct.StateSet(contractId, constants.LastHeightKey, strconv.FormatUint(uint64(confirmHeight)+2, 10))
 	confirmPayload, err := tinyjson.Marshal(mapping.ConfirmSpendParams{
 		TxData:  &mapping.VerificationRequest{BlockHeight: confirmHeight, RawTxHex: hex.EncodeToString(sd.Tx), MerkleProofHex: "", TxIndex: 0},
 		Indices: []uint32{0},

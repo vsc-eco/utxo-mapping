@@ -41,9 +41,10 @@ func TestBTCC2_RepeatedTxInReplacedBlockNoDoubleMint(t *testing.T) {
 	const instruction = "deposit_to=hive:milo-depositor"
 	const recipient = "hive:milo-depositor"
 	const amount int64 = 10_000
-	const anchorHeight = "100" // H-1: the block the replacement must chain to
-	const tipHeight = "101"    // H: the deposit's containing block (the tip)
-	const tipHeightNum = uint32(101)
+	const anchorHeight = "100"   // the block the replacement chain must attach to
+	const depositHeight = "101"  // the deposit's containing block
+	const depositHeightNum = uint32(101)
+	const tipHeight = "103"      // two blocks above the deposit, so it is mature
 
 	// Deposit tx paying `amount` to the contract's deposit address for the
 	// instruction. The contract derives the same address from Instructions,
@@ -69,6 +70,23 @@ func TestBTCC2_RepeatedTxInReplacedBlockNoDoubleMint(t *testing.T) {
 	require.NotEqual(t, blockOrig.BlockHash(), blockReplace.BlockHash(),
 		"original and replacement blocks must be distinct to simulate a reorg")
 
+	// VR2-07 changed what this test has to model. A deposit is no longer creditable
+	// at the tip — it must be buried MinDepositConfirmations deep — so the old
+	// single-block tip replacement can no longer reach a credited deposit at all.
+	// The scenario is now the residual one that still matters: a reorg DEEPER than
+	// the maturity gate, rewriting the deposit's block along with everything above
+	// it. Two filler blocks bury the deposit, and the replacement rewrites all
+	// three.
+	origHash := blockOrig.BlockHash()
+	fill102 := buildRegtestHeader(origHash, chainhash.Hash{}, seedTs.Add(20*time.Minute))
+	fill102Hash := fill102.BlockHash()
+	fill103 := buildRegtestHeader(fill102Hash, chainhash.Hash{}, seedTs.Add(30*time.Minute))
+
+	replaceHash := blockReplace.BlockHash()
+	newFill102 := buildRegtestHeader(replaceHash, chainhash.Hash{}, seedTs.Add(40*time.Minute))
+	newFill102Hash := newFill102.BlockHash()
+	newFill103 := buildRegtestHeader(newFill102Hash, chainhash.Hash{}, seedTs.Add(50*time.Minute))
+
 	ct := test_utils.NewContractTest()
 	t.Cleanup(func() { ct.DataLayer.Stop() })
 
@@ -80,7 +98,9 @@ func TestBTCC2_RepeatedTxInReplacedBlockNoDoubleMint(t *testing.T) {
 		string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
 	ct.StateSet(contractId, constants.LastHeightKey, tipHeight)
 	ct.StateSet(contractId, constants.BlockPrefix+anchorHeight, serializeHeaderRaw(t, seed))
-	ct.StateSet(contractId, constants.BlockPrefix+tipHeight, serializeHeaderRaw(t, blockOrig))
+	ct.StateSet(contractId, constants.BlockPrefix+depositHeight, serializeHeaderRaw(t, blockOrig))
+	ct.StateSet(contractId, constants.BlockPrefix+"102", serializeHeaderRaw(t, fill102))
+	ct.StateSet(contractId, constants.BlockPrefix+tipHeight, serializeHeaderRaw(t, fill103))
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
 	ct.StateSet(contractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
 
@@ -89,7 +109,7 @@ func TestBTCC2_RepeatedTxInReplacedBlockNoDoubleMint(t *testing.T) {
 
 	mapPayload, err := tinyjson.Marshal(mapping.MapParams{
 		TxData: &mapping.VerificationRequest{
-			BlockHeight:    tipHeightNum,
+			BlockHeight:    depositHeightNum,
 			RawTxHex:       rawTxHex,
 			MerkleProofHex: "",
 			TxIndex:        0,
@@ -125,11 +145,11 @@ func TestBTCC2_RepeatedTxInReplacedBlockNoDoubleMint(t *testing.T) {
 		"first map must credit the deposit exactly once")
 
 	// Sanity: the deposit registered an observed entry at the tip height.
-	require.NotEmpty(t, ct.StateGet(contractId, constants.ObservedBlockPrefix+tipHeight),
-		"first map must record an observed-tx entry at the tip height")
+	require.NotEmpty(t, ct.StateGet(contractId, constants.ObservedBlockPrefix+depositHeight),
+		"first map must record an observed-tx entry at the deposit's height")
 
-	// --- 2. Reorg: replace the tip block with a different block that still
-	//        contains the same tx.
+	// --- 2. Reorg deeper than the maturity gate: rewrite the deposit's block and
+	//        both blocks above it. The replacement block still contains the same tx.
 	rr := ct.Call(stateEngine.TxVscCallContract{
 		Self: stateEngine.TxSelf{
 			TxId:                 "btcc2-replace",
@@ -142,16 +162,17 @@ func TestBTCC2_RepeatedTxInReplacedBlockNoDoubleMint(t *testing.T) {
 		},
 		ContractId: contractId,
 		Action:     "replaceBlocks",
-		Payload:    []byte(serializeHeader(t, blockReplace)),
+		Payload: []byte(serializeHeader(t, blockReplace) +
+			serializeHeader(t, newFill102) + serializeHeader(t, newFill103)),
 		RcLimit:    10000,
 		Intents:    []contracts.Intent{},
 		Caller:     testOwner,
 	})
 	require.True(t, rr.Success, "replaceBlocks should succeed: %s %s", rr.Err, rr.ErrMsg)
-	require.Equal(t, serializeHeaderRaw(t, blockReplace), ct.StateGet(contractId, constants.BlockPrefix+tipHeight),
-		"tip header must be overwritten by the replacement block")
+	require.Equal(t, serializeHeaderRaw(t, blockReplace), ct.StateGet(contractId, constants.BlockPrefix+depositHeight),
+		"the deposit's header must be overwritten by the replacement block")
 	// The observed-tx list MUST survive the replacement — that is the guard.
-	require.NotEmpty(t, ct.StateGet(contractId, constants.ObservedBlockPrefix+tipHeight),
+	require.NotEmpty(t, ct.StateGet(contractId, constants.ObservedBlockPrefix+depositHeight),
 		"observed-tx list must persist across replaceBlocks (it is the double-mint guard)")
 
 	// --- 3. Re-mapping the same tx against the replacement block is a no-op.

@@ -125,23 +125,41 @@ TinyGo/WASM environment restrictions (enforced throughout contract code):
 
 #### Confirmation depth (SPV trust model)
 
-The contract does NOT enforce a minimum confirmation depth in code. Instead, the **oracle controls confirmation depth** by only submitting block headers to `addBlocks` after they reach sufficient depth (currently 2 confirmations). This is by design:
+The contract enforces a minimum confirmation depth **in addition to** the oracle's own relay threshold (VR2-07). `map` refuses a deposit whose block is fewer than `constants.MinDepositConfirmations(networkMode)` below the contract's chain tip — 4 on mainnet, 2 on testnet and regtest — and the depositor re-submits the same permissionless proof once it matures.
 
-- The oracle waits for N confirmations before submitting a block, so by the time a `map` proof is possible, the block is N+1 deep.
+It did not always. The contract used to rely on the oracle alone, which meant a deposit was creditable at exactly the oracle's threshold: 2 confirmations. A 2-block reorg is routine, and the contract can follow a reorg at most 2 blocks deep, so a deposit orphaned by one kept its L2 credit while the backing coins ceased to exist — user supply inflated against a vault that never received them, with no in-band way to reconcile. The two thresholds now stack, so mainnet requires roughly 6 real confirmations end to end.
+
+The gate refuses BEFORE indexing rather than crediting-and-holding. Balance is a single fungible integer, so holding part of it would need a parallel pending-credit ledger; and un-crediting after the fact is worse, because the depositor may already have moved the phantom credit and the subtraction guards only integer wrap, not a negative result.
+
+The required depth is FLAT, not scaled by deposit value: `indexOutputs` makes one UTXO per output with no aggregation, so a value-scaled threshold would be defeated by splitting one deposit across sub-threshold outputs.
+
+Regtest deliberately enforces a non-zero depth so the whole test suite exercises the gate. Setting it to zero there would leave testnet unable to prove what mainnet enforces.
+
+- The oracle waits for N confirmations before submitting a block, so by the time a `map` proof is possible, the block is N+1 deep, and the contract then requires its own margin on top.
 - Pruned block headers (beyond `MaxBlockRetention = 4608`) can't be used for proofs — `verifyTransaction` fails when the header is missing from state. Retention is >= the CSV backup timelock (4320) + reorg margin so a CSV-backup recovery / pause-outlasting pending sweep stays SPV-verifiable (brick council BRK-4a).
-- This avoids adding on-chain confirmation tracking complexity and keeps the contract stateless with respect to chain tip awareness.
+- The contract's own check needs no confirmation-tracking state: it compares the proof's block height against `LastHeightKey`, which it already maintains.
 
-If the oracle is misconfigured to submit 0-confirmation blocks, deposits could be reversed by a Bitcoin reorg. Operators must ensure the oracle's confirmation threshold is appropriate for the value being bridged.
+An oracle misconfigured to submit 0-confirmation blocks no longer exposes deposits on its own — the contract still requires its own margin above the tip. Operators should nonetheless keep the oracle's threshold appropriate for the value being bridged, since both thresholds measure depth against the same relayed chain.
 
 #### Block reorg handling
 
 - **1-block reorg**: Handled by `replaceBlock`, which replaces the tip with a corrected header (must pass PoW and chain to height-1).
-- **2+ block reorg**: Not recoverable by the contract alone. The oracle waits for 2 confirmations before submitting, so a reorg that invalidates submitted blocks would need to be 3+ blocks deep — which has essentially never happened on Bitcoin mainnet in 15+ years of operation.
-- Deposits confirmed against later-orphaned blocks cannot be "un-mapped" — this is an accepted SPV limitation mitigated by the oracle's confirmation threshold.
+- **2+ block reorg**: Not recoverable by the contract alone. With the oracle's 2 confirmations plus the contract's own maturity gate, a reorg would have to be ~6 blocks deep to orphan a credited deposit — which has essentially never happened on Bitcoin mainnet in 15+ years of operation.
+- Deposits confirmed against later-orphaned blocks still cannot be "un-mapped". That remains an accepted SPV limitation; the maturity gate widens the margin rather than removing it, which is why the residual case is modelled explicitly by `TestBTCC2_RepeatedTxInReplacedBlockNoDoubleMint` (a reorg deeper than the gate, where the observed-tx list is the remaining guard against a double credit).
 
 #### Key rotation
 
-TSS public keys (primary and backup) are **immutable on mainnet** once registered. This prevents governance attacks from rotating keys to steal funds. Key rotation requires a future contract upgrade that would spend all existing UTXOs under the old key before switching — this is intentionally deferred due to complexity.
+TSS public keys (primary and backup) are **immutable once any value rides on them**, and immutable outright once a
+generation's primary is the TSS ceremony output. This prevents governance attacks from rotating keys to steal
+funds: the deposit script is a bare `OP_IF <primary> OP_CHECKSIG`, so a substituted primary would be unilaterally
+spendable by whoever supplied it. The one permitted exception is a bring-up correction — while the contract
+provably holds nothing, a mistyped pair may be replaced, and where a ceremony key exists only by the pair that
+makes the generation AGREE with it. That grants no new power, since the key was always going to be the
+ceremony's.
+
+Key ROTATION is no longer deferred: vault-rotation-v2 mints a fresh per-generation key, sweeps the old
+generation's UTXOs to the successor, and retires the predecessor. Every activation routes through
+`attestPrimaryKey`, so a rotation can never introduce an unattested primary.
 
 #### Pause mechanism
 

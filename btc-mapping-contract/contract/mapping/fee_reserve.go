@@ -56,6 +56,18 @@ func (cs *ContractState) HandleTopUpFeeReserve(txData *VerificationRequest) erro
 	if err != nil {
 		return ce.WrapContractError(ce.ErrInput, err, "invalid raw tx hex")
 	}
+	// VR2-25: this is the THIRD permissionless SPV-crediting path, and it needs the same
+	// maturity gate as its two siblings (HandleMap's deposit gate, HandleConfirmSpend's
+	// spend gate — both call requireConfirmationDepth). A top-up both indexes a new
+	// confirmed UTXO and credits FeeSupply, so a reorg that orphans the top-up's block
+	// leaves a phantom UTXO in the registry and an inflated reserve: Σ(UTXO) then claims
+	// coins Bitcoin does not hold, the reserve gate passes on backing that does not exist,
+	// and a migration that selects the phantom input builds a sweep L1 will not accept.
+	// Merkle inclusion alone proves the tx was in A block, never that the block survived.
+	// Same helper, same number, so the three gates cannot drift apart.
+	if err := cs.requireConfirmationDepth(txData.BlockHeight, "fee-reserve deposit"); err != nil {
+		return err
+	}
 	if err := verifyTransaction(txData, rawTx); err != nil {
 		return ce.Prepend(err, "error verifying fee-reserve deposit")
 	}
@@ -90,17 +102,25 @@ func (cs *ContractState) HandleTopUpFeeReserve(txData *VerificationRequest) erro
 		return ce.NewContractError(ce.ErrInput, "fee-reserve tx is a pending vault spend, not a deposit")
 	}
 
-	// Derive the ACTIVE vault's untagged address — the same P2WSH the unmap change and the
-	// migration successor pay. cs.PublicKeys is resolved to the active generation's keys
-	// (IntializeContractState), and each matched output is tagged with cs.ActiveGen so it is
-	// a normal, spendable active-gen UTXO (fungible backing, swept like any other when the
-	// active gen eventually retires). A pre-fold / keyless deploy derives an address nothing
-	// pays → the "no matching output" abort below (can't fund a vault that doesn't exist).
-	reserveAddr, _, err := createP2WSHAddressWithBackup(
-		cs.PublicKeys.Primary, cs.PublicKeys.Backup, nil, cs.NetworkParams,
-	)
-	if err != nil {
-		return ce.WrapContractError(ce.ErrTransaction, err, "error deriving fee-reserve vault address")
+	// Derive the untagged address of every generation that can still hold funds (the same
+	// set the deposit path matches: depositAddressGenerations, active first) and tag each
+	// matched output with the generation it paid, so it is a normal, spendable UTXO of that
+	// generation: an active-gen output is fungible backing, a retiring/draining-gen output is
+	// swept to the successor by the migration like any other. STRAND-1: this used to match
+	// the ACTIVE generation only, so a top-up paid to a retiring generation's address was
+	// refused and its BTC sat unindexed. THORChain credits an inbound to a retiring vault and
+	// migrates it (only an inactive vault's inbound is refunded); Chainflip consolidates the
+	// previous key's UTXOs. A pre-fold / keyless deploy derives an address nothing pays → the
+	// "no matching output" abort below (can't fund a vault that doesn't exist).
+	reserveGens := make(map[string]uint32)
+	for _, gk := range cs.depositAddressGenerations() {
+		addr, _, aerr := createP2WSHAddressWithBackup(gk.primary, gk.backup, nil, cs.NetworkParams)
+		if aerr != nil {
+			return ce.WrapContractError(ce.ErrTransaction, aerr, "error deriving fee-reserve vault address")
+		}
+		if _, dup := reserveGens[addr]; !dup {
+			reserveGens[addr] = gk.generation
+		}
 	}
 
 	// Dedup via the shared observed list (the exact mechanism the map deposit path uses), so
@@ -116,7 +136,11 @@ func (cs *ContractState) HandleTopUpFeeReserve(txData *VerificationRequest) erro
 		if aerr != nil {
 			return ce.WrapContractError(ce.ErrInput, aerr, "error extracting fee-reserve output address")
 		}
-		if len(addrs) != 1 || addrs[0].EncodeAddress() != reserveAddr {
+		if len(addrs) != 1 {
+			continue
+		}
+		gen, isReserve := reserveGens[addrs[0].EncodeAddress()]
+		if !isReserve {
 			continue
 		}
 		// Cap at the uint48 registry width exactly like the deposit/change/migration paths.
@@ -140,7 +164,7 @@ func (cs *ContractState) HandleTopUpFeeReserve(txData *VerificationRequest) erro
 			Amount:     txOut.Value,
 			PkScript:   txOut.PkScript,
 			Tag:        nil, // untagged vault address, exactly like an unmap change output
-			Generation: cs.ActiveGen,
+			Generation: gen,
 		}
 		cs.UtxoList = append(cs.UtxoList, UtxoRegistryEntry{Id: internalId, Amount: txOut.Value})
 		saveUtxo(internalId, utxo)
@@ -152,7 +176,7 @@ func (cs *ContractState) HandleTopUpFeeReserve(txData *VerificationRequest) erro
 		changed = true
 	}
 	if !changed {
-		return ce.NewContractError(ce.ErrInput, "no output pays the active vault fee-reserve address")
+		return ce.NewContractError(ce.ErrInput, "no output pays a vault fee-reserve address")
 	}
 	saveObservedList(txData.BlockHeight, observedList)
 

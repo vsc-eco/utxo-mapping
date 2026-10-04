@@ -18,7 +18,18 @@ import (
 // submits headers after sufficient confirmations (see CLAUDE.md § Security Model).
 func verifyTransaction(req *VerificationRequest, rawTxBytes []byte) error {
 	// block header from contract state (stored as raw 80 bytes)
-	rawHeaderStr := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatUint(uint64(req.BlockHeight), 10))
+	heightStr := strconv.FormatUint(uint64(req.BlockHeight), 10)
+	rawHeaderStr := sdk.StateGetObject(constants.BlockPrefix + heightStr)
+	// VR2-03: say WHICH header is missing. A missing key reads back as an empty
+	// string, so without this the caller got "error decoding block header: EOF" — a
+	// message that names neither the header nor the height, and reads like a malformed
+	// proof rather than absent state. Headers are pruned at MaxBlockRetention, so this
+	// is exactly the error an operator sees when a sweep has outlived its proving
+	// header and the generation is stuck: the moment they most need to be told why.
+	if rawHeaderStr == nil || *rawHeaderStr == "" {
+		return ce.NewContractError(ce.ErrInput,
+			"no block header in state for height "+heightStr+" (never submitted, or pruned past the retention window)")
+	}
 	rawHeaderBytes := []byte(*rawHeaderStr)
 	var blockHeader wire.BlockHeader
 	if err := blockHeader.BtcDecode(bytes.NewReader(rawHeaderBytes), wire.ProtocolVersion, wire.LatestEncoding); err != nil {

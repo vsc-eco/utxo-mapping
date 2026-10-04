@@ -62,7 +62,10 @@ func setupConfirmSpendContract(t *testing.T) (*test_utils.ContractTest, string, 
 		UserSupply:   5000,
 		BaseFeeRate:  1,
 	})))
-	ct.StateSet(contractId, constants.LastHeightKey, "101")
+	// VR2-06: a settle waits the same MinConfirmations as a deposit, so the tip has
+	// to sit above the spend's block. 104 leaves both the block at 101 and the
+	// alternate at 102 (TestConfirmSpendUnknownTxId) comfortably mature.
+	ct.StateSet(contractId, constants.LastHeightKey, "104")
 	ct.StateSet(contractId, constants.BlockPrefix+"100", buildSeedHeaderRaw(t, time.Unix(0, 0)))
 	ct.StateSet(contractId, constants.BlockPrefix+"101", fixture.BlockHeaderRaw)
 	ct.StateSet(contractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))

@@ -263,18 +263,31 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 				// get router id and check it only if there is a swap in the tx
 				if routerId == "" {
 					r := sdk.StateGetObject(constants.RouterContractIdKey)
-					if *r == "" {
-						return ce.NewContractError(ce.ErrInitialization, "router contract not initialized")
-					}
 					routerId = *r
 				}
 
-				if metadata.Params == nil {
-					return ce.NewContractError(ce.ErrInput, "swap instruction missing parameters")
+				// STRAND-2: a swap that cannot be attempted (no router registered, no
+				// params, no asset out) used to return an error here, which reverted the
+				// whole map call, including the registration of this already SPV-verified
+				// deposit: real BTC on chain, no credit, no registry entry, and every
+				// retry fails the same way. Credit it as a plain deposit instead, the
+				// same outcome as a swap the router refuses (VR2-23 refund below).
+				unusable := ""
+				switch {
+				case routerId == "":
+					unusable = "router contract not initialized"
+				case metadata.Params == nil:
+					unusable = "swap instruction missing parameters"
+				case !metadata.Params.Has(constants.SwapAssetOut):
+					unusable = "asset out required to execute a swap"
 				}
-				ok := metadata.Params.Has(constants.SwapAssetOut)
-				if !ok {
-					return ce.NewContractError(ce.ErrInput, "asset out required to execute a swap")
+				if unusable != "" {
+					if err := incAccBalance(metadata.Recipient, utxo.Amount); err != nil {
+						return ce.Prepend(err, "error crediting deposit balance")
+					}
+					sdk.Log("deposit-swap not attempted (" + unusable + "); credited " +
+						strconv.FormatInt(utxo.Amount, 10) + " sats to depositor")
+					break
 				}
 				assetOut := metadata.Params.Get(constants.SwapAssetOut)
 
@@ -308,30 +321,77 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 				// reverting swap traps as before — the legacy strand-on-permanent-
 				// failure behaviour, until the network activates the feature.)
 				res := sdk.TryContractCall(routerId, "execute", string(instrJson), nil)
+				// PER-SWAP PROVENANCE: capture how much of THIS swap's allowance the
+				// router did NOT consume, BEFORE clearing it. checkAndDeductBalance
+				// decrements the allowance on every third-party pull, so the remainder
+				// is exactly the portion of THIS deposit still held by the contract.
+				//
+				// This must NOT be inferred from getAccBal(selfAddr): "contract:<id>" is
+				// a SHARED, PERSISTENT account across every output in this call and every
+				// future call, so an unrelated deposit's leftover credit can mask a
+				// router that drained this one — refunding value the router already took.
+				unspentAllowance := getAllowance(selfAddr, routerAddr)
+				if unspentAllowance > utxo.Amount {
+					unspentAllowance = utxo.Amount
+				}
+				if unspentAllowance < 0 {
+					unspentAllowance = 0
+				}
 				// Clean up any remaining allowance after swap to prevent lingering authorization
 				setAllowance(selfAddr, routerAddr, 0)
 
+				// VR2-23: ALL router-failure shapes converge on the SAME refund.
+				//
+				// A router can fail three ways: it reverts, it returns something
+				// unparseable, or it "succeeds" while producing zero output (a drained
+				// pool is enough — no malice required). The original BTC-C4 fix
+				// refunded the depositor in all three cases; a later refactor to
+				// TryContractCall kept only the revert branch, on the stated assumption
+				// that zero output would always surface as a revert. That assumption is
+				// false, and the repo ships a mock router specifically to prove it.
+				//
+				// With only the revert branch, a zero-output swap hard-errored and
+				// reverted the ENTIRE map call — including registration of the
+				// already-SPV-verified L1 deposit. Real Bitcoin that had landed on
+				// chain got no credit and no registry entry: stranded.
+				//
+				// Refunding is safe on the success path too, because the underflow check
+				// below only pays out if the contract STILL HOLDS the funds. If the
+				// router already pulled them through its allowance, selfBal is short and
+				// we fail closed rather than paying twice.
+				routerFailure := ""
 				if !res.Ok {
-					// The swap rolled back; the BTC drawn for it is still credited to
-					// the contract account (incAccBalance above ran in THIS frame, not
-					// the rolled-back callee). Move it to the depositor as wrapped BTC.
-					selfBal := getAccBal(selfAddr)
-					if selfBal < utxo.Amount {
-						return ce.NewContractError(ce.ErrStateAccess, "swap refund: contract balance underflow")
-					}
-					setAccBal(selfAddr, selfBal-utxo.Amount)
-					if err := incAccBalance(metadata.Recipient, utxo.Amount); err != nil {
-						return ce.Prepend(err, "swap refund: crediting depositor")
-					}
-					sdk.Log("deposit-swap reverted (" + res.Error + "); refunded depositor wrapped BTC")
+					routerFailure = "reverted: " + res.Error
 				} else {
 					var swapResult SwapResult
 					if err := tinyjson.Unmarshal([]byte(res.Result), &swapResult); err != nil {
-						return ce.WrapContractError(ce.ErrJson, err, "error unmarshalling swap result")
+						routerFailure = "unparseable result"
+					} else if swapResult.AmountOut == "" || swapResult.AmountOut == "0" {
+						routerFailure = "zero amount out"
 					}
-					if swapResult.AmountOut == "" || swapResult.AmountOut == "0" {
-						return ce.NewContractError(ce.ErrInput, "swap returned zero amount out")
+				}
+				if routerFailure != "" {
+					// Refund ONLY the part of THIS deposit the router did not take.
+					//
+					// A reverting router consumed nothing, so unspentAllowance is the
+					// full amount and the depositor is made whole. A router that
+					// "succeeded" while pulling the funds and reporting zero output has
+					// already been paid through the allowance it was granted; refunding
+					// the full amount there would pay the same sats twice and, as proven
+					// by PoC, could be funded out of an UNRELATED depositor's stranded
+					// credit — silently zeroing an innocent third party's deposit.
+					if unspentAllowance > 0 {
+						selfBal := getAccBal(selfAddr)
+						if selfBal < unspentAllowance {
+							return ce.NewContractError(ce.ErrStateAccess, "swap refund: contract balance underflow")
+						}
+						setAccBal(selfAddr, selfBal-unspentAllowance)
+						if err := incAccBalance(metadata.Recipient, unspentAllowance); err != nil {
+							return ce.Prepend(err, "swap refund: crediting depositor")
+						}
 					}
+					sdk.Log("deposit-swap failed (" + routerFailure + "); refunded " +
+						strconv.FormatInt(unspentAllowance, 10) + " unspent sats to depositor")
 				}
 			default:
 				// should never happen

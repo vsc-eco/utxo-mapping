@@ -73,6 +73,18 @@ func (cs *ContractState) HandleReportUnauthorizedSpend(txData *VerificationReque
 	if err != nil {
 		return ce.WrapContractError(ce.ErrInput, err, "invalid raw tx hex")
 	}
+	// ★ NO CONFIRMATION-DEPTH GATE HERE, DELIBERATELY. Do not "fix" this by adding
+	// requireConfirmationDepth to match map / confirmSpend / topUpFeeReserve (VR2-07,
+	// VR2-25). Those three CREDIT: they create a claim on money, so a proof from a block
+	// that later vanishes leaves phantom supply, and waiting costs only deposit latency.
+	// This one is an ALARM. It moves no funds, it sets a flag the node's solvency gate
+	// reads, and the flag is owner-clearable (clearTheftHalt). Gating it on depth would
+	// hand a genuine thief the whole gate's worth of head start (~40 minutes on mainnet)
+	// to buy protection against a spurious halt that an owner can clear in one call. The
+	// costs run opposite ways on a crediting path and on an alarm, so the guards should
+	// too. There is also already an implicit margin: the header must be in committed
+	// state, and the oracle only relays headers validityThreshold blocks behind the tip.
+	//
 	// The block header must be present, else verifyTransaction dereferences a nil header
 	// (proof.go:22). A spend whose block is pruned or was never submitted cannot be
 	// SPV-proven → reject cleanly (never a false trip on an unprovable report).

@@ -279,7 +279,19 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint16, int64, error) 
 }
 
 func (cs *ContractState) calculateSegwitFee(baseSize int64, witnessScripts map[int][]byte) (int64, error) {
-	feeRate := clampedFeeRate(cs.Supply.BaseFeeRate)
+	return calculateSegwitFeeAt(clampedFeeRate(cs.Supply.BaseFeeRate), baseSize, witnessScripts)
+}
+
+// calculateSegwitFeeAt prices a transaction at an EXPLICIT rate.
+//
+// VR2-11: the migration builder needs to ask "what would this cost at a different
+// rate?" without the oracle's rate being the only answer available. It takes the
+// rate as an argument rather than reading — let alone temporarily writing —
+// cs.Supply.BaseFeeRate. That distinction is load-bearing: TinyGo has no `defer`,
+// so a "set the rate, build, restore it" approach would persist an operational
+// rate as the GLOBAL oracle rate on any early return that still reaches
+// SaveToState, corrupting every later unmap, migration and write-off price.
+func calculateSegwitFeeAt(feeRate int64, baseSize int64, witnessScripts map[int][]byte) (int64, error) {
 	// Witness stack per input: <sig> <branch_selector> <witness_script>
 	// Serialized: item_count(1) + sig_len(1) + sig(72) + branch_len(1) + branch(1) + script_len(1) + script(N)
 	witnessDataSize := int64(0)
@@ -357,6 +369,15 @@ func (cs *ContractState) buildSpendTransaction(
 			ce.ErrInput,
 			err,
 			"error decoding destination btc address ["+destAddress+"]",
+		)
+	}
+	// ADDR-1: DecodeAddress checks the network of a base58 address but accepts a
+	// bech32 address of ANY registered network (bc1, tb1, bcrt1), so a withdrawal to
+	// another network's address was accepted and paid. Covers the DEX settle path too.
+	if !destAddr.IsForNet(cs.NetworkParams) {
+		return nil, nil, 0, ce.NewContractError(
+			ce.ErrInput,
+			"destination btc address ["+destAddress+"] is not a "+cs.NetworkParams.Name+" address",
 		)
 	}
 
@@ -442,7 +463,8 @@ func (cs *ContractState) buildSpendTransaction(
 	// the size fee at HandleUnmap under-collateralizes the vault (Σ(UTXO) drops MORE than
 	// ActiveSupply at settle → I1 breaks in the unsafe direction). Charging inputs−outputs
 	// makes the balance debit match the BTC that actually leaves → conservation holds exactly
-	// (add-fee) and stays over-collateralized (deduct-fee, safe). Equals `fee` whenever a
+	// in both modes (deduct-fee debits vscFee + sendAmount + this, ACCT-1; before that it
+	// debited `amount`, which drifted both ways). Equals `fee` whenever a
 	// change output IS added. `fee` above still drives the change calc, so the tx is byte-identical.
 	var outputTotal int64
 	for _, o := range tx.TxOut {
@@ -732,6 +754,8 @@ func (cs *ContractState) HandleRedriveUnmap(txId string) (string, error) {
 		BuildHeight:   nowH,
 	}
 	sdk.StateSetObject(constants.PendingUnmapPrefix+newTxId, string(MarshalPendingUnmap(replRecord)))
+	// VR2-03: hold header retention open for this spend until it settles.
+	notePendingSpend(replRecord.BuildHeight)
 	if group == nil {
 		group = &SpendGroup{Members: []string{txId}}
 	}
