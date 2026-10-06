@@ -261,3 +261,36 @@ func TestH2_UnbuildableConfirmedDustDoesNotBlockLegacy(t *testing.T) {
 	rec := readSweepRecord(t, ct, contractId, r.Ret)
 	require.Equal(t, []uint16{13}, rec.InputIds, "the legacy entry is swept, not the unbuildable dust")
 }
+
+// MIG-LEGACY-DUST-1 (testnet 2026-10-06): legacy dust ahead of sweepable legacy entries
+// in registry order. The legacy pass took the first legacy entry, so migrateVault refused
+// the dust while writeOffDust refused too (other entries are sweepable): the generation
+// could never drain. Order and values are the shared testnet vault's (u-5 636 first).
+// Mainnet's 587-sat entry sits 30th of 43, ahead of ~1,056,000 sats of legacy entries.
+func TestH2_LegacyDustDoesNotBlockLaterLegacy(t *testing.T) {
+	ct, contractId, owner := newH2CT(t, []utxoSeed{{5, 636}, {6, 16_087}, {8, 129_687}}, 100_000)
+
+	first := callKeyAction(t, ct, contractId, owner, "migrateVault", []byte(""))
+	require.Empty(t, first.Err, "dust in front must not refuse the migration: %s", first.ErrMsg)
+	require.Equal(t, []uint16{6}, readSweepRecord(t, ct, contractId, first.Ret).InputIds,
+		"the first sweepable legacy entry is swept, the dust is passed over")
+
+	second := callKeyAction(t, ct, contractId, owner, "migrateVault", []byte(""))
+	require.Empty(t, second.Err, second.ErrMsg)
+	require.Equal(t, []uint16{8}, readSweepRecord(t, ct, contractId, second.Ret).InputIds,
+		"the next tranche skips the in-flight entry and the dust")
+
+	// Only the dust is left (the other two are in flight): it is selected, refused as too
+	// small to pay for its own sweep, and written off against the reserve.
+	third := callKeyAction(t, ct, contractId, owner, "migrateVault", []byte(""))
+	require.NotEmpty(t, third.Err, "the dust cannot pay for its own sweep")
+	require.Contains(t, third.ErrMsg, "too small to cover the sweep fee")
+	reserveBefore := loadSupply(t, ct, contractId).FeeSupply
+	w := callKeyAction(t, ct, contractId, owner, "writeOffDust", []byte(""))
+	require.Empty(t, w.Err, w.ErrMsg)
+	ids := registryIds(t, ct, contractId)
+	require.NotContains(t, ids, uint16(5), "the dust is written off")
+	require.Contains(t, ids, uint16(6), "in-flight entries are never written off")
+	require.Contains(t, ids, uint16(8), "in-flight entries are never written off")
+	require.Equal(t, reserveBefore-636, loadSupply(t, ct, contractId).FeeSupply, "the write-off is charged to the fee reserve")
+}
