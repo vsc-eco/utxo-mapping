@@ -52,7 +52,7 @@ import (
 // accept, which BRK-1 delete-at-confirm leaves fully recoverable - strictly better than funds
 // that are unreachable by construction.
 func (cs *ContractState) getMigrationInputs(gen uint32, excluded map[uint16]struct{}, maxTrancheValue int64) (inputIds []uint16, total int64, moreRemain bool, err error) {
-	inputIds, total, moreRemain, err = cs.gatherMigrationInputs(gen, excluded, maxTrancheValue, true)
+	inputIds, total, moreRemain, err = cs.gatherMigrationInputs(gen, excluded, maxTrancheValue, true, false)
 	if err != nil {
 		return inputIds, total, moreRemain, err
 	}
@@ -64,7 +64,7 @@ func (cs *ContractState) getMigrationInputs(gen uint32, excluded map[uint16]stru
 		if trancheBuildableAtMinFee(cs.trancheAmounts(inputIds)) {
 			return inputIds, total, moreRemain, nil
 		}
-		legacyIds, legacyTotal, legacyMore, lerr := cs.gatherMigrationInputs(gen, excluded, maxTrancheValue, false)
+		legacyIds, legacyTotal, legacyMore, lerr := cs.gatherLegacyInputs(gen, excluded, maxTrancheValue)
 		if lerr != nil || len(legacyIds) == 0 {
 			return inputIds, total, moreRemain, lerr
 		}
@@ -72,7 +72,27 @@ func (cs *ContractState) getMigrationInputs(gen uint32, excluded map[uint16]stru
 	}
 	// Nothing selectable in the confirmed pool for this generation: it is stuck unless the
 	// legacy unconfirmed-pool entries are admitted.
-	return cs.gatherMigrationInputs(gen, excluded, maxTrancheValue, false)
+	return cs.gatherLegacyInputs(gen, excluded, maxTrancheValue)
+}
+
+// gatherLegacyInputs picks the next legacy tranche: the first legacy entry that can pay
+// for its own sweep at the minimum fee rate, and only when there is none, the first
+// legacy entry at all.
+//
+// MIG-LEGACY-DUST-1 (testnet 2026-10-06): the legacy pass took the first legacy entry in
+// registry order. When that entry could not pay for its own sweep (636 sats on the shared
+// testnet vault), migrateVault refused, and the dust write-off refused too because other
+// legacy entries ARE sweepable (residualStuckAtMinFee): the generation could never drain.
+// Mainnet's 587-sat legacy entry sits 30th of 43, ahead of legacy entries holding about
+// 1,056,000 sats. Skipping it lets those drain first; once only entries that cannot pay
+// for their own sweep remain, the fallback selects one, migrateVault refuses it as too
+// small, and writeOffDust (which then finds no sweepable legacy entry) writes it off.
+func (cs *ContractState) gatherLegacyInputs(gen uint32, excluded map[uint16]struct{}, maxTrancheValue int64) (inputIds []uint16, total int64, moreRemain bool, err error) {
+	inputIds, total, moreRemain, err = cs.gatherMigrationInputs(gen, excluded, maxTrancheValue, false, true)
+	if err != nil || len(inputIds) > 0 {
+		return inputIds, total, moreRemain, err
+	}
+	return cs.gatherMigrationInputs(gen, excluded, maxTrancheValue, false, false)
 }
 
 // trancheAmounts returns the registry amounts of the given ids, in the given order.
@@ -92,7 +112,7 @@ func (cs *ContractState) trancheAmounts(ids []uint16) []int64 {
 // gatherMigrationInputs is one selection pass. confirmedOnly restricts it to the confirmed
 // pool; false admits legacy unconfirmed-pool ids as well. Every other rule is identical, so
 // the two passes cannot drift apart.
-func (cs *ContractState) gatherMigrationInputs(gen uint32, excluded map[uint16]struct{}, maxTrancheValue int64, confirmedOnly bool) (inputIds []uint16, total int64, moreRemain bool, err error) {
+func (cs *ContractState) gatherMigrationInputs(gen uint32, excluded map[uint16]struct{}, maxTrancheValue int64, confirmedOnly bool, sweepableLegacyOnly bool) (inputIds []uint16, total int64, moreRemain bool, err error) {
 	for i := range cs.UtxoList {
 		entry := cs.UtxoList[i]
 		if confirmedOnly && entry.Id < constants.UtxoConfirmedPoolStart {
@@ -129,6 +149,11 @@ func (cs *ContractState) gatherMigrationInputs(gen uint32, excluded map[uint16]s
 			return nil, 0, false, lerr
 		}
 		if utxo.Generation != gen {
+			continue
+		}
+		// MIG-LEGACY-DUST-1: in the first legacy pass, pass over an entry that cannot pay
+		// for its own sweep (gatherLegacyInputs).
+		if !confirmedOnly && sweepableLegacyOnly && !trancheBuildableAtMinFee([]int64{entry.Amount}) {
 			continue
 		}
 		if len(inputIds) >= constants.MaxMigrationInputs {
