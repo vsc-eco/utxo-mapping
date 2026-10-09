@@ -23,6 +23,7 @@ import (
 	"btc-mapping-contract/contract/mapping"
 	_ "btc-mapping-contract/sdk" // ensure sdk is imported
 	"encoding/hex"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -48,13 +49,31 @@ func checkOracle() {
 }
 
 func checkAdmin() {
-	caller := sdk.GetEnv().Caller.String()
-	if caller == constants.OracleAddress || caller == *sdk.GetEnvKey("contract.owner") {
+	env := sdk.GetEnv()
+	caller := env.Caller.String()
+	if caller == constants.OracleAddress {
+		return
+	}
+	if caller == *sdk.GetEnvKey("contract.owner") {
+		requireOwnerActive(env)
 		return
 	}
 	ce.CustomAbort(
 		ce.NewContractError(ce.ErrNoPermission, "this action must be performed by a contract administrator"),
 	)
+}
+
+// requireOwnerActive aborts unless the owner signed this transaction with active
+// authority. Comparing Caller to the owner alone let a posting-only signature pass
+// the owner and admin gates, because a posting signer becomes the Caller. The
+// caller of this helper has already checked that Caller is the owner. Mirrors
+// checkAuth in mapping/utils.go.
+func requireOwnerActive(env sdk.Env) {
+	if !slices.Contains(env.Sender.RequiredAuths, env.Caller) {
+		ce.CustomAbort(
+			ce.NewContractError(ce.ErrNoPermission, "owner action requires active authority (posting authority cannot authorize it)"),
+		)
+	}
 }
 
 // checkOperator authorizes the four OPERATIONAL vault ops (migrateVault,
@@ -81,11 +100,13 @@ func checkOperator() {
 }
 
 func checkOwner() {
-	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
+	env := sdk.GetEnv()
+	if env.Caller.String() != *sdk.GetEnvKey("contract.owner") {
 		ce.CustomAbort(
 			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
 		)
 	}
+	requireOwnerActive(env)
 }
 
 func checkNotPaused() {
@@ -598,11 +619,7 @@ func ReportUnauthorizedSpend(input *string) *string {
 func ClearTheftHalt(_ *string) *string {
 	// Owner-only (like pause/unpause): the M1.1b auto-trip is permissionless, but CLEARING it
 	// — resuming BTC keysign after a detected theft — is a deliberate governance action.
-	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
-		ce.CustomAbort(
-			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
-		)
-	}
+	checkOwner()
 	sdk.StateDeleteObject(constants.BtcTheftHaltKey)
 	return mapping.StrPtr("theft halt cleared")
 }
@@ -809,13 +826,7 @@ func validateAndDecodeKey(keyHex string) (mapping.CompressedPubKey, error) {
 
 //go:wasmexport registerPublicKey
 func RegisterPublicKey(keyStr *string) *string {
-	env := sdk.GetEnv()
-	// leave this as owner always
-	if env.Caller.String() != *sdk.GetEnvKey("contract.owner") {
-		ce.CustomAbort(
-			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
-		)
-	}
+	checkOwner()
 
 	var keys mapping.RegisterKeyParams
 	err := tinyjson.Unmarshal([]byte(*keyStr), &keys)
@@ -951,11 +962,7 @@ func RegisterPublicKey(keyStr *string) *string {
 //go:wasmexport createKey
 func CreateKey(_ *string) *string {
 	// leave this as owner always
-	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
-		ce.CustomAbort(
-			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
-		)
-	}
+	checkOwner()
 
 	// NN#3 (S2-close completeness F-1): refuse a new key generation while any superseded
 	// (retiring/draining) generation still holds funds — else multiple funded old keys
@@ -987,11 +994,7 @@ func CreateKey(_ *string) *string {
 //go:wasmexport renewKey
 func RenewKey(_ *string) *string {
 	// leave this as owner always
-	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
-		ce.CustomAbort(
-			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
-		)
-	}
+	checkOwner()
 
 	// S1.3 (D-2): renew every fund-holding generation's key — active AND retiring — so
 	// a retiring generation that still custodies unswept funds cannot have its TSS key
@@ -1020,11 +1023,7 @@ func RenewKey(_ *string) *string {
 //go:wasmexport activateKey
 func ActivateKey(_ *string) *string {
 	// leave this as owner always
-	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
-		ce.CustomAbort(
-			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
-		)
-	}
+	checkOwner()
 
 	// S1.3: cut over to the pending generation. Its predecessor moves to RETIRING
 	// (keeps keys + funds, still fully spendable); it is NEVER purged here (S5 purges
@@ -1045,11 +1044,7 @@ func ActivateKey(_ *string) *string {
 //go:wasmexport discardPendingKey
 func DiscardPendingKey(_ *string) *string {
 	// leave this as owner always
-	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
-		ce.CustomAbort(
-			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
-		)
-	}
+	checkOwner()
 
 	// S1.3 never-brick escape: drop a stalled/failed pending keygen so the owner can
 	// re-mint. Only ever removes a PENDING vault (which holds no funds); the
@@ -1237,11 +1232,7 @@ func SetVaultOperator(input *string) *string {
 	// REPLACEABLE, not set-once — governance must be able to ROTATE the operator key
 	// (or revoke it) without redeploying. An empty input clears the operator, so only
 	// the owner can drive the rotation again.
-	if sdk.GetEnv().Caller.String() != *sdk.GetEnvKey("contract.owner") {
-		ce.CustomAbort(
-			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
-		)
-	}
+	checkOwner()
 
 	operator := ""
 	if input != nil {
@@ -1269,13 +1260,7 @@ func SetVaultOperator(input *string) *string {
 
 //go:wasmexport registerRouter
 func RegisterRouter(input *string) *string {
-	env := sdk.GetEnv()
-	// leave this as owner always
-	if env.Caller.String() != *sdk.GetEnvKey("contract.owner") {
-		ce.CustomAbort(
-			ce.NewContractError(ce.ErrNoPermission, "action must be performed by the contract owner"),
-		)
-	}
+	checkOwner()
 
 	var router mapping.RouterContract
 	err := tinyjson.Unmarshal([]byte(*input), &router)
