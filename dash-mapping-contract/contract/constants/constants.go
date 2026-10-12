@@ -70,7 +70,15 @@ const (
 	LogArrayDelimiter = ","
 )
 
-const AllowancePrefix = "q" + DirPathDelimiter
+// ALLOW-1: the allowance key joins owner and spender with "|" (illegal in any
+// VSC identity), not the generic "-" DirPathDelimiter, which is a legal Hive-name
+// character and made q-<owner>-<spender> forgeable (hive:milo could drain
+// hive:milo-hpr). Matches magi_token ("alw|") / magi_nft ("allow|"); see the
+// btc-mapping ALLOW-1 fix. NOTE: this contract is NOT deployed; before any deploy
+// it still needs full alignment with btc-mapping (active-auth on approve +
+// sdk.VerifyAddress spender guard).
+const AllowanceDelimiter = "|"
+const AllowancePrefix = "q" + AllowanceDelimiter
 
 const PausedKey = "paused"     // "1" when contract is paused, absent/empty when active
 const MigrateVersionKey = "mv" // current migration version (decimal string)
