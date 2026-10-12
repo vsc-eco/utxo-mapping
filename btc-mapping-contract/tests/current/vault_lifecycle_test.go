@@ -94,6 +94,21 @@ func u32be(n uint32) string {
 // mints need no seed.
 func seedTssKey(t *testing.T, ct *test_utils.ContractTest, contractId, keyId, pubkeyHex string) {
 	t.Helper()
+	// The node reports the BRK-2 check-signature flag (vault-rotation-v2) and the
+	// consensus 0.11.0 reshare flag, as it does on every network the vault runs on.
+	// A seeded key has produced its check-signature and has been reshared once
+	// since its keygen (keygen at epoch 0, now epoch 1), so it can be activated and
+	// migrated into; vault_key_proof_test.go covers the refusals.
+	ct.VaultRotationV2 = true
+	ct.KeyReshared = true
+	setTssKeyProof(t, ct, contractId, keyId, pubkeyHex, 1, true)
+}
+
+// setTssKeyProof (re)writes a vault key with the given epoch and check-signature
+// state, plus the keygen commitment (epoch 0, same public key) that created it,
+// so the node's reshare flag reads "1" exactly when epoch > 0.
+func setTssKeyProof(t *testing.T, ct *test_utils.ContractTest, contractId, keyId, pubkeyHex string, epoch uint64, checkSigned bool) {
+	t.Helper()
 	require.NoError(t, ct.Tss.Keys.SetKey(tss.TssKey{
 		Id:        contractId + "-" + keyId,
 		Status:    "active",
@@ -101,9 +116,14 @@ func seedTssKey(t *testing.T, ct *test_utils.ContractTest, contractId, keyId, pu
 		Algo:      tss.EcdsaType,
 		// A real keygen (epochs=365) sets a nonzero expiry; mirror it so renewKey
 		// (which refuses to renew an active key with ExpiryEpoch==0) works.
-		Epoch:       1,
-		Epochs:      365,
-		ExpiryEpoch: 366,
+		Epoch:             epoch,
+		Epochs:            365,
+		ExpiryEpoch:       366,
+		SignatureVerified: checkSigned,
+	}))
+	pub := pubkeyHex
+	require.NoError(t, ct.Tss.Commitments.SetCommitmentData(tss.TssCommitment{
+		Type: "keygen", KeyId: contractId + "-" + keyId, Epoch: 0, BlockHeight: 1, PublicKey: &pub,
 	}))
 }
 

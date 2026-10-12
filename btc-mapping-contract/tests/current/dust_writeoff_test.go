@@ -685,6 +685,9 @@ func TestMigration_LegacyUnconfirmedPoolInputsCanDrain(t *testing.T) {
 	// thing under test is input SELECTION, not affordability.
 	seedReserve(t, ct, contractId, 1, 4096, 100_000)
 	seedTssKey(t, ct, contractId, "main", TestPrimaryPubKeyHex)
+	// The successor's key has been reshared since its keygen: migrateVault only
+	// moves funds into such a key.
+	seedTssKey(t, ct, contractId, "mainv1", Gen1PrimaryHex)
 	require.Less(t, uint16(3), uint16(constants.UtxoConfirmedPoolStart),
 		"precondition: the seeded id must be in the unconfirmed pool, or this proves nothing")
 
@@ -723,6 +726,9 @@ func TestMigration_ConfirmedInputStillPreferredOverLegacy(t *testing.T) {
 	})
 	seedReserve(t, ct, contractId, 1, 4096, 100_000)
 	seedTssKey(t, ct, contractId, "main", TestPrimaryPubKeyHex)
+	// The successor's key has been reshared since its keygen: migrateVault only
+	// moves funds into such a key.
+	seedTssKey(t, ct, contractId, "mainv1", Gen1PrimaryHex)
 
 	mig := callKeyAction(t, ct, contractId, owner, "migrateVault", []byte(""))
 	require.Empty(t, mig.Err, mig.ErrMsg)
