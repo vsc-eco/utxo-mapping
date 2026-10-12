@@ -69,7 +69,7 @@ func swapMigCall(t *testing.T, ct *test_utils.ContractTest, contractId, caller, 
 			Index: 1, OpIndex: 0, Timestamp: "2025-10-14T00:00:00",
 			RequiredAuths: []string{caller}, RequiredPostingAuths: []string{},
 		},
-		ContractId: contractId, Action: action, Payload: payload, RcLimit: rc, Intents: intents, Caller: caller,
+		ContractId: contractId, Action: action, Payload: payload, RcLimit: uint64(rc), Intents: intents, Caller: caller,
 	})
 }
 
