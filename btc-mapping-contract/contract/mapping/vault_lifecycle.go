@@ -353,17 +353,16 @@ func attestPrimaryKey(gen uint32, primary CompressedPubKey) error {
 }
 
 // checkSigVerified reports whether a split TssGetKey response
-// ("status,pubkey,algo[,flag]") carries a verified BRK-2 check-signature. When
-// the node has vault-rotation-v2 chain-active it appends the flag as a 4th field
-// ("1" iff a consensus-verified check-signature with this key has landed); when
-// off it returns 3 fields and this returns true — no requirement (pre-v2 / inert
-// path; the contract deploy + node flag are the real gate). A present-but-not-"1"
-// flag fails closed (activation refused).
+// ("status,pubkey,algo[,flag[,reshared]]") carries a verified BRK-2
+// check-signature: the 4th field is "1" iff a consensus-verified check-signature
+// with this key has landed. A node below vault-rotation-v2 (consensus 0.8.0)
+// sends no 4th field, and that fails closed too: activation must never route
+// funds into a key nobody has proven it can sign with, whatever version the
+// network runs. So no rotation can activate before the network reports the flag
+// (mainnet: after its floor rise); the genesis fold activates directly and is
+// not affected.
 func checkSigVerified(parts []string) bool {
-	if len(parts) < 4 {
-		return true // legacy 3-field (v2 off): no check-sig requirement
-	}
-	return parts[3] == "1"
+	return len(parts) >= 4 && parts[3] == "1"
 }
 
 // MintNextGeneration appends a new PENDING vault — the successor whose TSS key the
