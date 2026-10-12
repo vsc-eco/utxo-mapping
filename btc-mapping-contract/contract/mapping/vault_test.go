@@ -370,17 +370,18 @@ func TestChangeOutputTaggedWithActiveGen(t *testing.T) {
 }
 
 // TestCheckSigVerified — BRK-2 (f): the attestPrimaryKey check-signature gate.
-// A v2-off node returns a 3-field TssGetKey (no requirement — inert / pre-v2); a
-// v2-on node appends the flag, and only "1" clears activation (fail closed on any
-// other value).
+// Only a present "1" clears activation. A node that sends no flag (below
+// vault-rotation-v2) fails closed: a key nobody has proven it can sign with must
+// never be activated, whatever version the network runs.
 func TestCheckSigVerified(t *testing.T) {
 	cases := []struct {
 		name  string
 		parts []string
 		want  bool
 	}{
-		{"v2 off: 3-field, no requirement", []string{"active", "02ab", "ecdsa"}, true},
-		{"v2 off: status-only", []string{"active"}, true},
+		{"no flag (node below v2): fail closed", []string{"active", "02ab", "ecdsa"}, false},
+		{"status only: fail closed", []string{"active"}, false},
+		{"v2 on and 0.11.0 fifth field: flag still decides", []string{"active", "02ab", "ecdsa", "1", "0"}, true},
 		{"v2 on: flag=1 -> verified", []string{"active", "02ab", "ecdsa", "1"}, true},
 		{"v2 on: flag=0 -> not verified", []string{"active", "02ab", "ecdsa", "0"}, false},
 		{"v2 on: empty flag -> fail closed", []string{"active", "02ab", "ecdsa", ""}, false},
