@@ -414,7 +414,7 @@ func incAccBalance(vscAcc string, amount int64) error {
 }
 
 func getAllowance(owner, spender string) int64 {
-	s := sdk.StateGetObject(constants.AllowancePrefix + owner + constants.DirPathDelimiter + spender)
+	s := sdk.StateGetObject(constants.AllowancePrefix + owner + constants.AllowanceDelimiter + spender)
 	if s == nil || *s == "" {
 		return 0
 	}
@@ -424,7 +424,7 @@ func getAllowance(owner, spender string) int64 {
 }
 
 func setAllowance(owner, spender string, amount int64) {
-	key := constants.AllowancePrefix + owner + constants.DirPathDelimiter + spender
+	key := constants.AllowancePrefix + owner + constants.AllowanceDelimiter + spender
 	if amount == 0 {
 		sdk.StateDeleteObject(key)
 		return
