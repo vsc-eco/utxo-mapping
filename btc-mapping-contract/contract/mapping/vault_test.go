@@ -394,6 +394,29 @@ func TestCheckSigVerified(t *testing.T) {
 	}
 }
 
+// The consensus 0.11.0 fifth TssGetKey field: migrateVault moves funds into the
+// active key only once it reads "1" (reshared since its keygen). Absent, "0",
+// junk or a non-active key: fail closed.
+func TestKeyResharedSinceKeygen(t *testing.T) {
+	cases := []struct {
+		name  string
+		parts []string
+		want  bool
+	}{
+		{"reshared", []string{"active", "02ab", "ecdsa", "1", "1"}, true},
+		{"made this epoch, not yet reshared", []string{"active", "02ab", "ecdsa", "1", "0"}, false},
+		{"node below 0.11.0: no fifth field", []string{"active", "02ab", "ecdsa", "1"}, false},
+		{"node below v2: three fields", []string{"active", "02ab", "ecdsa"}, false},
+		{"junk flag", []string{"active", "02ab", "ecdsa", "1", "true"}, false},
+		{"not an active key", []string{"deprecated", "02ab", "ecdsa", "1", "1"}, false},
+	}
+	for _, tc := range cases {
+		if got := keyResharedSinceKeygen(tc.parts); got != tc.want {
+			t.Fatalf("%s: keyResharedSinceKeygen(%v) = %v, want %v", tc.name, tc.parts, got, tc.want)
+		}
+	}
+}
+
 // TestBuildSpendRefusesOtherNetworkDestination (ADDR-1): a bech32 destination of
 // another network decodes fine (btcutil accepts any registered HRP), so it must be
 // refused explicitly; the same keys' own-network address still builds.
