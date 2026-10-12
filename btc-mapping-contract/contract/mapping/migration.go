@@ -396,6 +396,19 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 		return "", ce.NewContractError(ce.ErrTransaction, "no active successor vault to migrate into")
 	}
 	successorGen := cs.Vaults[activeIdx].Generation
+
+	// No funds move into the successor until its key has been handed on by a
+	// reshare at least once since its keygen. The check-signature that let it
+	// activate proves only that the committee which made it can sign; a reshare
+	// proves the key survives a committee change, and leaves the keygen
+	// committee's shares as a second set (testnet 2026-10-11: the first sweep
+	// into gen 2 was built in the epoch its key was made). The flag is the
+	// node's (TssGetKey fifth field, consensus 0.11.0); without it nothing moves.
+	if !activeKeyReshared(successorGen) {
+		return "", ce.NewContractError(ce.ErrTransaction,
+			"the active generation's key has not been reshared since its keygen: migration waits for its first reshare")
+	}
+
 	successorAddress, _, err := createP2WSHAddressWithBackup(
 		cs.Vaults[activeIdx].Primary, cs.Vaults[activeIdx].Backup, nil, cs.NetworkParams,
 	)

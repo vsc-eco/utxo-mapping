@@ -365,6 +365,19 @@ func checkSigVerified(parts []string) bool {
 	return len(parts) >= 4 && parts[3] == "1"
 }
 
+// keyResharedSinceKeygen reports whether a split TssGetKey response carries the
+// consensus 0.11.0 fifth field set: the key has been handed to a committee by a
+// reshare at least once since the keygen that created it. Absent (a node below
+// 0.11.0) or anything but "1" fails closed.
+func keyResharedSinceKeygen(parts []string) bool {
+	return len(parts) >= 5 && parts[0] == tssKeyActiveStatus && parts[4] == "1"
+}
+
+// activeKeyReshared reads the reshare flag of generation gen's TSS key.
+func activeKeyReshared(gen uint32) bool {
+	return keyResharedSinceKeygen(strings.Split(sdk.TssGetKey(VaultKeyId(gen)), ","))
+}
+
 // MintNextGeneration appends a new PENDING vault — the successor whose TSS key the
 // caller must then request — and returns its generation + keyId. It folds any
 // unmigrated legacy gen-0 FIRST (so a pre-migrate createKey can't diverge). Genesis
