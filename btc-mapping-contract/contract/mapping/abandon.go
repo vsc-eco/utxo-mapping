@@ -191,10 +191,16 @@ func (cs *ContractState) HandleAbandonStuckSweep(txId string) (string, error) {
 		return "", ce.NewContractError(ce.ErrBalance, "insufficient fee reserve to write off the abandoned sweep's input: top up the reserve")
 	}
 
+	// G: release reservations on legacy inputs + capture their parents before deletion, delete
+	// the written-off inputs, then clear any parent whose last unconfirmed output this abandon
+	// wrote off (same as settle - an abandon also removes the input, so T would otherwise linger
+	// in TxSpends and the bot's C1 confirmSpend of T would loop forever).
+	legacyParents := cs.unreserveLegacyInputs(rec.InputIds)
 	for _, id := range rec.InputIds {
 		cs.UtxoList = slices.DeleteFunc(cs.UtxoList, func(e UtxoRegistryEntry) bool { return e.Id == id })
 		sdk.StateDeleteObject(getUtxoKey(id))
 	}
+	cs.clearSettledLegacyParents(legacyParents)
 	newFee, err := safeSubtract64(cs.Supply.FeeSupply, writtenOff)
 	if err != nil {
 		return "", ce.WrapContractError(ce.ErrArithmetic, err, "abandon fee reserve debit")

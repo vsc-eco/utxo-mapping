@@ -545,6 +545,18 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 	// in-flight sweeps, never the unprivileged-inflatable TxSpendsList.
 	cs.MigrationSweeps = append(cs.MigrationSweeps, txId)
 
+	// G: reserve each input this sweep takes from the UNCONFIRMED (legacy) pool so a later
+	// confirmSpend of that input's parent tx cannot re-id it out from under the sweep — the
+	// promotion loop skips a reserved id (handlers.go B-1, isUtxoReserved). Only unconfirmed-
+	// pool ids (< UtxoConfirmedPoolStart) are ever re-id'd, so only those need reserving
+	// (bounded by MaxLegacyInputsPerTranche). Released at settleMigrationSweep and at abandon;
+	// a re-drive keeps the same InputIds, so the reservation persists across it.
+	for _, id := range inputIds {
+		if id < constants.UtxoConfirmedPoolStart {
+			reserveUtxo(id)
+		}
+	}
+
 	// First tranche: retiring → draining (a sweep is now in flight). Idempotent for a gen
 	// already draining. Never touches keys or any other generation.
 	if cs.Vaults[targetIdx].Status == VaultStatusRetiring {
@@ -824,11 +836,16 @@ func (cs *ContractState) settleMigrationSweep(msgTx *wire.MsgTx, rec *MigrationS
 		return err
 	}
 
-	// Delete the swept inputs from the registry + state.
+	// G: release the build-time reservation on each legacy (unconfirmed-pool) input and capture
+	// its parent tx BEFORE deleting it (a legacy input is an unconfirmed CHANGE output of that
+	// parent). Then delete the swept inputs, then clear any parent whose last unconfirmed output
+	// this sweep just consumed.
+	legacyParents := cs.unreserveLegacyInputs(rec.InputIds)
 	for _, id := range rec.InputIds {
 		cs.UtxoList = slices.DeleteFunc(cs.UtxoList, func(e UtxoRegistryEntry) bool { return e.Id == id })
 		sdk.StateDeleteObject(getUtxoKey(id))
 	}
+	cs.clearSettledLegacyParents(legacyParents)
 
 	// Debit the reserved miner fee. Guaranteed >= 0 by the build-time reserve invariant
 	// (FeeSupply >= Σ(pending fees)); the checks below are defense-in-depth for a corrupt
@@ -843,4 +860,69 @@ func (cs *ContractState) settleMigrationSweep(msgTx *wire.MsgTx, rec *MigrationS
 	cs.Supply.FeeSupply = newFee
 
 	return nil
+}
+
+// unreserveLegacyInputs (G) releases the build-time reservation on each input taken from the
+// legacy UNCONFIRMED pool (id < UtxoConfirmedPoolStart) and returns the set of their parent
+// txids, loaded BEFORE the caller deletes them. A legacy input is an unconfirmed CHANGE output
+// of its parent spend, so the returned set feeds clearSettledLegacyParents. Confirmed-pool
+// inputs are never reserved or re-id'able, so they are skipped. Called by both
+// settleMigrationSweep and abandonSweep, which each then delete the inputs.
+func (cs *ContractState) unreserveLegacyInputs(inputIds []uint16) map[string]struct{} {
+	parents := map[string]struct{}{}
+	for _, id := range inputIds {
+		if id >= constants.UtxoConfirmedPoolStart {
+			continue
+		}
+		if u, err := loadUtxo(id); err == nil {
+			parents[u.TxId] = struct{}{}
+		}
+		unreserveUtxo(id)
+	}
+	return parents
+}
+
+// clearSettledLegacyParents (G, second piece) clears the pending-spend bookkeeping of any
+// parent tx whose LAST unconfirmed change output a sweep just consumed (swept at settle, or
+// written off at abandon). Such a parent's confirmSpend can never promote anything again, so
+// without this it lingers in TxSpends forever and the bot (C1) retries confirmSpend for it
+// every pass — burning RC and holding a MaxConcurrentPendingSpends slot. Its change gone, the
+// parent is settled in effect.
+//
+// Clears ONLY the "d-" signing record + the TxSpendsList entry (what drives the bot's retry).
+// Deliberately NOT a "us-" record or any input: a delete-at-confirm unmap frees its reserved
+// inputs at settleUnmap keyed on "us-", so touching it would strand them. New-format unmaps
+// index no unconfirmed change, so a us--bearing txid never appears here; the explicit us- skip
+// is defense-in-depth. Guarded on "no unconfirmed output of the parent remains" so a parent
+// that still has promotable change is never cleared.
+func (cs *ContractState) clearSettledLegacyParents(parents map[string]struct{}) {
+	for t := range parents {
+		if d := sdk.StateGetObject(constants.TxSpendsPrefix + t); d == nil || *d == "" {
+			continue // not a pending spend
+		}
+		if us := sdk.StateGetObject(constants.PendingUnmapPrefix + t); us != nil && *us != "" {
+			continue // delete-at-confirm unmap: it frees its inputs via settleUnmap, leave it
+		}
+		if cs.hasUnconfirmedOutputOf(t) {
+			continue // still has change to promote
+		}
+		sdk.StateDeleteObject(constants.TxSpendsPrefix + t) // d-
+		cs.TxSpendsList = removeTxid(cs.TxSpendsList, t)
+		cs.refreshPendingSpendFloor()
+	}
+}
+
+// hasUnconfirmedOutputOf reports whether any UNCONFIRMED-pool UTXO still in the registry was
+// an output of txId. clearSettledLegacyParents uses it: a parent spend with no unconfirmed
+// output left has nothing for confirmSpend to promote, so its pending record can be cleared.
+func (cs *ContractState) hasUnconfirmedOutputOf(txId string) bool {
+	for i := range cs.UtxoList {
+		if cs.UtxoList[i].Id >= constants.UtxoConfirmedPoolStart {
+			continue
+		}
+		if u, err := loadUtxo(cs.UtxoList[i].Id); err == nil && u.TxId == txId {
+			return true
+		}
+	}
+	return false
 }
