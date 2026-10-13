@@ -1,14 +1,15 @@
 package current_test
 
-// F3 + F2 - S5 purge must be safe once vault-rotation-v2 is live.
+// F3 + F2 - S5 purge safety under vault-rotation-v2, minimum-viable.
 //
-// F3: zeroBalanceAttested was a permissive stub (return true). Its "safe pre-pin"
-// justification is void - GATE-1 showed VaultRotationV2InForce turns on at the attested
-// floor >= 0.8 regardless of the params.go pin - so once mainnet rises to 0.10 the stub
-// would PURGE emptied gens with no independent L1 zero-balance proof, and a later deposit
-// to the retired address would map successfully while crediting nobody. The fix reads leg
-// (d)'s attestation key and FAILS CLOSED when absent (no oracle writes it yet, so no gen
-// purges in production - it simply rests in INACTIVE, which is still fund-matchable).
+// F3: the contract-side purge gates ONLY on what it can prove on-chain - registry-empty +
+// the 144-block grace window (fail-closed anchor) + F2 below. It does NOT wait on an
+// independent zero-balance oracle: no such writer exists, and gating on it would hold every
+// superseded gen in INACTIVE forever and lock its committee's POA-1 consensus bonds
+// permanently. Contract purge is not the irreversible step - it only retires the old address
+// from the matchable set; the node-side share destroy (S5.1) carries its own zero-balance
+// check if and when it is built. The only residual is a coin sent to a retired address and
+// never SPV-submitted within the grace window - the accepted SPV-absence limitation.
 //
 // F2: an abandoned migration sweep still owes its output to a SuccessorGen on a late
 // confirm. If that successor is PURGED before the sweep confirms, settleAbandonedSweep
@@ -26,28 +27,48 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestWR_F3_NoPurgeWithoutAttestation: an emptied INACTIVE gen past the grace window is NOT
-// purged when leg (d)'s attestation is absent - the production state, since no oracle
-// writer exists. Before the fix the permissive stub purged it unconditionally.
-func TestWR_F3_NoPurgeWithoutAttestation(t *testing.T) {
+// TestWR_F3_PurgesOnGraceWithoutOracle: an emptied INACTIVE gen past the grace window PURGES
+// with no zero-balance oracle present - the production condition, since no such writer
+// exists. This is the operator unlock: purge is what lets POA-1 release the retiring
+// committee's consensus bonds, so gating it on an unbuilt oracle would lock those bonds
+// forever. Purge only retires the address from matching here; it destroys no keys.
+func TestWR_F3_PurgesOnGraceWithoutOracle(t *testing.T) {
 	ct, contractId, owner := newRetireCT(t)
 	const anchor = 900000
 	seedRetireState(ct, contractId, anchor+constants.VaultPurgeGraceBlocks, mapping.VaultRegistry{
 		{Generation: 1, Status: mapping.VaultStatusInactive, InactiveHeight: anchor},
 		{Generation: 2, Status: mapping.VaultStatusActive},
 	}, 3, 2)
-	// Deliberately set NO zba- attestation for gen 1 (the production condition).
+	// No oracle attestation anywhere - the production condition.
+
+	require.Empty(t, callKeyAction(t, ct, contractId, owner, "retireVault", []byte("")).Err)
+
+	vaults, _, _ := loadVaults(t, ct, contractId)
+	require.Equal(t, mapping.VaultStatusPurged, vaultByGen(t, vaults, 1).Status,
+		"an empty INACTIVE gen past the grace window must purge on grace alone (unlocks POA-1 bonds); it must not wait on an unbuilt zero-balance oracle")
+}
+
+// TestWR_F3_NoPurgeBeforeGrace: the grace window is still load-bearing - an emptied INACTIVE
+// gen one block short of InactiveHeight+VaultPurgeGraceBlocks must NOT purge. Guards against
+// the simplification having dropped the grace gate along with the oracle leg.
+func TestWR_F3_NoPurgeBeforeGrace(t *testing.T) {
+	ct, contractId, owner := newRetireCT(t)
+	const anchor = 900000
+	seedRetireState(ct, contractId, anchor+constants.VaultPurgeGraceBlocks-1, mapping.VaultRegistry{
+		{Generation: 1, Status: mapping.VaultStatusInactive, InactiveHeight: anchor},
+		{Generation: 2, Status: mapping.VaultStatusActive},
+	}, 3, 2)
 
 	require.Empty(t, callKeyAction(t, ct, contractId, owner, "retireVault", []byte("")).Err)
 
 	vaults, _, _ := loadVaults(t, ct, contractId)
 	require.Equal(t, mapping.VaultStatusInactive, vaultByGen(t, vaults, 1).Status,
-		"without the independent zero-balance attestation, purge must fail closed (gen stays INACTIVE, still fund-matchable)")
+		"one block short of the grace window, the gen must stay INACTIVE (still fund-matchable)")
 }
 
-// TestWR_F2_NoPurgeWhileAbandonedSweepTargetsGen: even WITH the attestation and the grace
-// window elapsed, a gen that is the successor of a live abandoned sweep is not purged; once
-// the tracker clears, the same gen purges.
+// TestWR_F2_NoPurgeWhileAbandonedSweepTargetsGen: even with the grace window elapsed, a gen
+// that is the successor of a live abandoned sweep is not purged; once the tracker clears, the
+// same gen purges.
 func TestWR_F2_NoPurgeWhileAbandonedSweepTargetsGen(t *testing.T) {
 	ct, contractId, owner := newRetireCT(t)
 	const anchor = 900000
@@ -55,8 +76,7 @@ func TestWR_F2_NoPurgeWhileAbandonedSweepTargetsGen(t *testing.T) {
 		{Generation: 1, Status: mapping.VaultStatusInactive, InactiveHeight: anchor},
 		{Generation: 2, Status: mapping.VaultStatusActive},
 	}, 3, 2)
-	// Attestation present, so ONLY the F2 guard can block the purge here.
-	ct.StateSet(contractId, constants.ZeroBalanceAttestPrefix+"1", "1")
+	// Grace elapsed and no oracle gate, so ONLY the F2 guard can block the purge here.
 	// A live abandoned sweep names gen 1 as its successor.
 	ct.StateSet(contractId, constants.AbandonedSuccessorPrefix+"1", "1")
 
@@ -70,7 +90,7 @@ func TestWR_F2_NoPurgeWhileAbandonedSweepTargetsGen(t *testing.T) {
 	require.Empty(t, callKeyAction(t, ct, contractId, owner, "retireVault", []byte("")).Err)
 	vaults, _, _ = loadVaults(t, ct, contractId)
 	require.Equal(t, mapping.VaultStatusPurged, vaultByGen(t, vaults, 1).Status,
-		"with no abandoned sweep targeting it and the attestation present, the gen purges")
+		"with no abandoned sweep targeting it, the gen purges on grace alone")
 }
 
 // TestWR_F2_AbandonTracksSuccessorForPurgeGate: the REAL abandon path increments the
