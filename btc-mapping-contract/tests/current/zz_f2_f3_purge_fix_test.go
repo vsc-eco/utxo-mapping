@@ -1,19 +1,19 @@
 package current_test
 
-// F3 + F2 — S5 purge must be safe once vault-rotation-v2 is live.
+// F3 + F2 - S5 purge must be safe once vault-rotation-v2 is live.
 //
 // F3: zeroBalanceAttested was a permissive stub (return true). Its "safe pre-pin"
-// justification is void — GATE-1 showed VaultRotationV2InForce turns on at the attested
-// floor >= 0.8 regardless of the params.go pin — so once mainnet rises to 0.10 the stub
+// justification is void - GATE-1 showed VaultRotationV2InForce turns on at the attested
+// floor >= 0.8 regardless of the params.go pin - so once mainnet rises to 0.10 the stub
 // would PURGE emptied gens with no independent L1 zero-balance proof, and a later deposit
 // to the retired address would map successfully while crediting nobody. The fix reads leg
 // (d)'s attestation key and FAILS CLOSED when absent (no oracle writes it yet, so no gen
-// purges in production — it simply rests in INACTIVE, which is still fund-matchable).
+// purges in production - it simply rests in INACTIVE, which is still fund-matchable).
 //
 // F2: an abandoned migration sweep still owes its output to a SuccessorGen on a late
 // confirm. If that successor is PURGED before the sweep confirms, settleAbandonedSweep
 // indexes the output to a retired, non-fund-matchable gen (coins unspendable, FeeSupply
-// credited, I1 still balancing, so no assert fires — invisible insolvency). The fix counts,
+// credited, I1 still balancing, so no assert fires - invisible insolvency). The fix counts,
 // per gen, the live abandoned sweeps naming it as successor (asc-<gen>) and refuses to
 // purge while > 0.
 
@@ -27,7 +27,7 @@ import (
 )
 
 // TestWR_F3_NoPurgeWithoutAttestation: an emptied INACTIVE gen past the grace window is NOT
-// purged when leg (d)'s attestation is absent — the production state, since no oracle
+// purged when leg (d)'s attestation is absent - the production state, since no oracle
 // writer exists. Before the fix the permissive stub purged it unconditionally.
 func TestWR_F3_NoPurgeWithoutAttestation(t *testing.T) {
 	ct, contractId, owner := newRetireCT(t)

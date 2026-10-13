@@ -1,6 +1,6 @@
 package current_test
 
-// zz_allow1_fix_test.go — regression test for ALLOW-1 (allowance key collision).
+// zz_allow1_fix_test.go - regression test for ALLOW-1 (allowance key collision).
 //
 // TestWR_* convention: these assert the CORRECT (fixed) behavior, so FAIL = the
 // bug is present. They pass on the fixed branch and FAIL on the unfixed base,
@@ -75,8 +75,8 @@ func TestWR_Allow1_CraftedSpenderRejected(t *testing.T) {
 	}
 }
 
-// TestWR_Allow1_NoCrossAccountDrain: the full attack — attacker approves the
-// crafted spender then pulls from the victim — must leave the victim's balance
+// TestWR_Allow1_NoCrossAccountDrain: the full attack - attacker approves the
+// crafted spender then pulls from the victim - must leave the victim's balance
 // untouched and the pull refused.
 func TestWR_Allow1_NoCrossAccountDrain(t *testing.T) {
 	for _, c := range allow1Cases() {
@@ -118,7 +118,7 @@ func TestWR_Allow1_LegitAllowanceStillWorks(t *testing.T) {
 }
 
 // TestWR_Allow1_UnmapFromNoCrossDrain: the same collision must not reach the L1
-// withdrawal path — a crafted approve must not let the attacker unmap the
+// withdrawal path - a crafted approve must not let the attacker unmap the
 // victim's BTC to an L1 address of its choosing.
 func TestWR_Allow1_UnmapFromNoCrossDrain(t *testing.T) {
 	const victim, attacker, crafted = "hive:milo-hpr", "hive:milo", "hpr-hive:milo"

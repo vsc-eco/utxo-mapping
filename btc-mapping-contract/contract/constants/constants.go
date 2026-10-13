@@ -56,7 +56,7 @@ const AbandonedSweepPrefix = "sa" + DirPathDelimiter
 
 // AbandonedSuccessorPrefix ("asc-"+<gen>) counts the live abandoned sweeps whose
 // SuccessorGen is <gen>. F2: a gen that is the successor of a still-unsettled abandoned
-// sweep must NOT be purged — a late confirm of that sweep (settleAbandonedSweep) would
+// sweep must NOT be purged - a late confirm of that sweep (settleAbandonedSweep) would
 // index its output to a retired, non-fund-matchable generation (coins unspendable,
 // FeeSupply credited, I1 still balancing so no assert fires → invisible insolvency).
 // Incremented in HandleAbandonStuckSweep, decremented in settleAbandonedSweep, read by
@@ -330,15 +330,20 @@ const MaxBaseFeeRate int64 = 500
 
 // MaxMigrationInputs bounds the number of UTXOs a single migration sweep tranche
 // consumes (S2). Three independent ceilings, lowest wins:
-//  1. TSS-signing budget — each input needs its own signature.
-//  2. Bitcoin standardness (~100kvB) — an unbounded sweep-all can't be built or relayed.
-//  3. NI-4 — the SETTLE path: confirmSpend carries the sweep's non-witness tx in its
-//     custom_json (hex ~= 106 + 82*N bytes), plus the Merkle proof + envelope; at N ~= 85
-//     that exceeds Hive's 8192-byte custom_json cap, so the tranche could be built and
-//     signed but NEVER confirmed — it would wedge rotation. (3) is the tightest, so the cap
-//     sits well below it: 70 inputs => ~5.8KB tx hex, leaving comfortable headroom for the
-//     proof and envelope. A retiring vault with more UTXOs is drained in successive tranches
-//     (the live vault holds only a handful, so this never binds in practice today).
+//  1. TSS-signing budget: each input needs its own signature, so the tranche size is
+//     also the number of sign sessions one rotation starts at once (go-vsc-node NT-2
+//     batches those starts; a smaller tranche keeps that load modest).
+//  2. Bitcoin standardness (~100kvB): an unbounded sweep-all can't be built or relayed.
+//  3. NI-4, the SETTLE path: confirmSpend is submitted as a VSC L2 transaction
+//     (SubmitTransactionV1), NOT a Hive custom_json, so its size ceiling is the L2 tx
+//     cap MAX_TX_SIZE (16384 bytes), not Hive's 8192. It carries the sweep's
+//     non-witness tx (hex ~= 106 + 82*N bytes) plus the Merkle proof + envelope; at
+//     N = 70 the tx hex is ~5.8KB, well under the L2 cap, so (3) is NOT the binding
+//     ceiling here. (An earlier rationale cited Hive's 8192-byte custom_json cap;
+//     that was wrong, confirmSpend never rides a Hive custom_json.)
+// 70 is a conservative cap: it keeps (1) modest and stays comfortably under (2) and
+// (3). A retiring vault with more UTXOs is drained in successive tranches (the live
+// vault holds only a handful, so this never binds in practice today).
 const MaxMigrationInputs = 70
 
 // MigrationCanaryValue (THORChain-derived, migration §5c) caps the value of a gen's FIRST

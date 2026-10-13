@@ -207,7 +207,7 @@ func (cs *ContractState) HandleAbandonStuckSweep(txId string) (string, error) {
 	}
 	// F2: this abandoned sweep still owes its output to rec.SuccessorGen on a late confirm,
 	// so block that successor from being PURGED until the sweep settles (decremented in
-	// settleAbandonedSweep). One increment per abandoned group — every member spends the
+	// settleAbandonedSweep). One increment per abandoned group - every member spends the
 	// same inputs (asserted above) and so shares the one successor, and only one can confirm.
 	incAbandonedSuccessor(rec.SuccessorGen)
 	// Takes every member's "ms-"/"d-" records and TxSpends entries and the group object
@@ -272,7 +272,7 @@ func (cs *ContractState) settleAbandonedSweep(msgTx *wire.MsgTx, ab *AbandonedSw
 	for _, m := range ab.Members {
 		sdk.StateDeleteObject(constants.AbandonedSweepPrefix + m)
 	}
-	// F2: the sweep has settled onto its successor — release the purge hold on that gen.
+	// F2: the sweep has settled onto its successor - release the purge hold on that gen.
 	decAbandonedSuccessor(ab.Sweep.SuccessorGen)
 	sdk.Log("sweep-abandon|late-settle|txid=" + msgTx.TxID() + "|returned=" + strconv.FormatInt(outputTotal, 10) +
 		"|feeSupply=" + strconv.FormatInt(newFee, 10))
@@ -318,7 +318,7 @@ func decAbandonedSuccessor(gen uint32) {
 }
 
 // abandonedSweepTargetsGen reports whether any live abandoned sweep names gen as its
-// successor (read by canPurgeGen — F2). Fail-closed: a present-but-unparseable counter is
+// successor (read by canPurgeGen - F2). Fail-closed: a present-but-unparseable counter is
 // treated as a live target, so a corrupt value can never let a purge destroy a gen a late
 // sweep still owes an output to.
 func abandonedSweepTargetsGen(gen uint32) bool {
