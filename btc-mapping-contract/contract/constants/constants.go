@@ -64,15 +64,6 @@ const AbandonedSweepPrefix = "sa" + DirPathDelimiter
 // is "sa-"+64-hex-txid, so the two keyspaces never overlap).
 const AbandonedSuccessorPrefix = "asc" + DirPathDelimiter
 
-// ZeroBalanceAttestPrefix ("zba-"+<gen>) holds S5 purge leg (d): the independent
-// zero-balance attestation for a generation's vault address. zeroBalanceAttested reads it
-// and fails CLOSED when the key is absent. No oracle writer exists yet, so no gen can
-// purge in production until leg (d) is built. F3/GATE-1: the former permissive stub
-// (return true) purged gens with no L1 zero-balance proof the moment v2 went live at
-// floor>=0.8 (which GATE-1 showed happens regardless of the pin checklist), stranding
-// later deposits to the retired address (map succeeds, credits nobody).
-const ZeroBalanceAttestPrefix = "zba" + DirPathDelimiter
-
 // MaxSpendGroupMembers caps the members of an L7-01 spend group (original + RBF
 // replacements). Re-drives are owner-gated and each bump raises the fee ≥ 2 sat/vByte
 // under a totalInputs/2 ceiling, so an honest operator needs only a handful before a
@@ -186,8 +177,9 @@ const VaultActiveGenKey = "va" // 4-byte BE: generation currently receiving new 
 // DRAINING). 144 blocks (~24h) is far beyond any reorg Bitcoin mainnet has ever seen
 // (deepest ever a handful of blocks) yet keeps a retired key from lingering more than a
 // day past emptiness. Measured in the same BTC-height units as the vault height fields.
-// NOTE: this alone is NOT sufficient to DESTROY keys — key destruction (S5.1) additionally
-// requires the independent zero-balance attestation (leg (d)); purge only STOPS matching.
+// NOTE: purge (this op) only STOPS matching the address and lets POA-1 release the
+// committee's bonds; it destroys no keys. Key destruction (node-side S5.1) is the separate
+// irreversible step and carries its own independent zero-balance check there.
 const VaultPurgeGraceBlocks = 144
 
 const LastHeightKey = "h"

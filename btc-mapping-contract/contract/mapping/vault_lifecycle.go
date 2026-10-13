@@ -770,9 +770,11 @@ func RenewableVaultKeyIds() (renewable []string, skipped []string, err error) {
 //
 // ★ S5.0 (this file): the CONTRACT state machine only. It performs NO TSS key
 // destruction — a PURGED gen's shares still exist. Purging only removes the gen from
-// the deposit-matchable set (address retired). S5.1 (node side) reads the PURGED status
-// as the signal to destroy shares, and gates that destroy on leg (d) (the independent
-// zero-balance attestation) — the one irreversible, permanent-loss-capable step.
+// the deposit-matchable set (address retired) and lets POA-1 release the committee's
+// consensus bonds. The one irreversible, permanent-loss-capable step — node-side share
+// destruction (S5.1), triggered by the PURGED status — carries its OWN independent
+// zero-balance check there; this op never performs it and never waits on it (waiting
+// would hold an emptied gen in INACTIVE forever and lock its committee's bonds).
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ReconcileRetiringVaults reconciles every superseded generation's STATUS against the
@@ -862,15 +864,27 @@ func fundedGenerations() (map[uint32]bool, error) {
 }
 
 // canPurgeGen reports whether an emptied INACTIVE gen may transition to PURGED. A purge
-// retires the gen's address out of the deposit-matchable set, so it must be provably safe:
+// retires the gen's address out of the deposit-matchable set; it destroys NO keys and moves
+// NO funds (S5.0 is state-machine only — see the header). It gates on what the contract can
+// prove on-chain, and ONLY on that:
 //
-//	(c) grace ≥ reorg depth — height ≥ InactiveHeight + VaultPurgeGraceBlocks. Guarded by a
-//	    hard fail-closed check that InactiveHeight is set (non-zero): never purge a gen that
-//	    did not pass DRAINING→INACTIVE under this op. Overflow-safe (subtract after the ≥).
-//	(d) zero-balance attestation — zeroBalanceAttested (TRACKED; see its doc).
+//	(a) registry-empty — the caller's precondition (the INACTIVE && !funded branch).
+//	(c) grace ≥ reorg depth — height ≥ InactiveHeight + VaultPurgeGraceBlocks (144 blocks,
+//	    ~24h). Guarded by a hard fail-closed check that InactiveHeight is set (non-zero):
+//	    never purge a gen that did not pass DRAINING→INACTIVE under this op. Overflow-safe
+//	    (subtract after the ≥).
+//	F2 — never purge the successor of a still-unsettled abandoned sweep (below).
 //
-// (a) registry-emptiness is the caller's precondition (the INACTIVE&&!funded branch); (b)
-// address-retirement is intrinsic to the PURGE transition itself (Purged ∉ isFundHoldingStatus).
+// (b) address-retirement is intrinsic to the PURGE transition itself (Purged ∉
+// isFundHoldingStatus). Through all of INACTIVE the gen stays fund-matchable, so a late
+// deposit re-funds it → the REVERT branch returns it to DRAINING → swept. The only residual
+// is a coin sent to the address and never SPV-submitted within the grace window (a stray
+// deposit to a retired address): the accepted SPV-absence limitation. Purge deliberately
+// does NOT wait on an independent zero-balance oracle — no such writer exists, so gating on
+// it would hold every superseded gen in INACTIVE forever and lock its committee's consensus
+// bonds (POA-1) permanently. The one irreversible step — node-side share destruction (S5.1)
+// — carries its own independent zero-balance check there, if and when it is built; it is not
+// this op.
 func canPurgeGen(v *Vault, height uint32) bool {
 	if v.InactiveHeight == 0 {
 		return false // fail-closed: no grace anchor recorded
@@ -887,35 +901,7 @@ func canPurgeGen(v *Vault, height uint32) bool {
 	if abandonedSweepTargetsGen(v.Generation) {
 		return false
 	}
-	return zeroBalanceAttested(v)
-}
-
-// zeroBalanceAttested is S5 gate leg (d): an INDEPENDENT attestation that the gen's vault
-// address holds ZERO L1 balance. SPV proves a tx is IN a block but CANNOT prove the ABSENCE
-// of UTXOs at an address, so a genuine zero-balance proof needs an external oracle (same
-// class as the M1.1b solvency-observation oracle). That oracle is NOT built yet — this is
-// the TRACKED leg (user directive: "build (a)+(b)+(c) now, track (d)").
-//
-// ★ INTENTIONAL PERMISSIVE STUB (returns true). It keeps the DRAINING→INACTIVE→PURGED state
-// machine reachable so the full rotation cycle can be devnet-proven now. SAFE pre-pin because:
-//  1. the whole rotation feature is inert behind the node deploy gate;
-//  2. S5.0 purge only STOPS matching — it destroys NO keys (S5.1 does, and S5.1 will gate the
-//     real, irreversible destroy on this attestation); and
-//  3. the HARD DEPLOY GATE forbids pinning the rotation activation height until leg (d) is
-//     genuinely built + devnet-proven (project memory / node params.go pin-gate (m2)).
-//
-// It now READS leg (d)'s attestation key and FAILS CLOSED when it is absent. The former
-// permissive stub (return true) was justified as "safe pre-pin" (rotation inert behind the
-// params.go pin), but GATE-1 showed VaultRotationV2InForce turns on at the attested FLOOR
-// >= 0.8 regardless of the pin checklist - so once mainnet rises to 0.10 the stub would
-// purge gens on live state with no L1 zero-balance proof (F3). No oracle writes this key
-// yet, so in production it is always absent and no gen ever purges; a gen simply stays
-// INACTIVE (still fund-matchable, so a late deposit is still credited), which is the safe
-// resting state. When the oracle lands it writes ZeroBalanceAttestPrefix+<gen> and nothing
-// else here changes.
-func zeroBalanceAttested(v *Vault) bool {
-	raw := sdk.StateGetObject(constants.ZeroBalanceAttestPrefix + strconv.FormatUint(uint64(v.Generation), 10))
-	return raw != nil && *raw != ""
+	return true
 }
 
 // retireResultString renders a deterministic human-readable summary of the transitions a
