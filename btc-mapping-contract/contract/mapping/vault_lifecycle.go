@@ -494,24 +494,13 @@ func RegisterVaultKeys(primary, backup *CompressedPubKey, height uint32) (uint32
 	return targetGen, true, isGenesis, nil
 }
 
-// ActivatePendingGeneration promotes the (keygen-complete, TSS-attested) pending
-// vault to ACTIVE and retires the current active vault. The retired vault goes to
-// RETIRING — it KEEPS its keys and its funds and can still be swept; it is NEVER
-// purged here (purge is fund-gated in S5).
-//
-// Guards (never-brick): a pending vault must exist with BOTH real pubkeys; its
-// primary must attest to the TSS ceremony (D-1); for a rotation the active-vault
-// generation must agree with the counter and the successor's predecessor must equal
-// the active gen (lineage); post-condition exactly ONE active vault. Any failure
-// aborts the tx -> the live vault keeps working. Returns (activatedGen, retiredGen,
-// hadPredecessor).
 // pendingUnmapOnGeneration reports whether any in-flight USER unmap ("us-") still
 // spends generation gen's inputs, returning the first such txid. It is the F1 guard
 // for ActivatePendingGeneration: a gen must not retire while one of its unmaps could
 // still be awaiting its TSS signature, because a retiring key's keysign is
 // output-scoped to the successor and the unmap would be stranded (user debited
 // forever, NN#3 wedging every later createKey). Migration sweeps ("ms-") are excluded
-// — they are operator-driven and scope to the successor, so they are never stranded.
+// - they are operator-driven and scope to the successor, so they are never stranded.
 //
 // Fail-closed: an unreadable spend registry, an undecodable "us-" record, or inputs
 // that cannot be resolved all count as pending (refuse the rotation rather than risk
@@ -548,6 +537,17 @@ func pendingUnmapOnGeneration(gen uint32) (string, bool) {
 	return "", false
 }
 
+// ActivatePendingGeneration promotes the (keygen-complete, TSS-attested) pending
+// vault to ACTIVE and retires the current active vault. The retired vault goes to
+// RETIRING — it KEEPS its keys and its funds and can still be swept; it is NEVER
+// purged here (purge is fund-gated in S5).
+//
+// Guards (never-brick): a pending vault must exist with BOTH real pubkeys; its
+// primary must attest to the TSS ceremony (D-1); for a rotation the active-vault
+// generation must agree with the counter and the successor's predecessor must equal
+// the active gen (lineage); post-condition exactly ONE active vault. Any failure
+// aborts the tx -> the live vault keeps working. Returns (activatedGen, retiredGen,
+// hadPredecessor).
 func ActivatePendingGeneration(height uint32) (uint32, uint32, bool, error) {
 	FoldLegacyGen0IfNeeded()
 	vaults, nextGen, activeGen, err := LoadVaultState()
@@ -602,7 +602,7 @@ func ActivatePendingGeneration(height uint32) (uint32, uint32, bool, error) {
 		// signature is produced asynchronously by the node. The node output-scopes a
 		// retiring key's keysign to its successor (node_f1_s3: before-activate scopeAllow,
 		// after-activate scopeRefuse), so an unmap whose signature was NOT yet issued when
-		// the gen retires can never be signed afterward — redriveSpend refuses rotated
+		// the gen retires can never be signed afterward - redriveSpend refuses rotated
 		// inputs, migrateVault skips the reserved input, and NN#3 then blocks every later
 		// createKey. The user stays debited forever and the whole rotation wedges. The
 		// clean, proven path is settle-before-activate: confirmSpend (or redriveSpend then
@@ -610,7 +610,7 @@ func ActivatePendingGeneration(height uint32) (uint32, uint32, bool, error) {
 		if txid, pending := pendingUnmapOnGeneration(activeGen); pending {
 			return 0, 0, false, ce.NewContractError(ce.ErrTransaction,
 				"cannot activate: generation "+strconv.FormatUint(uint64(activeGen), 10)+
-					" still has an in-flight unmap ("+txid+") whose signature may not be issued — "+
+					" still has an in-flight unmap ("+txid+") whose signature may not be issued - "+
 					"settle it first (confirmSpend, or redriveSpend then confirm) so it cannot be "+
 					"stranded when the key retires (F1)")
 		}
@@ -880,7 +880,7 @@ func canPurgeGen(v *Vault, height uint32) bool {
 	}
 	// F2: never purge a generation that is the successor of a still-unsettled abandoned
 	// sweep. The registry shows the gen empty (the sweep's output has not confirmed yet),
-	// but a late confirm (settleAbandonedSweep) would index that output to this gen — and
+	// but a late confirm (settleAbandonedSweep) would index that output to this gen - and
 	// if it is PURGED by then, the coins land on a retired, non-fund-matchable address:
 	// unspendable, FeeSupply credited, I1 still balancing so no assert fires (invisible
 	// insolvency). Hold the gen in INACTIVE (still fund-matchable) until the sweep resolves.
@@ -907,7 +907,7 @@ func canPurgeGen(v *Vault, height uint32) bool {
 // It now READS leg (d)'s attestation key and FAILS CLOSED when it is absent. The former
 // permissive stub (return true) was justified as "safe pre-pin" (rotation inert behind the
 // params.go pin), but GATE-1 showed VaultRotationV2InForce turns on at the attested FLOOR
-// >= 0.8 regardless of the pin checklist — so once mainnet rises to 0.10 the stub would
+// >= 0.8 regardless of the pin checklist - so once mainnet rises to 0.10 the stub would
 // purge gens on live state with no L1 zero-balance proof (F3). No oracle writes this key
 // yet, so in production it is always absent and no gen ever purges; a gen simply stays
 // INACTIVE (still fund-matchable, so a late deposit is still credited), which is the safe

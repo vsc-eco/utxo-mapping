@@ -4,7 +4,7 @@ package current_test
 // strandable by a key rotation. HandleUnmap debits the user and builds the spend
 // synchronously, but the node produces the signature asynchronously and output-scopes
 // a retiring key's keysign to its successor. So if activateKey retires the gen while
-// such an unmap is in flight, the unmap can never be signed afterward — redriveSpend
+// such an unmap is in flight, the unmap can never be signed afterward - redriveSpend
 // refuses the rotated inputs, migrateVault skips the reserved input, and NN#3 then
 // blocks every later createKey. The user stays debited forever and the whole rotation
 // wedges (proven in the prove phase: TestProofF1a_UnsignedUnmapStrandedByActivation).
@@ -92,12 +92,12 @@ func f1SetupWithPendingUnmap(t *testing.T) (ct *test_utils.ContractTest, contrac
 }
 
 // TestWR_F1_ActivateRefusedWhilePendingUnmap: the fix. Activation is refused while gen-0
-// carries the in-flight unmap, and nothing is lost — gen-0 stays ACTIVE, gen-1 stays
+// carries the in-flight unmap, and nothing is lost - gen-0 stays ACTIVE, gen-1 stays
 // PENDING, and the unmap record is untouched (still rescuable).
 func TestWR_F1_ActivateRefusedWhilePendingUnmap(t *testing.T) {
 	ct, contractId, owner, unmapTxId := f1SetupWithPendingUnmap(t)
 
-	// Mint + key the successor (NN#3 permits createKey — gen-0 is active, not superseded).
+	// Mint + key the successor (NN#3 permits createKey - gen-0 is active, not superseded).
 	require.Empty(t, callKeyAction(t, ct, contractId, owner, "createKey", []byte("")).Err)
 	require.Empty(t, callKeyAction(t, ct, contractId, owner, "registerPublicKey", regKeyPayload(t, Gen1PrimaryHex, "")).Err)
 
@@ -128,7 +128,7 @@ func TestWR_F1_SettleThenActivateSucceeds(t *testing.T) {
 	require.Empty(t, ct.StateGet(contractId, constants.PendingUnmapPrefix+unmapTxId),
 		"the unmap settled: its \"us-\" record is consumed")
 
-	// Now rotation proceeds cleanly — the F1 guard finds no pending unmap and allows it.
+	// Now rotation proceeds cleanly - the F1 guard finds no pending unmap and allows it.
 	require.Empty(t, callKeyAction(t, ct, contractId, owner, "createKey", []byte("")).Err)
 	require.Empty(t, callKeyAction(t, ct, contractId, owner, "registerPublicKey", regKeyPayload(t, Gen1PrimaryHex, "")).Err)
 	res := callKeyAction(t, ct, contractId, owner, "activateKey", []byte(""))

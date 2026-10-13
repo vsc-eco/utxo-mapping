@@ -204,7 +204,7 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	// reject outright and it removes the only conservation ambiguity at settle.
 	// ADDR-1: compare case-INSENSITIVELY. The change address is bech32 (P2WSH), and bech32 is
 	// case-insensitive (BIP173: a valid string is all-lower or all-upper, same witness program).
-	// A raw == let an UPPERCASE form of the change address through — both outputs would then
+	// A raw == let an UPPERCASE form of the change address through - both outputs would then
 	// carry the identical pkScript and settleUnmap would match the user's withdrawal as change.
 	// EqualFold is exact here: bech32's only aliasing is case, and a base58 To can never fold-
 	// equal a bech32 address (different charset/format), so no legitimate destination is rejected.

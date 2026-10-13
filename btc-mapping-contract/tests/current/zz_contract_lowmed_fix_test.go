@@ -56,7 +56,7 @@ func TestWR_PR321_AddBlocksRequiresActiveAuth(t *testing.T) {
 		"refused by the active-auth gate specifically, not a later block error; got %q", posting.ErrMsg)
 
 	// Control: with ACTIVE auth the call clears checkOracle (it then fails on the empty
-	// payload, but NOT with the auth error) — proving the rejection above is auth-specific.
+	// payload, but NOT with the auth error) - proving the rejection above is auth-specific.
 	active := ct.Call(stateEngine.TxVscCallContract{
 		Self: stateEngine.TxSelf{TxId: "pr32-active", BlockId: "b", Index: 0, OpIndex: 0,
 			Timestamp: "2025-10-14T00:00:00", RequiredAuths: []string{owner}, RequiredPostingAuths: []string{}},
@@ -68,7 +68,7 @@ func TestWR_PR321_AddBlocksRequiresActiveAuth(t *testing.T) {
 }
 
 // ADDR-1: an unmap whose destination is the UPPERCASE form of the vault change address must
-// be refused — the raw-string guard missed it, letting the user's output collide with change.
+// be refused - the raw-string guard missed it, letting the user's output collide with change.
 func TestWR_ADDR1_UnmapRejectsUppercaseChangeAddress(t *testing.T) {
 	const instruction = "deposit_to=hive:milo-hpr"
 	const deposit = int64(100_000)

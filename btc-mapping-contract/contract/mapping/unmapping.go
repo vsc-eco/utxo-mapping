@@ -509,10 +509,6 @@ func assertInputsSignable(inputs []*Utxo) error {
 	return nil
 }
 
-// signSpendTransaction computes witness sighashes and requests TSS signing
-// for each input. Call this only after all validation checks have passed.
-// HandleRedrive (L7-01) dispatches a stuck-spend re-drive to the sweep or unmap path by the
-// record type. Owner-gated + pause-gated at the entrypoint.
 // groupLatestBuildHeight returns the newest BuildHeight among a spend group's members,
 // or fallback when the group is absent/empty/unreadable. RD-1: the re-drive staleness
 // window (RedriveStaleBlocks) must be measured from the LATEST replacement, not from the
@@ -545,6 +541,8 @@ func groupLatestBuildHeight(inputIds []uint16, fallback uint32) uint32 {
 	return latest
 }
 
+// HandleRedrive (L7-01) dispatches a stuck-spend re-drive to the sweep or unmap path by the
+// record type. Owner-gated + pause-gated at the entrypoint.
 func (cs *ContractState) HandleRedrive(txId string) (string, error) {
 	if ms := sdk.StateGetObject(constants.MigrationSweepPrefix + txId); ms != nil && *ms != "" {
 		return cs.HandleRedriveSweep(txId)
@@ -578,7 +576,7 @@ func (cs *ContractState) HandleRedriveUnmap(txId string) (string, error) {
 	}
 
 	// Staleness gate (D3). RD-1: anchor on the LATEST re-drive in the spend group, not this
-	// txid — re-driving the ORIGINAL (whose BuildHeight stays old) would otherwise clear the
+	// txid - re-driving the ORIGINAL (whose BuildHeight stays old) would otherwise clear the
 	// gate every block and mint a fresh replacement per call up to the member cap.
 	nowH := currentLastHeight()
 	latestBuild := groupLatestBuildHeight(rec.InputIds, rec.BuildHeight)
@@ -801,6 +799,8 @@ func (cs *ContractState) HandleRedriveUnmap(txId string) (string, error) {
 	return "redrive-unmap: old=" + txId + " new=" + newTxId + " fee=" + strconv.FormatInt(actualFee, 10), nil
 }
 
+// signSpendTransaction computes witness sighashes and requests TSS signing
+// for each input. Call this only after all validation checks have passed.
 func signSpendTransaction(tx *wire.MsgTx, inputs []*Utxo, witnessScripts map[int][]byte) (*SigningData, error) {
 	// BRK-2 defense-in-depth: never request a real spend-sign for a
 	// non-fund-holding (e.g. Pending) generation. See assertInputsSignable.
