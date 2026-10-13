@@ -360,12 +360,12 @@ func attestPrimaryKey(gen uint32, primary CompressedPubKey) error {
 	// TssGetKey — the SignatureVerified flag ("1" iff a consensus-verified
 	// check-signature with this key has landed). REQUIRE it: activating an
 	// agreed-but-unsignable key would route funds into a vault only the single CSV
-	// backup can spend. Gated by field PRESENCE (backward-compatible): when v2 is
-	// off the node returns the legacy 3-field string and this is a no-op — which,
-	// together with the gen-0 fold activating directly (never through attest),
-	// leaves the inert / pre-v2 path unchanged. A genesis activation under an
-	// active v2 chain is gated too (it also flows through attest) — acceptable: the
-	// genesis key simply check-signs first (fresh deploy, zero funds at risk).
+	// backup can spend. A node below v2 sends no 4th field, and that fails closed
+	// too (checkSigVerified), so no generation activates before the network reports
+	// the flag. The gen-0 fold of an existing deployment activates directly (never
+	// through attest) and is unaffected; a genesis registration on a FRESH
+	// deployment does flow through here, so a new contract can only register its
+	// first vault once the network runs v2 (deploy after the floor rise).
 	if !checkSigVerified(parts) {
 		return ce.NewContractError(ce.ErrTransaction,
 			"cannot activate generation: its TSS key has not produced a verified check-signature yet (BRK-2)")
