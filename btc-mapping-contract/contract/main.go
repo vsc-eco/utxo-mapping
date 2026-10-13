@@ -36,11 +36,16 @@ import (
 var NetworkMode string
 
 func checkOracle() {
-	caller := sdk.GetEnv().Caller.String()
+	env := sdk.GetEnv()
+	caller := env.Caller.String()
 	if caller == constants.OracleAddress {
 		return
 	}
 	if constants.IsTestnet(NetworkMode) && caller == *sdk.GetEnvKey("contract.owner") {
+		// PR32-1: a posting-only signature makes the owner the Caller, so comparing Caller to
+		// the owner alone let a posting signer through this admin gate on testnet/regtest.
+		// checkAdmin already guards its owner branch this way; checkOracle must match.
+		requireOwnerActive(env)
 		return
 	}
 	ce.CustomAbort(

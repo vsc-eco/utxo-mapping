@@ -101,6 +101,16 @@ func (cs *ContractState) HandleTopUpFeeReserve(txData *VerificationRequest) erro
 	if d := sdk.StateGetObject(constants.TxSpendsPrefix + txId); d != nil && *d != "" {
 		return ce.NewContractError(ce.ErrInput, "fee-reserve tx is a pending vault spend, not a deposit")
 	}
+	// AB-1: an ABANDONED migration sweep is also a vault-authored spend, but abandoning it
+	// deletes its "ms-"/"d-" records and TxSpends entry (clearSpendGroup) and leaves only an
+	// "sa-<txid>" record — so the three guards above no longer catch it. Without this guard,
+	// a top-up pointed at an abandoned-but-not-yet-settled sweep would credit FeeSupply now,
+	// and settleAbandonedSweep would index + credit the SAME output again when it confirms
+	// (double credit, phantom outpoint). An abandoned sweep that confirms settles through
+	// confirmSpend, never through a top-up; fund the reserve with a real external deposit.
+	if v := sdk.StateGetObject(constants.AbandonedSweepPrefix + txId); v != nil && *v != "" {
+		return ce.NewContractError(ce.ErrInput, "fee-reserve tx is an abandoned migration sweep, not a deposit")
+	}
 
 	// Derive the untagged address of every generation that can still hold funds (the same
 	// set the deposit path matches: depositAddressGenerations, active first) and tag each
@@ -154,6 +164,16 @@ func (cs *ContractState) HandleTopUpFeeReserve(txData *VerificationRequest) erro
 		if isObserved(observedList, entry) {
 			continue // already credited by a prior top-up (or map) of this same output
 		}
+		// UPG-1/UPG-2: an output already registered as a live vault UTXO must never be indexed
+		// again. A v2 settle records its output in the observed list (caught just above), but an
+		// output indexed before that discipline existed — a legacy "main"-era unmap change or
+		// migration sweep carried over by an IN-PLACE #29 upgrade — has no observed entry, so
+		// without this check a top-up pointed at that already-held outpoint would index it a
+		// SECOND time (phantom duplicate UTXO, FeeSupply inflated, false theft-halt, first sweep
+		// double-spends). Deploy-mode-agnostic: correct whether #29 deploys fresh or in place.
+		if cs.outpointRegistered(txId, uint32(index)) {
+			continue
+		}
 		internalId, ierr := cs.allocateConfirmedId()
 		if ierr != nil {
 			return ierr
@@ -190,4 +210,24 @@ func (cs *ContractState) HandleTopUpFeeReserve(txData *VerificationRequest) erro
 	sdk.Log("feereserve|topup|txid=" + txId + "|credited=" + strconv.FormatInt(credited, 10) +
 		"|feeSupply=" + strconv.FormatInt(newFee, 10))
 	return nil
+}
+
+// outpointRegistered reports whether a confirmed UTXO for (txId, vout) already exists in
+// the registry (UPG-1/UPG-2 guard for HandleTopUpFeeReserve). O(live UTXOs) and only on
+// the cold, operator-driven top-up path — not the hot permissionless deposit path — so it
+// does not reintroduce the L10-1 scan concern. Fail-open on an unreadable blob (continue):
+// a top-up is NEVER-TERMINAL (it can only add funds and must always be able to un-wedge a
+// rotation), so one corrupt unrelated UTXO must not brick it; the main-era change output
+// this guards against is itself a normally-indexed, readable UTXO.
+func (cs *ContractState) outpointRegistered(txId string, vout uint32) bool {
+	for _, e := range cs.UtxoList {
+		u, err := loadUtxo(e.Id)
+		if err != nil || u == nil {
+			continue
+		}
+		if u.TxId == txId && u.Vout == vout {
+			return true
+		}
+	}
+	return false
 }

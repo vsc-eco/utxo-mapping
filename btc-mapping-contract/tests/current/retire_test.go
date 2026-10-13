@@ -113,6 +113,10 @@ func TestRetireVault_InactiveToPurgedAtGraceBoundary(t *testing.T) {
 		{Generation: 1, Status: mapping.VaultStatusInactive, InactiveHeight: anchor},
 		{Generation: 2, Status: mapping.VaultStatusActive},
 	}, 3, 2)
+	// F3: purge now requires leg (d)'s independent zero-balance attestation (the former
+	// permissive stub always returned true). Provide it for gen 1 so this test still proves
+	// the INACTIVE→PURGED transition itself.
+	ct.StateSet(contractId, constants.ZeroBalanceAttestPrefix+"1", "1")
 
 	r := callKeyAction(t, ct, contractId, owner, "retireVault", []byte(""))
 	require.Empty(t, r.Err)
