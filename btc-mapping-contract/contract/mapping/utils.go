@@ -845,10 +845,13 @@ func incAccBalance(vscAcc string, amount int64) error {
 	return nil
 }
 
-// allowanceKey builds the q|<owner>|<spender> state key. The "|" separators
-// (constants.AllowanceDelimiter) are illegal in every VSC identity, so the key
-// cannot be forged by an owner whose name contains "-" (ALLOW-1). Mirrors the
-// single-source key helpers in magi_token/magi_nft.
+// allowanceKey builds the q|<owner>|<spender> state key. The "|" separator
+// (constants.AllowanceDelimiter) cannot be forged across owners: the owner
+// segment is always env.Caller (an authenticated identity, not attacker free
+// text), and a hive account name that can own a balance cannot contain "|"
+// (ALLOW-1 was the "-" delimiter letting hive:milo collide with hive:milo-hpr).
+// See constants.AllowanceDelimiter for why a spender that contains "|" is
+// harmless. Mirrors the single-source key helpers in magi_token/magi_nft.
 func allowanceKey(owner, spender string) string {
 	return constants.AllowancePrefix + owner + constants.AllowanceDelimiter + spender
 }

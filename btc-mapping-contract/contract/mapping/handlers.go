@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/btcsuite/btcd/wire"
 
@@ -201,7 +202,13 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	// collision would index the user's own withdrawal output as change (the vault over-
 	// collateralises and the user donates the withdrawal) — self-harm, no theft, but cheap to
 	// reject outright and it removes the only conservation ambiguity at settle.
-	if instructions.To == changeAddress {
+	// ADDR-1: compare case-INSENSITIVELY. The change address is bech32 (P2WSH), and bech32 is
+	// case-insensitive (BIP173: a valid string is all-lower or all-upper, same witness program).
+	// A raw == let an UPPERCASE form of the change address through — both outputs would then
+	// carry the identical pkScript and settleUnmap would match the user's withdrawal as change.
+	// EqualFold is exact here: bech32's only aliasing is case, and a base58 To can never fold-
+	// equal a bech32 address (different charset/format), so no legitimate destination is rejected.
+	if strings.EqualFold(instructions.To, changeAddress) {
 		return ce.NewContractError(ce.ErrInput, "destination address must differ from the vault change address")
 	}
 	// When deduct_fee=true, estimate btcFee to derive the send amount so that

@@ -594,8 +594,11 @@ func (cs *ContractState) HandleRedriveSweep(txId string) (string, error) {
 
 	// Staleness gate (D3): only re-drive a sweep that has genuinely failed to confirm for
 	// RedriveStaleBlocks, so we never race a tx about to confirm. Hygiene, not safety.
+	// RD-1: anchor on the LATEST re-drive in the spend group, not the passed txid, so
+	// re-driving the original repeatedly in one window can't mint a replacement per call.
 	nowH := currentLastHeight()
-	if rec.BuildHeight == 0 || nowH < rec.BuildHeight || nowH-rec.BuildHeight < constants.RedriveStaleBlocks {
+	latestBuild := groupLatestBuildHeight(rec.InputIds, rec.BuildHeight)
+	if latestBuild == 0 || nowH < latestBuild || nowH-latestBuild < constants.RedriveStaleBlocks {
 		return "", ce.NewContractError(ce.ErrTransaction, "sweep not yet stale enough to re-drive")
 	}
 

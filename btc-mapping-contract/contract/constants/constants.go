@@ -54,6 +54,25 @@ const (
 // spend group, kept so a late confirmation of any member can still settle.
 const AbandonedSweepPrefix = "sa" + DirPathDelimiter
 
+// AbandonedSuccessorPrefix ("asc-"+<gen>) counts the live abandoned sweeps whose
+// SuccessorGen is <gen>. F2: a gen that is the successor of a still-unsettled abandoned
+// sweep must NOT be purged — a late confirm of that sweep (settleAbandonedSweep) would
+// index its output to a retired, non-fund-matchable generation (coins unspendable,
+// FeeSupply credited, I1 still balancing so no assert fires → invisible insolvency).
+// Incremented in HandleAbandonStuckSweep, decremented in settleAbandonedSweep, read by
+// canPurgeGen. Distinct from "sa-" (the char after "sa" is "-" vs "c", and an "sa-" key
+// is "sa-"+64-hex-txid, so the two keyspaces never overlap).
+const AbandonedSuccessorPrefix = "asc" + DirPathDelimiter
+
+// ZeroBalanceAttestPrefix ("zba-"+<gen>) holds S5 purge leg (d): the independent
+// zero-balance attestation for a generation's vault address. zeroBalanceAttested reads it
+// and fails CLOSED when the key is absent. No oracle writer exists yet, so no gen can
+// purge in production until leg (d) is built. F3/GATE-1: the former permissive stub
+// (return true) purged gens with no L1 zero-balance proof the moment v2 went live at
+// floor>=0.8 (which GATE-1 showed happens regardless of the pin checklist), stranding
+// later deposits to the retired address (map succeeds, credits nobody).
+const ZeroBalanceAttestPrefix = "zba" + DirPathDelimiter
+
 // MaxSpendGroupMembers caps the members of an L7-01 spend group (original + RBF
 // replacements). Re-drives are owner-gated and each bump raises the fee ≥ 2 sat/vByte
 // under a totalInputs/2 ceiling, so an honest operator needs only a handful before a
@@ -251,9 +270,15 @@ const (
 // DirPathDelimiter (Hive usernames allow "-"). Joining with "-" makes
 // q-<owner>-<spender> forgeable: hive:milo approving spender "hpr-hive:X" writes
 // the exact same key as hive:milo-hpr approving hive:X, letting the owner of a
-// name-prefix drain the longer account (milo drains milo-hpr). "|" is illegal in
-// every VSC identity (hive/contract/eth/btc/system), so the key is unforgeable.
-// Mirrors the convention already used by magi_token ("alw|") and magi_nft ("allow|").
+// name-prefix drain the longer account (milo drains milo-hpr). "|" closes that:
+// the OWNER segment of the key is always env.Caller, an authenticated identity
+// the attacker cannot choose as free text, and the VSC account names that can own
+// a balance (hive:, which allows only [a-z0-9.-]) cannot contain "|". A spender
+// string MAY contain "|" (VerifyAddress accepts any suffix after "system:"), but
+// that only shapes the caller's OWN allowance grants and never collides into a
+// victim owner's namespace, since the attacker cannot assume a "|"-bearing owner
+// identity. Mirrors the convention already used by magi_token ("alw|") and
+// magi_nft ("allow|").
 const AllowanceDelimiter = "|"
 const AllowancePrefix = "q" + AllowanceDelimiter
 
@@ -304,12 +329,17 @@ const BlockPrefix = "b" + DirPathDelimiter
 const MaxBaseFeeRate int64 = 500
 
 // MaxMigrationInputs bounds the number of UTXOs a single migration sweep tranche
-// consumes (S2). Each input needs its own TSS signature and adds ~150 vB; an
-// unbounded sweep-all of a large retiring vault would blow the TSS-signing budget
-// and exceed Bitcoin standardness (~100kvB), so the sweep can never be built or
-// relayed (the C-F brick). A retiring vault with more UTXOs than this is drained in
-// successive tranches. Conservative — the live vault holds only a handful of UTXOs.
-const MaxMigrationInputs = 100
+// consumes (S2). Three independent ceilings, lowest wins:
+//  1. TSS-signing budget — each input needs its own signature.
+//  2. Bitcoin standardness (~100kvB) — an unbounded sweep-all can't be built or relayed.
+//  3. NI-4 — the SETTLE path: confirmSpend carries the sweep's non-witness tx in its
+//     custom_json (hex ~= 106 + 82*N bytes), plus the Merkle proof + envelope; at N ~= 85
+//     that exceeds Hive's 8192-byte custom_json cap, so the tranche could be built and
+//     signed but NEVER confirmed — it would wedge rotation. (3) is the tightest, so the cap
+//     sits well below it: 70 inputs => ~5.8KB tx hex, leaving comfortable headroom for the
+//     proof and envelope. A retiring vault with more UTXOs is drained in successive tranches
+//     (the live vault holds only a handful, so this never binds in practice today).
+const MaxMigrationInputs = 70
 
 // MigrationCanaryValue (THORChain-derived, migration §5c) caps the value of a gen's FIRST
 // migration tranche — the "canary." When a newly-RETIRING gen is first swept, only up to this

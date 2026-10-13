@@ -513,6 +513,38 @@ func assertInputsSignable(inputs []*Utxo) error {
 // for each input. Call this only after all validation checks have passed.
 // HandleRedrive (L7-01) dispatches a stuck-spend re-drive to the sweep or unmap path by the
 // record type. Owner-gated + pause-gated at the entrypoint.
+// groupLatestBuildHeight returns the newest BuildHeight among a spend group's members,
+// or fallback when the group is absent/empty/unreadable. RD-1: the re-drive staleness
+// window (RedriveStaleBlocks) must be measured from the LATEST replacement, not from the
+// txid the caller happened to pass. Re-driving the ORIGINAL repeatedly leaves its own
+// BuildHeight old, so each call would clear a window anchored on it and mint another
+// replacement until the member cap. A spend group is homogeneous (all unmaps or all
+// sweeps over the one input set), so at most one record type matches per member.
+func groupLatestBuildHeight(inputIds []uint16, fallback uint32) uint32 {
+	latest := fallback
+	graw := sdk.StateGetObject(spendGroupKey(inputIds))
+	if graw == nil || *graw == "" {
+		return latest
+	}
+	g, err := UnmarshalSpendGroup([]byte(*graw))
+	if err != nil {
+		return latest // corrupt group is refused fail-closed by the caller's own group read
+	}
+	for _, m := range g.Members {
+		if r := sdk.StateGetObject(constants.PendingUnmapPrefix + m); r != nil && *r != "" {
+			if u, uerr := UnmarshalPendingUnmap([]byte(*r)); uerr == nil && u.BuildHeight > latest {
+				latest = u.BuildHeight
+			}
+		}
+		if r := sdk.StateGetObject(constants.MigrationSweepPrefix + m); r != nil && *r != "" {
+			if s, serr := UnmarshalMigrationSweep([]byte(*r)); serr == nil && s.BuildHeight > latest {
+				latest = s.BuildHeight
+			}
+		}
+	}
+	return latest
+}
+
 func (cs *ContractState) HandleRedrive(txId string) (string, error) {
 	if ms := sdk.StateGetObject(constants.MigrationSweepPrefix + txId); ms != nil && *ms != "" {
 		return cs.HandleRedriveSweep(txId)
@@ -545,9 +577,12 @@ func (cs *ContractState) HandleRedriveUnmap(txId string) (string, error) {
 		return "", ce.NewContractError(ce.ErrStateAccess, "error decoding pending unmap record: "+err.Error())
 	}
 
-	// Staleness gate (D3).
+	// Staleness gate (D3). RD-1: anchor on the LATEST re-drive in the spend group, not this
+	// txid — re-driving the ORIGINAL (whose BuildHeight stays old) would otherwise clear the
+	// gate every block and mint a fresh replacement per call up to the member cap.
 	nowH := currentLastHeight()
-	if rec.BuildHeight == 0 || nowH < rec.BuildHeight || nowH-rec.BuildHeight < constants.RedriveStaleBlocks {
+	latestBuild := groupLatestBuildHeight(rec.InputIds, rec.BuildHeight)
+	if latestBuild == 0 || nowH < latestBuild || nowH-latestBuild < constants.RedriveStaleBlocks {
 		return "", ce.NewContractError(ce.ErrTransaction, "unmap not yet stale enough to re-drive")
 	}
 

@@ -205,6 +205,11 @@ func (cs *ContractState) HandleAbandonStuckSweep(txId string) (string, error) {
 		ab := &AbandonedSweep{Sweep: *members[i], WrittenOff: writtenOff, Members: group.Members}
 		sdk.StateSetObject(constants.AbandonedSweepPrefix+m, string(MarshalAbandonedSweep(ab)))
 	}
+	// F2: this abandoned sweep still owes its output to rec.SuccessorGen on a late confirm,
+	// so block that successor from being PURGED until the sweep settles (decremented in
+	// settleAbandonedSweep). One increment per abandoned group — every member spends the
+	// same inputs (asserted above) and so shares the one successor, and only one can confirm.
+	incAbandonedSuccessor(rec.SuccessorGen)
 	// Takes every member's "ms-"/"d-" records and TxSpends entries and the group object
 	// off the pending set, so nodes stop signing and broadcasting it.
 	cs.clearSpendGroup(txId, rec.InputIds)
@@ -267,7 +272,63 @@ func (cs *ContractState) settleAbandonedSweep(msgTx *wire.MsgTx, ab *AbandonedSw
 	for _, m := range ab.Members {
 		sdk.StateDeleteObject(constants.AbandonedSweepPrefix + m)
 	}
+	// F2: the sweep has settled onto its successor — release the purge hold on that gen.
+	decAbandonedSuccessor(ab.Sweep.SuccessorGen)
 	sdk.Log("sweep-abandon|late-settle|txid=" + msgTx.TxID() + "|returned=" + strconv.FormatInt(outputTotal, 10) +
 		"|feeSupply=" + strconv.FormatInt(newFee, 10))
 	return nil
+}
+
+// ── F2: abandoned-sweep successor tracking ──────────────────────────────────────────
+// A generation that is the SuccessorGen of a live (unsettled) abandoned sweep must not be
+// purged (canPurgeGen): a late confirm would index that sweep's output to it. Counted per
+// gen, so several abandoned sweeps naming the same successor are tracked independently and
+// the gen becomes purgeable only once the last one settles.
+
+func abandonedSuccessorKey(gen uint32) string {
+	return constants.AbandonedSuccessorPrefix + strconv.FormatUint(uint64(gen), 10)
+}
+
+// abandonedSuccessorCount returns the live count (0 if absent or unparseable). Used by the
+// inc/dec maintenance below; the purge guard (abandonedSweepTargetsGen) fails closed on a
+// corrupt value instead.
+func abandonedSuccessorCount(gen uint32) uint64 {
+	raw := sdk.StateGetObject(abandonedSuccessorKey(gen))
+	if raw == nil || *raw == "" {
+		return 0
+	}
+	n, err := strconv.ParseUint(*raw, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func incAbandonedSuccessor(gen uint32) {
+	sdk.StateSetObject(abandonedSuccessorKey(gen), strconv.FormatUint(abandonedSuccessorCount(gen)+1, 10))
+}
+
+func decAbandonedSuccessor(gen uint32) {
+	n := abandonedSuccessorCount(gen)
+	if n <= 1 {
+		sdk.StateDeleteObject(abandonedSuccessorKey(gen))
+		return
+	}
+	sdk.StateSetObject(abandonedSuccessorKey(gen), strconv.FormatUint(n-1, 10))
+}
+
+// abandonedSweepTargetsGen reports whether any live abandoned sweep names gen as its
+// successor (read by canPurgeGen — F2). Fail-closed: a present-but-unparseable counter is
+// treated as a live target, so a corrupt value can never let a purge destroy a gen a late
+// sweep still owes an output to.
+func abandonedSweepTargetsGen(gen uint32) bool {
+	raw := sdk.StateGetObject(abandonedSuccessorKey(gen))
+	if raw == nil || *raw == "" {
+		return false
+	}
+	n, err := strconv.ParseUint(*raw, 10, 64)
+	if err != nil {
+		return true
+	}
+	return n > 0
 }

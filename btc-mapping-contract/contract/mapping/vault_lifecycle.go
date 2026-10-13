@@ -505,6 +505,49 @@ func RegisterVaultKeys(primary, backup *CompressedPubKey, height uint32) (uint32
 // the active gen (lineage); post-condition exactly ONE active vault. Any failure
 // aborts the tx -> the live vault keeps working. Returns (activatedGen, retiredGen,
 // hadPredecessor).
+// pendingUnmapOnGeneration reports whether any in-flight USER unmap ("us-") still
+// spends generation gen's inputs, returning the first such txid. It is the F1 guard
+// for ActivatePendingGeneration: a gen must not retire while one of its unmaps could
+// still be awaiting its TSS signature, because a retiring key's keysign is
+// output-scoped to the successor and the unmap would be stranded (user debited
+// forever, NN#3 wedging every later createKey). Migration sweeps ("ms-") are excluded
+// — they are operator-driven and scope to the successor, so they are never stranded.
+//
+// Fail-closed: an unreadable spend registry, an undecodable "us-" record, or inputs
+// that cannot be resolved all count as pending (refuse the rotation rather than risk
+// stranding). The scan is bounded by MaxConcurrentPendingSpends (see
+// refreshPendingSpendFloor) and runs once per activation (rare), not per block.
+func pendingUnmapOnGeneration(gen uint32) (string, bool) {
+	raw := sdk.StateGetObject(constants.TxSpendsRegistryKey)
+	if raw == nil || *raw == "" {
+		return "", false
+	}
+	list, err := UnmarshalTxSpendsRegistry([]byte(*raw))
+	if err != nil {
+		return "(unreadable txspends registry)", true
+	}
+	for _, txid := range list {
+		usRaw := sdk.StateGetObject(constants.PendingUnmapPrefix + txid)
+		if usRaw == nil || *usRaw == "" {
+			continue // a migration sweep ("ms-"), not a user unmap
+		}
+		rec, derr := UnmarshalPendingUnmap([]byte(*usRaw))
+		if derr != nil {
+			return txid, true // fail-closed: cannot prove it is not stranded
+		}
+		inputs, ierr := getInputUtxos(rec.InputIds)
+		if ierr != nil {
+			return txid, true // fail-closed
+		}
+		for _, u := range inputs {
+			if u.Generation == gen {
+				return txid, true
+			}
+		}
+	}
+	return "", false
+}
+
 func ActivatePendingGeneration(height uint32) (uint32, uint32, bool, error) {
 	FoldLegacyGen0IfNeeded()
 	vaults, nextGen, activeGen, err := LoadVaultState()
@@ -554,6 +597,23 @@ func ActivatePendingGeneration(height uint32) (uint32, uint32, bool, error) {
 	}
 
 	if hadPredecessor {
+		// F1: refuse to retire a generation that still has an in-flight USER unmap.
+		// An unmap debits the user and builds its spend at HandleUnmap, but the TSS
+		// signature is produced asynchronously by the node. The node output-scopes a
+		// retiring key's keysign to its successor (node_f1_s3: before-activate scopeAllow,
+		// after-activate scopeRefuse), so an unmap whose signature was NOT yet issued when
+		// the gen retires can never be signed afterward — redriveSpend refuses rotated
+		// inputs, migrateVault skips the reserved input, and NN#3 then blocks every later
+		// createKey. The user stays debited forever and the whole rotation wedges. The
+		// clean, proven path is settle-before-activate: confirmSpend (or redriveSpend then
+		// confirm) every pending unmap on the active gen BEFORE cutting over. Fail-closed.
+		if txid, pending := pendingUnmapOnGeneration(activeGen); pending {
+			return 0, 0, false, ce.NewContractError(ce.ErrTransaction,
+				"cannot activate: generation "+strconv.FormatUint(uint64(activeGen), 10)+
+					" still has an in-flight unmap ("+txid+") whose signature may not be issued — "+
+					"settle it first (confirmSpend, or redriveSpend then confirm) so it cannot be "+
+					"stranded when the key retires (F1)")
+		}
 		vaults[oldActiveIdx].Status = VaultStatusRetiring
 		vaults[oldActiveIdx].RetiredHeight = height
 		retiredGen = vaults[oldActiveIdx].Generation
@@ -818,6 +878,15 @@ func canPurgeGen(v *Vault, height uint32) bool {
 	if height < v.InactiveHeight || height-v.InactiveHeight < constants.VaultPurgeGraceBlocks {
 		return false // grace window not yet elapsed
 	}
+	// F2: never purge a generation that is the successor of a still-unsettled abandoned
+	// sweep. The registry shows the gen empty (the sweep's output has not confirmed yet),
+	// but a late confirm (settleAbandonedSweep) would index that output to this gen — and
+	// if it is PURGED by then, the coins land on a retired, non-fund-matchable address:
+	// unspendable, FeeSupply credited, I1 still balancing so no assert fires (invisible
+	// insolvency). Hold the gen in INACTIVE (still fund-matchable) until the sweep resolves.
+	if abandonedSweepTargetsGen(v.Generation) {
+		return false
+	}
 	return zeroBalanceAttested(v)
 }
 
@@ -835,9 +904,18 @@ func canPurgeGen(v *Vault, height uint32) bool {
 //  3. the HARD DEPLOY GATE forbids pinning the rotation activation height until leg (d) is
 //     genuinely built + devnet-proven (project memory / node params.go pin-gate (m2)).
 //
-// When the oracle lands, replace this body with the real attestation read — nothing else changes.
-func zeroBalanceAttested(_ *Vault) bool {
-	return true // TODO(S5-leg-d): read the independent zero-balance oracle attestation.
+// It now READS leg (d)'s attestation key and FAILS CLOSED when it is absent. The former
+// permissive stub (return true) was justified as "safe pre-pin" (rotation inert behind the
+// params.go pin), but GATE-1 showed VaultRotationV2InForce turns on at the attested FLOOR
+// >= 0.8 regardless of the pin checklist — so once mainnet rises to 0.10 the stub would
+// purge gens on live state with no L1 zero-balance proof (F3). No oracle writes this key
+// yet, so in production it is always absent and no gen ever purges; a gen simply stays
+// INACTIVE (still fund-matchable, so a late deposit is still credited), which is the safe
+// resting state. When the oracle lands it writes ZeroBalanceAttestPrefix+<gen> and nothing
+// else here changes.
+func zeroBalanceAttested(v *Vault) bool {
+	raw := sdk.StateGetObject(constants.ZeroBalanceAttestPrefix + strconv.FormatUint(uint64(v.Generation), 10))
+	return raw != nil && *raw != ""
 }
 
 // retireResultString renders a deterministic human-readable summary of the transitions a
