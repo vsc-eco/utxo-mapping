@@ -94,6 +94,12 @@ func i1Holds(t *testing.T, ct *test_utils.ContractTest, contractId string) {
 // single-tx regtest block (same shape as confirmMigrationSweep, which needs the "d-"
 // record an abandon deletes).
 func confirmTxBytes(t *testing.T, ct *test_utils.ContractTest, contractId, caller string, txBytes []byte, blockHeight uint32) test_utils.ContractTestCallResult {
+	return confirmTxBytesIdx(t, ct, contractId, caller, txBytes, blockHeight, []uint32{0})
+}
+
+// confirmTxBytesIdx is confirmTxBytes with explicit confirmSpend output indices. G needs to
+// confirm a parent tx T that promotes its change at a non-zero vout.
+func confirmTxBytesIdx(t *testing.T, ct *test_utils.ContractTest, contractId, caller string, txBytes []byte, blockHeight uint32, indices []uint32) test_utils.ContractTestCallResult {
 	t.Helper()
 	var tx wire.MsgTx
 	require.NoError(t, tx.Deserialize(bytes.NewReader(txBytes)))
@@ -102,7 +108,7 @@ func confirmTxBytes(t *testing.T, ct *test_utils.ContractTest, contractId, calle
 	setHeight(ct, contractId, blockHeight+2)
 	payload, err := tinyjson.Marshal(mapping.ConfirmSpendParams{
 		TxData:  &mapping.VerificationRequest{BlockHeight: blockHeight, RawTxHex: hex.EncodeToString(txBytes), TxIndex: 0},
-		Indices: []uint32{0},
+		Indices: indices,
 	})
 	require.NoError(t, err)
 	return callAs(t, ct, contractId, caller, "confirmSpend", payload)
