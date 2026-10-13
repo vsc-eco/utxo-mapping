@@ -205,11 +205,12 @@ func (cs *ContractState) HandleAbandonStuckSweep(txId string) (string, error) {
 		ab := &AbandonedSweep{Sweep: *members[i], WrittenOff: writtenOff, Members: group.Members}
 		sdk.StateSetObject(constants.AbandonedSweepPrefix+m, string(MarshalAbandonedSweep(ab)))
 	}
-	// F2: this abandoned sweep still owes its output to rec.SuccessorGen on a late confirm,
-	// so block that successor from being PURGED until the sweep settles (decremented in
-	// settleAbandonedSweep). One increment per abandoned group - every member spends the
-	// same inputs (asserted above) and so shares the one successor, and only one can confirm.
-	incAbandonedSuccessor(rec.SuccessorGen)
+	// F2: a late confirm of this sweep is made safe at settle time, not by holding the
+	// successor's purge. settleAbandonedSweep indexes the output ONLY while the successor is
+	// still fund-holding; once it has purged, settle leaves the output unindexed (the
+	// write-off stands). So an abandoned sweep that never confirms - the common case, its
+	// inputs gone or double-spent - holds nothing, and the successor's committee is never
+	// bond-locked waiting on it.
 	// Takes every member's "ms-"/"d-" records and TxSpends entries and the group object
 	// off the pending set, so nodes stop signing and broadcasting it.
 	cs.clearSpendGroup(txId, rec.InputIds)
@@ -228,6 +229,33 @@ func (cs *ContractState) HandleAbandonStuckSweep(txId string) (string, error) {
 // miner fee). Clears every member's record: the others spend the same input, so none of
 // them can confirm now.
 func (cs *ContractState) settleAbandonedSweep(msgTx *wire.MsgTx, ab *AbandonedSweep, blockHeight uint32) error {
+	// F2 guard: only index the recovered output while the successor is still fund-holding
+	// (Active/Retiring/Draining/Inactive). If the successor has already PURGED (its address is
+	// retired out of the deposit-matchable set), indexing the output onto it would credit a
+	// non-spendable UTXO + FeeSupply against coins no committee can ever move - the invisible
+	// insolvency this guard exists to prevent. On that path do a SUCCESSFUL no-op: leave the
+	// output unindexed (the write-off taken at abandon stands, so the books stay honest and
+	// over-collateralised; the coins rest at the retired successor address, recoverable by a
+	// later upgrade since purge destroys no keys), and CLEAR the sa- records so the bot's
+	// BOT-ABANDON-2 confirmSpend retry sees success and stops. A refusal would loop it forever
+	// (RC burn + spam). A gen absent from the registry is treated as not-fund-holding (same
+	// no-op), though a purged gen stays in the registry as a Purged marker.
+	successorFundHolding := false
+	for i := range cs.Vaults {
+		if cs.Vaults[i].Generation == ab.Sweep.SuccessorGen {
+			successorFundHolding = isFundHoldingStatus(cs.Vaults[i].Status)
+			break
+		}
+	}
+	if !successorFundHolding {
+		for _, m := range ab.Members {
+			sdk.StateDeleteObject(constants.AbandonedSweepPrefix + m)
+		}
+		sdk.Log("sweep-abandon|late-confirm-after-purge|txid=" + msgTx.TxID() + "|successorGen=" +
+			strconv.FormatUint(uint64(ab.Sweep.SuccessorGen), 10) + "|output-left-unindexed-at=" + ab.Sweep.SuccessorAddress)
+		return nil
+	}
+
 	outUtxos, err := indexMigrationOutputs(msgTx, ab.Sweep.SuccessorAddress, cs.NetworkParams, ab.Sweep.SuccessorGen)
 	if err != nil {
 		return err
@@ -272,63 +300,8 @@ func (cs *ContractState) settleAbandonedSweep(msgTx *wire.MsgTx, ab *AbandonedSw
 	for _, m := range ab.Members {
 		sdk.StateDeleteObject(constants.AbandonedSweepPrefix + m)
 	}
-	// F2: the sweep has settled onto its successor - release the purge hold on that gen.
-	decAbandonedSuccessor(ab.Sweep.SuccessorGen)
 	sdk.Log("sweep-abandon|late-settle|txid=" + msgTx.TxID() + "|returned=" + strconv.FormatInt(outputTotal, 10) +
 		"|feeSupply=" + strconv.FormatInt(newFee, 10))
 	return nil
 }
 
-// ── F2: abandoned-sweep successor tracking ──────────────────────────────────────────
-// A generation that is the SuccessorGen of a live (unsettled) abandoned sweep must not be
-// purged (canPurgeGen): a late confirm would index that sweep's output to it. Counted per
-// gen, so several abandoned sweeps naming the same successor are tracked independently and
-// the gen becomes purgeable only once the last one settles.
-
-func abandonedSuccessorKey(gen uint32) string {
-	return constants.AbandonedSuccessorPrefix + strconv.FormatUint(uint64(gen), 10)
-}
-
-// abandonedSuccessorCount returns the live count (0 if absent or unparseable). Used by the
-// inc/dec maintenance below; the purge guard (abandonedSweepTargetsGen) fails closed on a
-// corrupt value instead.
-func abandonedSuccessorCount(gen uint32) uint64 {
-	raw := sdk.StateGetObject(abandonedSuccessorKey(gen))
-	if raw == nil || *raw == "" {
-		return 0
-	}
-	n, err := strconv.ParseUint(*raw, 10, 64)
-	if err != nil {
-		return 0
-	}
-	return n
-}
-
-func incAbandonedSuccessor(gen uint32) {
-	sdk.StateSetObject(abandonedSuccessorKey(gen), strconv.FormatUint(abandonedSuccessorCount(gen)+1, 10))
-}
-
-func decAbandonedSuccessor(gen uint32) {
-	n := abandonedSuccessorCount(gen)
-	if n <= 1 {
-		sdk.StateDeleteObject(abandonedSuccessorKey(gen))
-		return
-	}
-	sdk.StateSetObject(abandonedSuccessorKey(gen), strconv.FormatUint(n-1, 10))
-}
-
-// abandonedSweepTargetsGen reports whether any live abandoned sweep names gen as its
-// successor (read by canPurgeGen - F2). Fail-closed: a present-but-unparseable counter is
-// treated as a live target, so a corrupt value can never let a purge destroy a gen a late
-// sweep still owes an output to.
-func abandonedSweepTargetsGen(gen uint32) bool {
-	raw := sdk.StateGetObject(abandonedSuccessorKey(gen))
-	if raw == nil || *raw == "" {
-		return false
-	}
-	n, err := strconv.ParseUint(*raw, 10, 64)
-	if err != nil {
-		return true
-	}
-	return n > 0
-}

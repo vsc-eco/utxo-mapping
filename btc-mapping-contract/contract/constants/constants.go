@@ -54,15 +54,6 @@ const (
 // spend group, kept so a late confirmation of any member can still settle.
 const AbandonedSweepPrefix = "sa" + DirPathDelimiter
 
-// AbandonedSuccessorPrefix ("asc-"+<gen>) counts the live abandoned sweeps whose
-// SuccessorGen is <gen>. F2: a gen that is the successor of a still-unsettled abandoned
-// sweep must NOT be purged - a late confirm of that sweep (settleAbandonedSweep) would
-// index its output to a retired, non-fund-matchable generation (coins unspendable,
-// FeeSupply credited, I1 still balancing so no assert fires → invisible insolvency).
-// Incremented in HandleAbandonStuckSweep, decremented in settleAbandonedSweep, read by
-// canPurgeGen. Distinct from "sa-" (the char after "sa" is "-" vs "c", and an "sa-" key
-// is "sa-"+64-hex-txid, so the two keyspaces never overlap).
-const AbandonedSuccessorPrefix = "asc" + DirPathDelimiter
 
 // MaxSpendGroupMembers caps the members of an L7-01 spend group (original + RBF
 // replacements). Re-drives are owner-gated and each bump raises the fee ≥ 2 sat/vByte

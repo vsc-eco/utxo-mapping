@@ -873,7 +873,6 @@ func fundedGenerations() (map[uint32]bool, error) {
 //	    ~24h). Guarded by a hard fail-closed check that InactiveHeight is set (non-zero):
 //	    never purge a gen that did not pass DRAINING→INACTIVE under this op. Overflow-safe
 //	    (subtract after the ≥).
-//	F2 — never purge the successor of a still-unsettled abandoned sweep (below).
 //
 // (b) address-retirement is intrinsic to the PURGE transition itself (Purged ∉
 // isFundHoldingStatus). Through all of INACTIVE the gen stays fund-matchable, so a late
@@ -885,21 +884,19 @@ func fundedGenerations() (map[uint32]bool, error) {
 // bonds (POA-1) permanently. The one irreversible step — node-side share destruction (S5.1)
 // — carries its own independent zero-balance check there, if and when it is built; it is not
 // this op.
+//
+// A late confirm of an abandoned migration sweep whose successor is THIS gen is NOT handled
+// here (an earlier design held the purge with an asc- counter until the sweep settled, which
+// bond-locked the successor forever when the sweep could never confirm — the common abandon
+// case). It is handled at settle instead: settleAbandonedSweep indexes the output only while
+// the successor is still fund-holding and no-ops onto a purged successor. So purge is free to
+// proceed on grace, and a never-confirming abandoned sweep holds nothing.
 func canPurgeGen(v *Vault, height uint32) bool {
 	if v.InactiveHeight == 0 {
 		return false // fail-closed: no grace anchor recorded
 	}
 	if height < v.InactiveHeight || height-v.InactiveHeight < constants.VaultPurgeGraceBlocks {
 		return false // grace window not yet elapsed
-	}
-	// F2: never purge a generation that is the successor of a still-unsettled abandoned
-	// sweep. The registry shows the gen empty (the sweep's output has not confirmed yet),
-	// but a late confirm (settleAbandonedSweep) would index that output to this gen - and
-	// if it is PURGED by then, the coins land on a retired, non-fund-matchable address:
-	// unspendable, FeeSupply credited, I1 still balancing so no assert fires (invisible
-	// insolvency). Hold the gen in INACTIVE (still fund-matchable) until the sweep resolves.
-	if abandonedSweepTargetsGen(v.Generation) {
-		return false
 	}
 	return true
 }
