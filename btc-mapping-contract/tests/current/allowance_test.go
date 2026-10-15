@@ -24,7 +24,7 @@ const (
 
 // allowanceKey returns the state key for an allowance entry.
 func allowanceKey(owner, spender string) string {
-	return constants.AllowancePrefix + owner + constants.DirPathDelimiter + spender
+	return constants.AllowancePrefix + owner + constants.AllowanceDelimiter + spender
 }
 
 // setupAllowanceContract registers a contract and seeds the owner's balance.
