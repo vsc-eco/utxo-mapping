@@ -112,7 +112,7 @@ func newSwapMigCT(t *testing.T) *test_utils.ContractTest {
 	// Liquidity: 1.49 BTC of the owner's mapped balance and 100,000.000 HBD.
 	const lpBTC, lpHBD = int64(1_49000000), int64(100000_000)
 	ct.StateSet(swapMigMapping, constants.BalancePrefix+swapMigOwner, encodeBalance(t, 2_00000000))
-	ct.StateSet(swapMigMapping, constants.AllowancePrefix+swapMigOwner+constants.DirPathDelimiter+"contract:"+swapMigPool,
+	ct.StateSet(swapMigMapping, constants.AllowancePrefix+swapMigOwner+constants.AllowanceDelimiter+"contract:"+swapMigPool,
 		encodeBalance(t, 2_00000000))
 	ct.Deposit(swapMigOwner, lpHBD+1_000_000, "hbd")
 	ok(swapMigCall(t, &ct, swapMigPool, swapMigOwner, "add_liquidity",
@@ -163,7 +163,7 @@ func swapMigHBD(ct *test_utils.ContractTest, acct string) int64 {
 func swapMigNoResidue(t *testing.T, ct *test_utils.ContractTest, label string) {
 	t.Helper()
 	require.Equal(t, int64(0), swapMigBal(t, ct, "contract:"+swapMigMapping), "%s: the vault must keep nothing on its own account", label)
-	require.Equal(t, "", ct.StateGet(swapMigMapping, constants.AllowancePrefix+"contract:"+swapMigMapping+constants.DirPathDelimiter+"contract:"+swapMigRouter),
+	require.Equal(t, "", ct.StateGet(swapMigMapping, constants.AllowancePrefix+"contract:"+swapMigMapping+constants.AllowanceDelimiter+"contract:"+swapMigRouter),
 		"%s: the router's allowance must end at zero", label)
 }
 

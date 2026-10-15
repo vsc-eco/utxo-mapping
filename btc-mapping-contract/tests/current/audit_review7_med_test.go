@@ -52,7 +52,7 @@ func TestAuditReview7_MED1_AllowanceRequiresActiveAuth(t *testing.T) {
 	}
 
 	// No allowance must have been written by any of the rejected posting calls.
-	key := constants.AllowancePrefix + allowanceOwner + constants.DirPathDelimiter + allowanceSpender
+	key := constants.AllowancePrefix + allowanceOwner + constants.AllowanceDelimiter + allowanceSpender
 	assert.Equal(t, "", ct.StateGet(contractId, key),
 		"a rejected posting-auth approve must not write an allowance")
 
