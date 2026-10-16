@@ -381,12 +381,45 @@ func (cs *ContractState) buildMigrationTransaction(inputs []*Utxo, totalInputs i
 func (cs *ContractState) HandleMigrateVault() (string, error) {
 	// The generation to drain: a RETIRING gen (first tranche) or a DRAINING gen (a later
 	// tranche). NEVER the active vault — funds only ever move OUT of a superseded gen.
-	targetIdx := firstVaultWithStatus(cs.Vaults, VaultStatusRetiring)
+	// SHADOW R0: target only a FUNDED superseded gen. An EMPTY one earlier in the registry
+	// must never shadow a FUNDED later gen of the same status, else the funded gen never
+	// drains (migrate silently no-ops on the empty one every call). "funded" (fundedGenerations,
+	// the SAME emptiness predicate ReconcileRetiringVaults uses) == has >=1 registry UTXO, a
+	// superset of "has selectable inputs", so a gen whose inputs are all mid-sweep is still
+	// selected and handled as before (drain one gen at a time, oldest first).
+	//
+	// Classify funded gens by scanning the UTXO registry ONLY when >1 superseded
+	// (Retiring/Draining) gen exists -- a shadow needs two such gens, an empty one before a
+	// funded one. The common case (<=1 superseded gen) keeps the pre-fix selection and pays NO
+	// registry scan, so migrate's RC ceiling is unchanged on the normal rotation path (no new
+	// BOT-RC-1 stall surface; the scan is one state read per registry entry). A skipped scan leaves
+	// `funded` nil, which firstFundedVaultWithStatus treats as "all gens funded" -- i.e. the
+	// original firstVaultWithStatus behavior.
+	var funded map[uint32]bool
+	if countVaultsWithStatus(cs.Vaults, VaultStatusRetiring)+countVaultsWithStatus(cs.Vaults, VaultStatusDraining) > 1 {
+		var ferr error
+		funded, ferr = fundedGenerations()
+		if ferr != nil {
+			return "", ferr
+		}
+	}
+	targetIdx := firstFundedVaultWithStatus(cs.Vaults, VaultStatusRetiring, funded)
 	if targetIdx < 0 {
-		targetIdx = firstVaultWithStatus(cs.Vaults, VaultStatusDraining)
+		targetIdx = firstFundedVaultWithStatus(cs.Vaults, VaultStatusDraining, funded)
 	}
 	if targetIdx < 0 {
-		return "", ce.NewContractError(ce.ErrTransaction, "no retiring or draining vault to migrate")
+		// No FUNDED superseded gen to drain. Preserve the EXISTING terminal semantics: a hard
+		// error only when there is NO superseded gen at all, otherwise the benign
+		// "nothing to migrate" (an empty superseded gen stays fund-holding by design,
+		// matchable for late deposits; ReconcileRetiringVaults finalizes it to INACTIVE, R1).
+		anyIdx := firstVaultWithStatus(cs.Vaults, VaultStatusRetiring)
+		if anyIdx < 0 {
+			anyIdx = firstVaultWithStatus(cs.Vaults, VaultStatusDraining)
+		}
+		if anyIdx < 0 {
+			return "", ce.NewContractError(ce.ErrTransaction, "no retiring or draining vault to migrate")
+		}
+		return "nothing to migrate for generation " + strconv.FormatUint(uint64(cs.Vaults[anyIdx].Generation), 10), nil
 	}
 	targetGen := cs.Vaults[targetIdx].Generation
 
