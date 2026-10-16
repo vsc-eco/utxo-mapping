@@ -268,6 +268,13 @@ func HandleApprove(owner, spender string, amount int64) error {
 	if err := checkAuth(sdk.GetEnv()); err != nil {
 		return err
 	}
+	// ALLOW-1: the spender must be a real VSC identity. Rejecting non-addresses
+	// (e.g. "hpr-hive:milo") stops a caller from approving a crafted spender that
+	// would otherwise forge a longer account's allowance key. Belt-and-braces with
+	// the "|" key delimiter used by allowanceKey.
+	if sdk.VerifyAddress(spender) == "unknown" {
+		return ce.NewContractError(ce.ErrInput, "invalid spender address \""+spender+"\"")
+	}
 	setAllowance(owner, spender, amount)
 	return nil
 }
@@ -277,6 +284,10 @@ func HandleIncreaseAllowance(owner, spender string, amount int64) error {
 	// review7 MED-1: allowance changes require active auth (see HandleApprove).
 	if err := checkAuth(sdk.GetEnv()); err != nil {
 		return err
+	}
+	// ALLOW-1: reject non-address spenders (see HandleApprove).
+	if sdk.VerifyAddress(spender) == "unknown" {
+		return ce.NewContractError(ce.ErrInput, "invalid spender address \""+spender+"\"")
 	}
 	current := getAllowance(owner, spender)
 	newAmount, err := safeAdd64(current, amount)
@@ -292,6 +303,10 @@ func HandleDecreaseAllowance(owner, spender string, amount int64) error {
 	// review7 MED-1: allowance changes require active auth (see HandleApprove).
 	if err := checkAuth(sdk.GetEnv()); err != nil {
 		return err
+	}
+	// ALLOW-1: reject non-address spenders (see HandleApprove).
+	if sdk.VerifyAddress(spender) == "unknown" {
+		return ce.NewContractError(ce.ErrInput, "invalid spender address \""+spender+"\"")
 	}
 	current := getAllowance(owner, spender)
 	newAmount, err := safeSubtract64(current, amount)

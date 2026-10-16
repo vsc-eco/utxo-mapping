@@ -75,7 +75,16 @@ const (
 	LogArrayDelimiter = ","
 )
 
-const AllowancePrefix = "q" + DirPathDelimiter
+// ALLOW-1 (allowance key collision): the allowance state key joins the owner and
+// spender identities, both of which may legally contain the generic "-"
+// DirPathDelimiter (Hive usernames allow "-"). Joining with "-" makes
+// q-<owner>-<spender> forgeable: hive:milo approving spender "hpr-hive:X" writes
+// the exact same key as hive:milo-hpr approving hive:X, letting the owner of a
+// name-prefix drain the longer account (milo drains milo-hpr). "|" is illegal in
+// every VSC identity (hive/contract/eth/btc/system), so the key is unforgeable.
+// Mirrors the convention already used by magi_token ("alw|") and magi_nft ("allow|").
+const AllowanceDelimiter = "|"
+const AllowancePrefix = "q" + AllowanceDelimiter
 
 const PausedKey = "paused"     // "1" when contract is paused, absent/empty when active
 const MigrateVersionKey = "mv" // current migration version (decimal string)

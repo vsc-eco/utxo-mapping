@@ -413,8 +413,16 @@ func incAccBalance(vscAcc string, amount int64) error {
 	return nil
 }
 
+// allowanceKey builds the q|<owner>|<spender> state key. The "|" separators
+// (constants.AllowanceDelimiter) are illegal in every VSC identity, so the key
+// cannot be forged by an owner whose name contains "-" (ALLOW-1). Mirrors the
+// single-source key helpers in magi_token/magi_nft.
+func allowanceKey(owner, spender string) string {
+	return constants.AllowancePrefix + owner + constants.AllowanceDelimiter + spender
+}
+
 func getAllowance(owner, spender string) int64 {
-	s := sdk.StateGetObject(constants.AllowancePrefix + owner + constants.DirPathDelimiter + spender)
+	s := sdk.StateGetObject(allowanceKey(owner, spender))
 	if s == nil || *s == "" {
 		return 0
 	}
@@ -424,7 +432,7 @@ func getAllowance(owner, spender string) int64 {
 }
 
 func setAllowance(owner, spender string, amount int64) {
-	key := constants.AllowancePrefix + owner + constants.DirPathDelimiter + spender
+	key := allowanceKey(owner, spender)
 	if amount == 0 {
 		sdk.StateDeleteObject(key)
 		return
