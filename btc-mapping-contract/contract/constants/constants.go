@@ -314,19 +314,19 @@ const MaxBaseFeeRate int64 = 500
 // MaxMigrationInputs bounds the number of UTXOs a single migration sweep tranche
 // consumes (S2). Three independent ceilings, lowest wins:
 //  1. TSS-signing budget: each input needs its own signature, so the tranche size is
-//     also the number of sign sessions one rotation starts at once (go-vsc-node NT-2
-//     batches those starts; a smaller tranche keeps that load modest).
+//     also the number of sign sessions one rotation starts at once; the node starts
+//     them one after another, so a smaller tranche keeps that load modest.
 //  2. Bitcoin standardness (~100kvB): an unbounded sweep-all can't be built or relayed.
-//  3. NI-4, the SETTLE path: confirmSpend is submitted as a VSC L2 transaction
-//     (SubmitTransactionV1), NOT a Hive custom_json, so its size ceiling is the L2 tx
-//     cap MAX_TX_SIZE (16384 bytes), not Hive's 8192. It carries the sweep's
-//     non-witness tx (hex ~= 106 + 82*N bytes) plus the Merkle proof + envelope; at
-//     N = 70 the tx hex is ~5.8KB, well under the L2 cap, so (3) is NOT the binding
-//     ceiling here. (An earlier rationale cited Hive's 8192-byte custom_json cap;
-//     that was wrong, confirmSpend never rides a Hive custom_json.)
-// 70 is a conservative cap: it keeps (1) modest and stays comfortably under (2) and
-// (3). A retiring vault with more UTXOs is drained in successive tranches (the live
-// vault holds only a handful, so this never binds in practice today).
+//  3. NI-4, the SETTLE path: confirmSpend carries the sweep's non-witness tx
+//     (hex ~= 106 + 82*N bytes) plus the Merkle proof + envelope. The mapping bot
+//     submits it as a VSC L2 transaction (SubmitTransactionV1, MAX_TX_SIZE 16384
+//     bytes). confirmSpend is permissionless, so anyone can also submit it as a Hive
+//     custom_json (vsc.call), where Hive's 8192-byte limit applies. At N = 70 the tx
+//     hex is ~5.8KB, under both caps; at N = 100 the Hive route no longer fits, so
+//     (3) binds for that route.
+// 70 is a conservative cap: it keeps (1) modest and stays under (2) and under both
+// routes of (3). A retiring vault with more UTXOs is drained in successive
+// tranches.
 const MaxMigrationInputs = 70
 
 // MigrationCanaryValue (THORChain-derived, migration §5c) caps the value of a gen's FIRST
