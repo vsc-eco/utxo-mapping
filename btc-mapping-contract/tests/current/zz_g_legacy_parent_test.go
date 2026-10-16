@@ -10,10 +10,9 @@ package current_test
 // (seedGenUtxos), so that TxId IS U's parent T; registering T as a pending spend with U as its
 // only unconfirmed output lets us assert the clear.
 //
-// NOTE (clauderfly-68): these run only under CONTRACT-COMBINED - the contract suite needs the
-// wasm rebuild I cannot run locally. The RESERVATION half of G (a real confirmSpend(T) must skip
-// the reserved U so S is not bricked) needs a real tx T with a valid SPV proof, which this fake
-// TxId cannot provide; that half is for the proof harness (08).
+// The RESERVATION half of G (a real confirmSpend(T) must skip the reserved U so S is not
+// bricked) needs a real parent tx T with a valid SPV proof, which this fake TxId cannot provide;
+// TestG_ReservationKeepsSweepUnbricked below builds one.
 
 import (
 	"bytes"
@@ -51,7 +50,7 @@ func TestG_SettleClearsSweptLegacyParent(t *testing.T) {
 }
 
 // TestG_AbandonClearsWrittenOffLegacyParent: abandoning the legacy sweep writes off U, which
-// also removes it, so T must be cleared the same way (the gap 08 found - abandon needs the
+// also removes it, so T must be cleared the same way (abandon needs the
 // parent-clear too, not only the unreserve).
 func TestG_AbandonClearsWrittenOffLegacyParent(t *testing.T) {
 	ct, contractId, owner := newH2CT(t, []utxoSeed{{10, 40_000}}, 100_000)
@@ -66,7 +65,7 @@ func TestG_AbandonClearsWrittenOffLegacyParent(t *testing.T) {
 		"abandon wrote off T's last unconfirmed output, so T's d- record must be cleared too")
 }
 
-// TestG_ReservationKeepsSweepUnbricked (the reservation half, 08's recipe): a legacy input U
+// TestG_ReservationKeepsSweepUnbricked (the reservation half): a legacy input U
 // is an unconfirmed change output (vout 1) of a REAL parent tx T. A migration sweep S takes U
 // and reserves it. A confirmSpend(T) that would re-id U is SKIPPED (reserved), so U keeps its
 // id and S is not bricked; S then settles normally. Dropping the reserveUtxo line (mutation)
