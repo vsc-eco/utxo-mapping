@@ -299,6 +299,27 @@ func firstVaultWithStatus(vaults VaultRegistry, status VaultStatus) int {
 	return -1
 }
 
+// firstFundedVaultWithStatus is firstVaultWithStatus restricted to generations that still
+// hold >=1 registry UTXO (per the `funded` set from fundedGenerations). migrateVault targets
+// with it so an EMPTY superseded gen earlier in the registry can never shadow a FUNDED later
+// gen of the same status (SHADOW R0). An empty gen stays fund-holding for late-deposit
+// matching (NR-4/C-2) and is simply not a migrate TARGET; ReconcileRetiringVaults finalizes
+// it to INACTIVE (SHADOW R1). Order and the "funded" notion match the lifecycle exactly.
+//
+// A nil `funded` means "treat every gen as funded": migrate passes nil when it SKIPS the
+// registry scan because a shadow is impossible (<=1 superseded gen), making this behave
+// exactly like firstVaultWithStatus on the normal path. This relies on fundedGenerations
+// returning a NON-nil (possibly empty) map whenever it DID scan -- so a scanned
+// all-empty state reads as "no funded gen" (membership miss), never as nil/all-funded.
+func firstFundedVaultWithStatus(vaults VaultRegistry, status VaultStatus, funded map[uint32]bool) int {
+	for i := range vaults {
+		if vaults[i].Status == status && (funded == nil || funded[vaults[i].Generation]) {
+			return i
+		}
+	}
+	return -1
+}
+
 func countVaultsWithStatus(vaults VaultRegistry, status VaultStatus) int {
 	n := 0
 	for i := range vaults {
@@ -796,7 +817,10 @@ func RenewableVaultKeyIds() (renewable []string, skipped []string, err error) {
 // registry-EMPTY, and because INACTIVE is in isFundHoldingStatus, a late deposit to an
 // emptied gen re-tags a UTXO to it (registry-non-empty) → the REVERT branch fires first →
 // back to DRAINING → swept. So funds ever credited to a gen are never destroyed by a purge.
-// PENDING/ACTIVE/RETIRING/PURGED gens are untouched here (Retiring→Draining is S2's job).
+// PENDING/ACTIVE/PURGED gens are untouched here. A FUNDED RETIRING gen is untouched too and
+// gets its Retiring→Draining flip from migrate's first tranche (S2, HandleMigrateVault); only
+// an EMPTY Retiring gen is finalized here, straight to INACTIVE (SHADOW R1), the same as an
+// empty DRAINING gen.
 func ReconcileRetiringVaults(height uint32) (string, error) {
 	FoldLegacyGen0IfNeeded()
 	vaults, nextGen, activeGen, err := LoadVaultState()
@@ -811,7 +835,23 @@ func ReconcileRetiringVaults(height uint32) (string, error) {
 	for i := range vaults {
 		v := &vaults[i]
 		switch v.Status {
-		case VaultStatusDraining:
+		case VaultStatusRetiring, VaultStatusDraining:
+			// SHADOW R1: an EMPTY (registry-empty) superseded gen is finalized to INACTIVE,
+			// for DRAINING (as before) AND for RETIRING. A gen that entered RETIRING already
+			// empty never gets its RETIRING->DRAINING flip (HandleMigrateVault flips it only
+			// after a tranche builds), so without this it would stay RETIRING forever: never
+			// purged, its committee's POA-1 bond locked forever (the lock is status-based and
+			// releases only at purge). A FUNDED Retiring gen is untouched (funded==true) and
+			// still flips via migrate's first tranche. Safe exactly like the DRAINING leg: the
+			// registry-empty gate, InactiveHeight anchor + 144-block grace (canPurgeGen), and
+			// the Inactive->Draining revert on a late deposit keep an emptied gen matchable
+			// until purge (NR-4/C-2). Two accepted limits, identical to the DRAINING leg:
+			// (1) an unmapped L1 deposit present only on-chain at purge is an accepted
+			// SPV-absence limit; (2) a late deposit that reverts a formerly-RETIRING gen takes
+			// it to DRAINING, so its sweep skips the first-tranche canary cap; exposure is
+			// bounded anyway -- the move is only the late deposit's value, and the active
+			// successor has already passed its BRK-2 check-signature and its first reshare
+			// (the migrateVault reshare gate).
 			if !funded[v.Generation] {
 				v.Status = VaultStatusInactive
 				v.InactiveHeight = height
