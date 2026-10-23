@@ -944,6 +944,27 @@ func createMapLog(from, to string, amount int64) string {
 	return b.String()
 }
 
+// createMapNoneLog: "mapnone|tx=<txid>|s=<1 if the tx was a pending vault spend>".
+// Its own log type, so log indexers keyed on "map"/"dep" never count it as a deposit.
+func createMapNoneLog(txId string, vaultSpend bool) string {
+	var b strings.Builder
+	b.Grow(96)
+	b.WriteString("mapnone")
+	b.WriteString(constants.LogDelimiter)
+	b.WriteString("tx")
+	b.WriteString(constants.LogKeyDelimiter)
+	b.WriteString(txId)
+	b.WriteString(constants.LogDelimiter)
+	b.WriteString("s")
+	b.WriteString(constants.LogKeyDelimiter)
+	if vaultSpend {
+		b.WriteString("1")
+	} else {
+		b.WriteString("0")
+	}
+	return b.String()
+}
+
 func createTransferLog(from, to string, amount int64) string {
 	var b strings.Builder
 	b.Grow(128)

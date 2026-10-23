@@ -62,15 +62,32 @@ func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 		return ce.Prepend(err, "error indexing outputs")
 	}
 
+	// CON-MAP-1: a map that credits nothing still succeeds, because it also
+	// reconciles the vault's own pending spends (updateUtxoSpends: promote the change,
+	// clear the "d-" record). Refusing it would break that path. Say so in the output
+	// instead, so a submitter or monitor can tell "credited nothing" from a deposit: a
+	// deposit to an address no matchable generation derives (e.g. a PURGED one) is
+	// otherwise indistinguishable from a credited map.
+	txId := msgTx.TxID()
+	isVaultSpend := false
+	if len(relevantOutputs) == 0 {
+		// Read before updateUtxoSpends clears it; only when nothing is credited, so a
+		// normal deposit pays no extra state read.
+		spendRec := sdk.StateGetObject(constants.TxSpendsPrefix + txId)
+		isVaultSpend = spendRec != nil && *spendRec != ""
+	}
+
 	// removes this tx from utxo spends if present
-	if err := ms.updateUtxoSpends(msgTx.TxID(), txData.BlockHeight); err != nil {
+	if err := ms.updateUtxoSpends(txId, txData.BlockHeight); err != nil {
 		return ce.Prepend(err, "error updating utxo spends")
 	}
 
-	// TODO: return mapping results for each relevenat address as part of contract output, or at least log them
 	err = ms.processUtxos(relevantOutputs, senderLabel(msgTx.TxIn, ms.NetworkParams), txData.BlockHeight)
 	if err != nil {
 		return err
+	}
+	if len(relevantOutputs) == 0 {
+		sdk.Log(createMapNoneLog(txId, isVaultSpend))
 	}
 
 	return nil
