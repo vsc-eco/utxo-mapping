@@ -733,13 +733,16 @@ func TestMigration_ConfirmedInputStillPreferredOverLegacy(t *testing.T) {
 	mig := callKeyAction(t, ct, contractId, owner, "migrateVault", []byte(""))
 	require.Empty(t, mig.Err, mig.ErrMsg)
 
-	// The confirmed input is the one that moved: it is no longer selectable for a second
-	// tranche, while the legacy one still is.
+	// The confirmed input moves in the call's FIRST tranche (the one it returns); the legacy
+	// entry follows in its own tranche of the same call (MIG-PAR), never ahead of it.
 	sweeps, err := mapping.UnmarshalTxSpendsRegistry([]byte(ct.StateGet(contractId, constants.MigrationSweepRegistryKey)))
 	require.NoError(t, err)
-	require.Len(t, sweeps, 1)
+	require.Equal(t, []string{mig.Ret, sweeps[1]}, []string(sweeps), "two tranches, the returned one first")
 	rec, err := mapping.UnmarshalMigrationSweep([]byte(ct.StateGet(contractId, constants.MigrationSweepPrefix+sweeps[0])))
 	require.NoError(t, err)
 	require.Equal(t, []uint16{uint16(constants.UtxoConfirmedPoolStart + 5)}, rec.InputIds,
 		"the CONFIRMED-pool input must be swept first; the legacy fallback is last-resort only")
+	rec, err = mapping.UnmarshalMigrationSweep([]byte(ct.StateGet(contractId, constants.MigrationSweepPrefix+sweeps[1])))
+	require.NoError(t, err)
+	require.Equal(t, []uint16{3}, rec.InputIds, "the legacy entry goes in its own, later tranche")
 }

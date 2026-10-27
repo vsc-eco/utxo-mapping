@@ -559,9 +559,9 @@ func TestMapCreditsRetiringGenDeposit(t *testing.T) {
 // to the successor); dragging one into a user unmap would make the retiring key
 // sign a user-address output — refused by the node's output-scoped signing gate,
 // stranding the already-debited withdrawal. Here gen-0 (retiring) holds the only
-// UTXO and gen-1 (active) is empty, so the unmap must be refused with NO debit
-// (fail-safe: the user retries once the sweep moves funds to gen-1), never
-// selecting the gen-0 UTXO.
+// UTXO and gen-1 (active) is empty, so the unmap must never select the gen-0 UTXO.
+// WQ-1: it is queued (escrow debited, nothing built or signed) and paid once the sweep
+// moves funds to gen-1; before the queue it was refused with no debit.
 func TestUnmapExcludesRetiringGenUtxo(t *testing.T) {
 	const instruction = "deposit_to=hive:milo-hpr"
 	const amount = int64(100000)
@@ -609,13 +609,20 @@ func TestUnmapExcludesRetiringGenUtxo(t *testing.T) {
 		ContractId: contractId, Action: "unmap", Payload: unmapPayload,
 		RcLimit: 100000000, Intents: []contracts.Intent{}, Caller: owner,
 	})
-	require.False(t, r.Success, "unmap must be refused: only the retiring gen-0 UTXO exists (D-1)")
-
-	// Fail-safe: balance unchanged (no debit) and the gen-0 UTXO is untouched.
-	require.Equal(t, encodeBalance(t, amount), ct.StateGet(contractId, constants.BalancePrefix+owner),
-		"a refused unmap must not debit the caller")
+	// WQ-1: the withdrawal is queued instead of refused (its coin is only held until the
+	// sweep). D-1 is unchanged: nothing selected the retiring gen-0 UTXO, nothing was built
+	// or signed, and the 50,000 sit in the queue's escrow, not in a spend.
+	require.True(t, r.Success, "a withdrawal whose coins sit on the retiring gen is queued: %s", r.ErrMsg)
+	require.Empty(t, ct.StateGet(contractId, constants.TxSpendsRegistryKey), "no spend may be built from the retiring gen-0 UTXO (D-1)")
+	require.Empty(t, r.Logs[contractId].TssOps, "nothing may be signed for a queued withdrawal")
+	require.NotEmpty(t, ct.StateGet(contractId, constants.UnmapQueuePrefix+"0"), "the withdrawal is queued as entry 0")
+	q, qerr := mapping.UnmarshalQueuedUnmap([]byte(ct.StateGet(contractId, constants.UnmapQueuePrefix+"0")))
+	require.NoError(t, qerr)
+	require.Greater(t, q.Escrow, int64(50000), "escrow = amount + the smallest possible miner fee")
+	require.Equal(t, encodeBalance(t, amount-q.Escrow), ct.StateGet(contractId, constants.BalancePrefix+owner),
+		"the queued withdrawal's escrow is debited")
 	reg, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
 	require.NoError(t, err)
-	require.Len(t, reg, 1, "the retiring gen-0 UTXO is untouched by the refused unmap")
+	require.Len(t, reg, 1, "the retiring gen-0 UTXO is untouched by the queued unmap")
 	require.Equal(t, uint32(0), utxoGenerationForId(t, &ct, contractId, reg[0].Id))
 }

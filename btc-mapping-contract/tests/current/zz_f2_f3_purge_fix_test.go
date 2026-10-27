@@ -38,7 +38,7 @@ import (
 func TestWR_F3_PurgesOnGraceWithoutOracle(t *testing.T) {
 	ct, contractId, owner := newRetireCT(t)
 	const anchor = 900000
-	seedRetireState(ct, contractId, anchor+constants.VaultPurgeGraceBlocks, mapping.VaultRegistry{
+	seedRetireState(ct, contractId, anchor+constants.VaultPurgeGraceBlocks(constants.Regtest), mapping.VaultRegistry{
 		{Generation: 1, Status: mapping.VaultStatusInactive, InactiveHeight: anchor},
 		{Generation: 2, Status: mapping.VaultStatusActive},
 	}, 3, 2)
@@ -57,7 +57,7 @@ func TestWR_F3_PurgesOnGraceWithoutOracle(t *testing.T) {
 func TestWR_F3_NoPurgeBeforeGrace(t *testing.T) {
 	ct, contractId, owner := newRetireCT(t)
 	const anchor = 900000
-	seedRetireState(ct, contractId, anchor+constants.VaultPurgeGraceBlocks-1, mapping.VaultRegistry{
+	seedRetireState(ct, contractId, anchor+constants.VaultPurgeGraceBlocks(constants.Regtest)-1, mapping.VaultRegistry{
 		{Generation: 1, Status: mapping.VaultStatusInactive, InactiveHeight: anchor},
 		{Generation: 2, Status: mapping.VaultStatusActive},
 	}, 3, 2)

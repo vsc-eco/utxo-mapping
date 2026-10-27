@@ -280,10 +280,12 @@ func TestH2_LegacyDustDoesNotBlockLaterLegacy(t *testing.T) {
 	require.Empty(t, first.Err, "dust in front must not refuse the migration: %s", first.ErrMsg)
 	require.Equal(t, []uint16{6}, readSweepRecord(t, ct, contractId, first.Ret).InputIds,
 		"the first sweepable legacy entry is swept, the dust is passed over")
-
-	second := callKeyAction(t, ct, contractId, owner, "migrateVault", []byte(""))
-	require.Empty(t, second.Err, second.ErrMsg)
-	require.Equal(t, []uint16{8}, readSweepRecord(t, ct, contractId, second.Ret).InputIds,
+	// MIG-PAR: the same call builds the next legacy tranche too (one entry each, H-2), and
+	// stops at the dust without failing the tranches it built.
+	sweeps, err := mapping.UnmarshalTxSpendsRegistry([]byte(ct.StateGet(contractId, constants.MigrationSweepRegistryKey)))
+	require.NoError(t, err)
+	require.Len(t, sweeps, 2, "both sweepable legacy entries go out in one call")
+	require.Equal(t, []uint16{8}, readSweepRecord(t, ct, contractId, sweeps[1]).InputIds,
 		"the next tranche skips the in-flight entry and the dust")
 
 	// Only the dust is left (the other two are in flight): it is selected, refused as too
