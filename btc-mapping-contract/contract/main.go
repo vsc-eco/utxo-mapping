@@ -413,6 +413,56 @@ func doUnmap(instructions *mapping.TransferParams) {
 	}
 }
 
+// Builds queued withdrawals (WQ-1) whose coins are free again. PERMISSIONLESS: it only
+// builds withdrawals the contract already accepted, through the same path as unmap, and
+// the caller pays for it. confirmSpend already does this after every settle; this is for
+// when no settle is coming (for example after an unpause). PAUSE-GATED like unmap.
+//
+//go:wasmexport drainUnmapQueue
+func DrainUnmapQueue(_ *string) *string {
+	checkNotPaused()
+	publicKeys, err := loadPublicKeys()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	contractState, err := mapping.IntializeContractState(publicKeys, NetworkMode)
+	if err != nil {
+		ce.CustomAbort(ce.Prepend(err, "error initializing contract state"))
+	}
+	result := contractState.HandleDrainUnmapQueue()
+	if err := contractState.SaveToState(); err != nil {
+		ce.CustomAbort(err)
+	}
+	return mapping.StrPtr(result)
+}
+
+// Cancels a queued withdrawal (WQ-1) that has not been built yet and returns its escrow to
+// the account that queued it. Input: the sequence number from the "unmapq|seq=" log. The
+// account that queued it or the owner may cancel. NOT pause-gated: it moves no BTC and only
+// returns a user's own escrow to their balance.
+//
+//go:wasmexport cancelUnmap
+func CancelUnmap(input *string) *string {
+	if input == nil || *input == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "cancelUnmap requires the queued withdrawal's sequence number"))
+	}
+	publicKeys, err := loadPublicKeys()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	contractState, err := mapping.IntializeContractState(publicKeys, NetworkMode)
+	if err != nil {
+		ce.CustomAbort(ce.Prepend(err, "error initializing contract state"))
+	}
+	if err := contractState.HandleCancelQueuedUnmap(*input, *sdk.GetEnvKey("contract.owner")); err != nil {
+		ce.CustomAbort(err)
+	}
+	if err := contractState.SaveToState(); err != nil {
+		ce.CustomAbort(err)
+	}
+	return mapping.StrPtr("0")
+}
+
 // Transfers funds from the Caller (immediate caller of the contract).
 // The `from` field is ignored — transfers always draw from the caller's balance.
 //
@@ -1183,7 +1233,7 @@ func RetireVault(_ *string) *string {
 	if err != nil {
 		ce.CustomAbort(ce.Prepend(err, "retireVault: block height unavailable"))
 	}
-	result, err := mapping.ReconcileRetiringVaults(height)
+	result, err := mapping.ReconcileRetiringVaults(height, NetworkMode)
 	if err != nil {
 		ce.CustomAbort(err)
 	}

@@ -588,6 +588,21 @@ func ActivatePendingGeneration(height uint32) (uint32, uint32, bool, error) {
 	if aerr := attestPrimaryKey(v.Generation, v.Primary); aerr != nil {
 		return 0, 0, false, aerr
 	}
+	// VR2-12 (pre-activation reshare): a ROTATION must not activate until the new key
+	// has been reshared into a committee (same proof migrateVault already requires).
+	// This moves the reshare BEFORE activation: the old generation stays ACTIVE and
+	// serving withdrawals during the epoch-boundary reshare wait, so the user-facing
+	// blackout shrinks to the sweep alone. Funds still enter only a reshared key
+	// (migrateVault's gate is then already satisfied). Genesis has no predecessor and
+	// cannot have reshared, so it is exempt, exactly as the BRK-2 check-sig gate exempts
+	// it. Nodes reshare a pending key only from consensus 0.12.0 (VR2-12); below it, or
+	// on a node that sends no reshare flag, a rotation cannot activate and the old
+	// generation keeps serving. Deploy this where 0.12.0 is chain-active.
+	if !isGenesisVault(v) && !activeKeyReshared(v.Generation) {
+		return 0, 0, false, ce.NewContractError(ce.ErrTransaction,
+			"cannot activate generation: its TSS key has not been reshared into a committee yet; "+
+				"the old generation keeps serving until the reshare lands (VR2-12)")
+	}
 	newGen := v.Generation
 
 	oldActiveIdx := firstVaultWithStatus(vaults, VaultStatusActive)
@@ -808,7 +823,7 @@ func RenewableVaultKeyIds() (renewable []string, skipped []string, err error) {
 //
 //	DRAINING & registry-non-empty              -> stays DRAINING   (still funded; the sweep owns it)
 //	DRAINING & registry-EMPTY                  -> INACTIVE          [leg (a): all known UTXOs swept+confirmed]
-//	                                              (records InactiveHeight = height → the grace anchor)
+//	                                              (records the grace anchor, inactiveAnchor)
 //	INACTIVE & registry-non-empty              -> DRAINING (REVERT) [match-until-purged: a late deposit re-funded it]
 //	INACTIVE & registry-EMPTY & canPurgeGen    -> PURGED            [legs (a)+(c)+(d); (b) = purge retires the address]
 //	INACTIVE & registry-EMPTY & !canPurgeGen   -> stays INACTIVE    (grace not yet elapsed / attestation absent)
@@ -821,7 +836,8 @@ func RenewableVaultKeyIds() (renewable []string, skipped []string, err error) {
 // gets its Retiring→Draining flip from migrate's first tranche (S2, HandleMigrateVault); only
 // an EMPTY Retiring gen is finalized here, straight to INACTIVE (SHADOW R1), the same as an
 // empty DRAINING gen.
-func ReconcileRetiringVaults(height uint32) (string, error) {
+func ReconcileRetiringVaults(height uint32, networkMode string) (string, error) {
+	grace := constants.VaultPurgeGraceBlocks(networkMode)
 	FoldLegacyGen0IfNeeded()
 	vaults, nextGen, activeGen, err := LoadVaultState()
 	if err != nil {
@@ -843,30 +859,28 @@ func ReconcileRetiringVaults(height uint32) (string, error) {
 			// purged, its committee's POA-1 bond locked forever (the lock is status-based and
 			// releases only at purge). A FUNDED Retiring gen is untouched (funded==true) and
 			// still flips via migrate's first tranche. Safe exactly like the DRAINING leg: the
-			// registry-empty gate, InactiveHeight anchor + 144-block grace (canPurgeGen), and
+			// registry-empty gate, InactiveHeight anchor + purge grace (canPurgeGen), and
 			// the Inactive->Draining revert on a late deposit keep an emptied gen matchable
 			// until purge (NR-4/C-2). Two accepted limits, identical to the DRAINING leg:
 			// (1) an unmapped L1 deposit present only on-chain at purge is an accepted
 			// SPV-absence limit; (2) a late deposit that reverts a formerly-RETIRING gen takes
-			// it to DRAINING, so its sweep skips the first-tranche canary cap; exposure is
-			// bounded anyway -- the move is only the late deposit's value, and the active
-			// successor has already passed its BRK-2 check-signature and its first reshare
-			// (the migrateVault reshare gate).
+			// it to DRAINING; its sweep moves only the late deposit's value, into a successor
+			// that has already passed its BRK-2 check-signature and its first reshare (the
+			// migrateVault reshare gate).
 			if !funded[v.Generation] {
 				v.Status = VaultStatusInactive
-				v.InactiveHeight = height
+				v.InactiveHeight = inactiveAnchor(v.InactiveHeight, height, grace)
 				toInactive = append(toInactive, v.Generation)
 			}
 		case VaultStatusInactive:
 			if funded[v.Generation] {
 				// A late/reorg deposit re-funded an emptied gen — revert so the sweep
 				// re-engages (AnyFundedSupersededGen / HandleMigrateVault only act on
-				// RETIRING|DRAINING). Reset the grace anchor: a fresh emptying must restart
-				// the full grace clock before this gen can be purged again.
+				// RETIRING|DRAINING). PURGE-GRIEF-1: the grace anchor is KEPT; the next
+				// emptying moves it only as far as the reorg margin needs (inactiveAnchor).
 				v.Status = VaultStatusDraining
-				v.InactiveHeight = 0
 				toDraining = append(toDraining, v.Generation)
-			} else if canPurgeGen(v, height) {
+			} else if canPurgeGen(v, height, grace) {
 				v.Status = VaultStatusPurged
 				toPurged = append(toPurged, v.Generation)
 			}
@@ -909,8 +923,9 @@ func fundedGenerations() (map[uint32]bool, error) {
 // prove on-chain, and ONLY on that:
 //
 //	(a) registry-empty — the caller's precondition (the INACTIVE && !funded branch).
-//	(c) grace ≥ reorg depth — height ≥ InactiveHeight + VaultPurgeGraceBlocks (144 blocks,
-//	    ~24h). Guarded by a hard fail-closed check that InactiveHeight is set (non-zero):
+//	(c) grace ≥ reorg depth: height ≥ InactiveHeight + VaultPurgeGraceBlocks (~30 days on
+//	    mainnet, 144 blocks elsewhere; the anchor keeps every emptying at least
+//	    VaultPurgeReorgBlocks behind). Guarded by a hard fail-closed check that InactiveHeight is set (non-zero):
 //	    never purge a gen that did not pass DRAINING→INACTIVE under this op. Overflow-safe
 //	    (subtract after the ≥).
 //
@@ -931,14 +946,31 @@ func fundedGenerations() (map[uint32]bool, error) {
 // case). It is handled at settle instead: settleAbandonedSweep indexes the output only while
 // the successor is still fund-holding and no-ops onto a purged successor. So purge is free to
 // proceed on grace, and a never-confirming abandoned sweep holds nothing.
-func canPurgeGen(v *Vault, height uint32) bool {
+func canPurgeGen(v *Vault, height, grace uint32) bool {
 	if v.InactiveHeight == 0 {
 		return false // fail-closed: no grace anchor recorded
 	}
-	if height < v.InactiveHeight || height-v.InactiveHeight < constants.VaultPurgeGraceBlocks {
+	if height < v.InactiveHeight || height-v.InactiveHeight < grace {
 		return false // grace window not yet elapsed
 	}
 	return true
+}
+
+// inactiveAnchor is the purge-grace anchor recorded when a generation (re)empties at
+// height (PURGE-GRIEF-1). The first emptying anchors at height. A re-emptying after a
+// late deposit keeps the earlier anchor, moved forward only so the purge still waits
+// VaultPurgeReorgBlocks after this emptying: purge at max(first + grace, last + margin).
+// With grace == margin (testnets, regtest) that is exactly the old restart-the-clock rule.
+func inactiveAnchor(prev, height, grace uint32) uint32 {
+	if prev == 0 {
+		return height
+	}
+	if height+constants.VaultPurgeReorgBlocks > grace {
+		if floor := height + constants.VaultPurgeReorgBlocks - grace; floor > prev {
+			return floor
+		}
+	}
+	return prev
 }
 
 // retireResultString renders a deterministic human-readable summary of the transitions a
