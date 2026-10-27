@@ -54,6 +54,36 @@ const (
 // spend group, kept so a late confirmation of any member can still settle.
 const AbandonedSweepPrefix = "sa" + DirPathDelimiter
 
+// WQ-1 withdrawal queue. A user's own withdrawal that cannot be built only because the
+// vault's coins are held for now (on a retiring generation until its sweep settles, or
+// reserved by a withdrawal in flight) is accepted and queued instead of refused, and
+// built in FIFO order once coins are free.
+//
+// UnmapQueueKey holds the queue bounds: 8 bytes, head uint32 BE then tail uint32 BE.
+// Live entries sit at sequence numbers head .. tail-1, each under UnmapQueuePrefix +
+// decimal(seq). A cancelled entry leaves a hole that the drain steps over. Absent key ==
+// empty queue, so contracts that predate the queue need no migration.
+const UnmapQueueKey = "wq"
+const UnmapQueuePrefix = "wq" + DirPathDelimiter
+
+// MaxQueuedUnmaps caps tail-head (holes included), so the queue and every walk over it
+// stay bounded; one drain looks at no more entries than this, so it can always reach the
+// tail. Mainnet sees about one withdrawal every two days and a rotation window of a few
+// hours, so a handful of entries is the realistic peak.
+const MaxQueuedUnmaps = 32
+
+// MaxQueuePlansPerSettle is how many queued withdrawals one confirmSpend may run coin
+// selection for after its settle: every entry that reaches planUnmap counts, whether it is
+// then built or refunded (a multi-input entry whose fee the balance cannot cover). A cheap
+// refund (refused by checkUnmapPayable before any coin selection) does NOT count and stays
+// free. confirmSpend is on the bot's critical path (it is how a sweep settles), so its
+// extra work is bounded at this many full builds' worth. MaxQueuePlansPerDrain is the same
+// bound for the drainUnmapQueue entrypoint, whose caller chose to pay for it.
+const (
+	MaxQueuePlansPerSettle = 4
+	MaxQueuePlansPerDrain  = 8
+)
+
 
 // MaxSpendGroupMembers caps the members of an L7-01 spend group (original + RBF
 // replacements). Re-drives are owner-gated and each bump raises the fee ≥ 2 sat/vByte
@@ -165,13 +195,36 @@ const VaultActiveGenKey = "va" // 4-byte BE: generation currently receiving new 
 // reorg could re-introduce a swept UTXO, so purging (which retires the address out of
 // the deposit-matchable set) must wait long enough that any such reorg — and any
 // still-in-flight late deposit — is first observed and credited (reverting the gen to
-// DRAINING). 144 blocks (~24h) is far beyond any reorg Bitcoin mainnet has ever seen
-// (deepest ever a handful of blocks) yet keeps a retired key from lingering more than a
-// day past emptiness. Measured in the same BTC-height units as the vault height fields.
+// DRAINING). Measured in the same BTC-height units as the vault height fields.
+//
+// ADDR-ROTATE-1: every rotation gives every user a new deposit address, and an old one
+// stops crediting at purge; a coin sent there later comes back only through the backup key
+// after its 4,320-block CSV. With a rotation every 14 days, saved addresses (exchange
+// withdrawal whitelists, recurring deposits) would strand coins routinely if the grace were
+// a day, so on mainnet an emptied generation keeps crediting for one CSV period (~30 days):
+// a coin either arrives in time to be credited and swept, or its sender waits the same 30
+// days the backup path needs anyway. Testnets and regtest keep 144 blocks (~24h, far beyond
+// any reorg) so a rotation can be exercised end to end. The cost is that the old
+// committee's POA-1 bonds release ~30 days after the generation empties instead of ~1.
 // NOTE: purge (this op) only STOPS matching the address and lets POA-1 release the
 // committee's bonds; it destroys no keys. Key destruction (node-side S5.1) is the separate
 // irreversible step and carries its own independent zero-balance check there.
-const VaultPurgeGraceBlocks = 144
+func VaultPurgeGraceBlocks(networkMode string) uint32 {
+	switch networkMode {
+	case Testnet3, Testnet4, Regtest:
+		return VaultPurgeReorgBlocks
+	default: // mainnet
+		return BackupCSVBlocks
+	}
+}
+
+// VaultPurgeReorgBlocks (PURGE-GRIEF-1) is the margin a generation must stay empty after
+// its LAST emptying before it may purge (~24h, far beyond any Bitcoin reorg). A late
+// deposit no longer restarts the full grace: the purge comes at the later of its first
+// emptying plus VaultPurgeGraceBlocks and its last emptying plus this margin, so a small
+// deposit sent every few weeks cannot keep a generation (and its committee's bonds) alive.
+const VaultPurgeReorgBlocks = 144
+
 
 const LastHeightKey = "h"
 const SeedHeightKey = "sh"
@@ -329,19 +382,19 @@ const MaxBaseFeeRate int64 = 500
 // tranches.
 const MaxMigrationInputs = 70
 
-// MigrationCanaryValue (THORChain-derived, migration §5c) caps the value of a gen's FIRST
-// migration tranche — the "canary." When a newly-RETIRING gen is first swept, only up to this
-// much value moves; that tranche must CONFIRM (BRK-1 delete-at-confirm keeps its inputs
-// registered until then, and getMigrationInputs excludes in-flight inputs from the next
-// tranche) BEFORE the bulk (the larger DRAINING tranches, capped at MaxUtxoAmount) proceeds.
-// This bounds the exposure of the first move to a new/unproven successor vault and mirrors
-// THORChain's "small-first-then-ramp" churn migration — defense-in-depth on top of BRK-2
-// (which already proves the new key can SIGN before activation). 1,000,000 sats = 0.01 BTC:
-// a real test amount, small vs any funded vault. Governance-TUNABLE; set to MaxUtxoAmount to
-// disable the canary (first tranche then uses the normal cap). The new vault only RECEIVES
-// the canary — proving the new vault's own SPEND path end-to-end (the stronger variant) is a
-// tracked follow-up (needs a test-spend to avoid coupling migration liveness to unmap flow).
-const MigrationCanaryValue int64 = 1_000_000
+// MaxMigrationOutputs and MinMigrationOutputValue (SWEEP-SPLIT): a sweep pays the successor
+// in up to MaxMigrationOutputs equal coins instead of one, never more coins than it spends
+// and none planned below MinMigrationOutputValue. A single coin made every payout after a
+// rotation wait for the previous one's change to confirm (about an hour on mainnet each);
+// several coins let that many withdrawals go out at once. The fee never exceeds half the
+// tranche (V5-4), so each coin is at least MinMigrationOutputValue/2, far above dust.
+const MaxMigrationOutputs = 8
+
+// MaxTranchesPerMigrate bounds the tranches one migrateVault call builds (MIG-PAR). With
+// MaxMigrationInputs it bounds the call's signing requests and RC: a gen of one-input
+// legacy tranches drains this many at a time instead of one per confirmation.
+const MaxTranchesPerMigrate = 16
+const MinMigrationOutputValue int64 = 100_000
 
 // MaxBlockRetention is the number of recent block headers to keep.
 // Older headers are pruned during addBlocks to prevent unbounded state growth.

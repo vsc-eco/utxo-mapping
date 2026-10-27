@@ -107,10 +107,12 @@ func (cs *ContractState) estimateFee(numInputs int64, amount, inputAmount int64)
 	if availableChange > dustThreshold {
 		numChangeOutputs := min(max(availableChange/splitThreshold, 1), maxChangeOutputs)
 
-		// Add change outputs one at a time, stopping when per-output amount is dust
+		// Add change outputs one at a time, stopping when per-output amount is dust.
+		// CHANGE-FEE-1: each step adds ONE more output to the running size; adding
+		// (addedOutputs+1) outputs on top of the grown size priced k outputs as k(k+1)/2.
 		addedOutputs := int64(0)
 		for i := int64(0); i < numChangeOutputs; i++ {
-			newNonWitness := nonWitnessSize + (addedOutputs+1)*43
+			newNonWitness := nonWitnessSize + 43
 			newFee, err := safeMultiply64(estimateVSize(newNonWitness, witnessDataSize), feeRate)
 			if err != nil {
 				return 0, ce.WrapContractError(ce.ErrArithmetic, err, "fee estimation overflow")
@@ -134,8 +136,14 @@ func (cs *ContractState) estimateFee(numInputs int64, amount, inputAmount int64)
 	return fee, nil
 }
 
-// returns a list of internal ids of inputs for making a tx
-func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint16, int64, error) {
+// returns a list of internal ids of inputs for making a tx.
+//
+// WQ-1: held reports, on the insufficient-coins failure only, that at least one coin was
+// passed over because it is held for now: reserved by a spend in flight (it returns as
+// change, or is replaced by one, when that spend settles) or on a superseded generation
+// (it returns to the active generation when its sweep settles). The withdrawal queue
+// queues such a request instead of refusing it. It is false on every other path.
+func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint16, int64, bool, error) {
 	inputs := []uint16{}
 
 	// accumulates amount of all inputs
@@ -169,13 +177,14 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint16, int64, error) 
 	// superseded gens exist with NO active successor to serve the unmap from,
 	// we cannot safely select any UTXO → hard-refuse (fail closed, no debit).
 	if hasSuperseded && activeIdx < 0 {
-		return nil, 0, ce.NewContractError(ce.ErrBalance, "no active generation available to serve unmap during rotation")
+		return nil, 0, false, ce.NewContractError(ce.ErrBalance, "no active generation available to serve unmap during rotation")
 	}
 	filterGen := hasSuperseded
 	activeGen := uint32(0)
 	if activeIdx >= 0 {
 		activeGen = cs.Vaults[activeIdx].Generation
 	}
+	held := false
 	isSelectable := func(id uint16) bool {
 		// Guard 1 (delete-at-confirm): never select a UTXO already committed to an in-flight
 		// unmap (kept registered + reserved until settleUnmap). UNCONDITIONAL — checked even in
@@ -184,6 +193,7 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint16, int64, error) 
 		// it (one confirms, the other strands the debited withdrawal). This gates the fast path,
 		// the confirmed-accumulation loop, and the unconfirmed fallback (all route through here).
 		if isUtxoReserved(id) {
+			held = true
 			return false
 		}
 		// C-3 (council LOW, load-bearing seam): in-flight MIGRATION inputs are excluded from an
@@ -199,7 +209,11 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint16, int64, error) 
 		if err != nil || u == nil {
 			return false // fail closed: cannot confirm generation → do not select
 		}
-		return u.Generation == activeGen
+		if u.Generation != activeGen {
+			held = true
+			return false
+		}
+		return true
 	}
 
 	// first loop: find single confirmed UTXO sufficient to cover spend
@@ -212,11 +226,11 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint16, int64, error) 
 		}
 		fee, err := cs.estimateFee(1, amount, entry.Amount)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, false, err
 		}
 		requiredAmount := amount + fee
 		if entry.Amount >= requiredAmount {
-			return []uint16{entry.Id}, entry.Amount, nil
+			return []uint16{entry.Id}, entry.Amount, false, nil
 		}
 	}
 
@@ -236,17 +250,17 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint16, int64, error) 
 			inputs = append(inputs, entry.Id)
 			accAmount, err = safeAdd64(accAmount, entry.Amount)
 			if err != nil {
-				return nil, 0, ce.WrapContractError(ce.ErrArithmetic, err, "error gathering utxos")
+				return nil, 0, false, ce.WrapContractError(ce.ErrArithmetic, err, "error gathering utxos")
 			}
 
 			fee, err := cs.estimateFee(int64(len(inputs)), amount, accAmount)
 			if err != nil {
-				return nil, 0, err
+				return nil, 0, false, err
 			}
 			requiredAmount := amount + fee
 
 			if accAmount >= requiredAmount {
-				return inputs, accAmount, nil
+				return inputs, accAmount, false, nil
 			}
 		} else {
 			unconfirmedTxs = append(unconfirmedTxs, unconfirmedEntry{
@@ -261,21 +275,21 @@ func (cs *ContractState) getInputUtxoIds(amount int64) ([]uint16, int64, error) 
 		inputs = append(inputs, u.id)
 		accAmount, err = safeAdd64(accAmount, u.amount)
 		if err != nil {
-			return nil, 0, ce.WrapContractError(ce.ErrArithmetic, err, "error gathering utxos")
+			return nil, 0, false, ce.WrapContractError(ce.ErrArithmetic, err, "error gathering utxos")
 		}
 
 		fee, err := cs.estimateFee(int64(len(inputs)), amount, accAmount)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, false, err
 		}
 		requiredAmount := amount + fee
 
 		if accAmount >= requiredAmount {
-			return inputs, accAmount, nil
+			return inputs, accAmount, false, nil
 		}
 	}
 	// this really should never happen
-	return nil, 0, ce.NewContractError(ce.ErrBalance, "total available balance insufficient to complete transaction")
+	return nil, 0, held, ce.NewContractError(ce.ErrBalance, "total available balance insufficient to complete transaction")
 }
 
 func (cs *ContractState) calculateSegwitFee(baseSize int64, witnessScripts map[int][]byte) (int64, error) {
@@ -421,7 +435,7 @@ func (cs *ContractState) buildSpendTransaction(
 		// Add change outputs one at a time, recalculating fee after each
 		addedOutputs := int64(0)
 		for range numChangeOuputs {
-			newBaseSize := baseSize + (addedOutputs+1)*changeOutputSize
+			newBaseSize := baseSize + changeOutputSize // CHANGE-FEE-1: one more output
 			newFee, err := cs.calculateSegwitFee(newBaseSize, witnessScripts)
 			if err != nil {
 				return nil, nil, 0, err

@@ -124,7 +124,7 @@ type Vault struct {
 	RetiredHeight   uint32
 	// InactiveHeight is the BTC block height at which this gen was reconciled
 	// DRAINING→INACTIVE (registry-empty). It is the anchor for the purge grace
-	// (Inactive→Purged requires height ≥ InactiveHeight + VaultPurgeGraceBlocks).
+	// (Inactive→Purged requires height ≥ InactiveHeight + VaultPurgeGraceBlocks(network)).
 	// 0 for any gen that has not been reconciled to INACTIVE — and a 0 value is a
 	// hard fail-closed guard in the purge gate (never purge a gen with no anchor).
 	InactiveHeight uint32
@@ -179,6 +179,23 @@ type PendingUnmap struct {
 	BtcFee int64
 	// BuildHeight (L7-01) — see MigrationSweep.BuildHeight (the re-drive staleness clock).
 	BuildHeight uint32
+}
+
+// QueuedUnmap (state key "wq-"+decimal(seq)) is one withdrawal accepted while the vault's
+// coins were held (WQ-1). Escrow is what was debited from From at request: exactly the
+// amount HandleUnmap's preliminary check requires (amount+vscFee, or amount with
+// DeductFee). The miner fee is not known until the spend is built, so the build settles
+// the difference against From's balance the same way HandleUnmap's own debit would.
+// Hand-packed binary (MarshalQueuedUnmap); To is the record tail.
+type QueuedUnmap struct {
+	From          string
+	To            string
+	Amount        int64
+	Escrow        int64
+	VscFee        int64
+	DeductFee     bool
+	MaxFee        *int64
+	RequestHeight uint32 // BTC LastHeight when the withdrawal was queued (for operators)
 }
 
 // SpendGroup (state key "g-"+<minInputId>) is the L7-01 re-drive spend group: the txids

@@ -187,119 +187,42 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 
 	// When deducting fees from amount, UTXOs need to cover (amount - vscFee),
 	// since sendAmount + btcFee = amount - vscFee.
-	utxoSelectionAmount := amount
-	if instructions.DeductFee {
-		utxoSelectionAmount, err = safeSubtract64(amount, vscFee)
-		if err != nil || utxoSelectionAmount <= 0 {
-			return ce.NewContractError(ce.ErrBalance, "amount too small to cover vsc fee")
-		}
-	}
-
-	inputUtxoIds, totalInputAmt, err := cs.getInputUtxoIds(utxoSelectionAmount)
-	if err != nil {
-		return ce.Prepend(err, "error getting input utxos")
-	}
-
-	inputUtxos, err := getInputUtxos(inputUtxoIds)
-	if err != nil {
-		return ce.Prepend(err, "error getting input utxos")
-	}
-
-	changeAddress, _, err := createP2WSHAddressWithBackup(
-		cs.PublicKeys.Primary,
-		cs.PublicKeys.Backup,
-		nil,
-		cs.NetworkParams,
-	)
-	if err != nil {
-		return ce.WrapContractError(ce.ErrTransaction, err, "error creating change address")
-	}
-	// Guard 1: the destination must differ from the vault change address so settleUnmap can
-	// identify the change output(s) unambiguously by address at confirm. A To == changeAddress
-	// collision would index the user's own withdrawal output as change (the vault over-
-	// collateralises and the user donates the withdrawal) — self-harm, no theft, but cheap to
-	// reject outright and it removes the only conservation ambiguity at settle.
-	// ADDR-1: compare case-INSENSITIVELY. The change address is bech32 (P2WSH), and bech32 is
-	// case-insensitive (BIP173: a valid string is all-lower or all-upper, same witness program).
-	// A raw == let an UPPERCASE form of the change address through - both outputs would then
-	// carry the identical pkScript and settleUnmap would match the user's withdrawal as change.
-	// EqualFold is exact here: bech32's only aliasing is case, and a base58 To can never fold-
-	// equal a bech32 address (different charset/format), so no legitimate destination is rejected.
-	if strings.EqualFold(instructions.To, changeAddress) {
-		return ce.NewContractError(ce.ErrInput, "destination address must differ from the vault change address")
-	}
-	// When deduct_fee=true, estimate btcFee to derive the send amount so that
-	// vscFee + btcFee + sendAmount ≈ amount. The actual fee from
-	// createSpendTransaction may differ slightly; any discrepancy is absorbed
-	// by the change output.
-	sendAmount := amount
-	if instructions.DeductFee {
-		btcFeeEst, err := cs.estimateFee(int64(len(inputUtxoIds)), utxoSelectionAmount, totalInputAmt)
-		if err != nil {
-			return err
-		}
-		sendAmount, err = safeSubtract64(utxoSelectionAmount, btcFeeEst)
-		if err != nil || sendAmount <= dustThreshold {
-			return ce.NewContractError(ce.ErrBalance, "amount too small to cover fees")
-		}
-	}
-
-	tx, witnessScripts, btcFee, err := cs.buildSpendTransaction(
-		inputUtxos,
-		totalInputAmt,
-		instructions.To,
-		changeAddress,
-		sendAmount,
-	)
+	utxoSelectionAmount, err := unmapSelectionAmount(amount, vscFee, instructions.DeductFee)
 	if err != nil {
 		return err
 	}
 
-	totalFee, err := safeAdd64(vscFee, btcFee)
+	// WQ-1: a user withdrawing their own balance in a direct call is queued, not refused,
+	// when the only reason it cannot be built is that the vault's coins are held for now
+	// (see enqueueUnmap). Behind a non-empty queue it waits its turn (FIFO). Anyone else
+	// (a contract, or a spender using an allowance) keeps the refusal, so their own
+	// transaction still reverts as a whole.
+	queueable := isOwnDirectWithdrawal(env, from)
+	// Self-heal: a non-empty queue with nothing in flight has no settle coming to drain it
+	// (refunds used up the last settle's cap, or it ran while paused). Drain it here, paid by
+	// this caller, before deciding; only this stranded state costs a requester extra.
+	if queueable && len(cs.TxSpendsList) == 0 && unmapQueueLength() > 0 {
+		cs.drainUnmapQueue(constants.MaxQueuePlansPerSettle)
+	}
+	if queueable && unmapQueueLength() > 0 {
+		return cs.enqueueUnmap(env, from, instructions, amount, vscFee, prelimRequired)
+	}
+
+	plan, held, err := cs.planUnmap(instructions.To, amount, vscFee, utxoSelectionAmount, instructions.DeductFee, instructions.MaxFee)
 	if err != nil {
-		return ce.WrapContractError(ce.ErrArithmetic, err, "error computing total fee")
+		if held && queueable {
+			return cs.enqueueUnmap(env, from, instructions, amount, vscFee, prelimRequired)
+		}
+		if held {
+			// A contract (the DEX router paying out a swap) or an allowance spender is not
+			// queued; say why, so a client can tell "wait" from "too little".
+			return ce.Prepend(err, "some vault coins are held by a rotation or by withdrawals awaiting confirmation, "+
+				"and a withdrawal made through a contract or an allowance is not queued: if the amount fits the vault, "+
+				"retry once they confirm, or withdraw from your own balance (that is queued)")
+		}
+		return err
 	}
-	if instructions.MaxFee != nil && totalFee > *instructions.MaxFee {
-		return ce.NewContractError(
-			ce.ErrTransaction,
-			"total fee "+strconv.FormatInt(totalFee, 10)+
-				" exceeds max_fee "+strconv.FormatInt(*instructions.MaxFee, 10),
-		)
-	}
-
-	sdk.Log(createFeeLog(vscFee, btcFee))
-
-	var finalAmt int64
-	if instructions.DeductFee {
-		// ACCT-1: debit what actually leaves the vault, not `amount`. sendAmount was
-		// derived from an ESTIMATE of the miner fee and the built tx's true fee
-		// (inputs - outputs) differs both ways. With a change output the estimate is
-		// higher and the difference stayed in change, counted by no supply bucket
-		// (over-backed drift). With sub-dust leftover change the remainder is burned to
-		// the miner, so the vault lost more than the user was charged (under-backed by
-		// up to the dust threshold per withdrawal, repeatable by anyone). Debiting
-		// vscFee + sendAmount + trueFee keeps Σ(UTXO) == Active+Fee exactly, as the
-		// add-fee path already does: the unused estimate stays with the user and a
-		// burned remainder is charged to them. A balance that cannot cover it fails
-		// below; the user retries with a smaller amount.
-		finalAmt, err = safeAdd64(vscFee, sendAmount)
-		if err != nil {
-			return ce.WrapContractError(ce.ErrArithmetic, err, "error computing final amount")
-		}
-		finalAmt, err = safeAdd64(finalAmt, btcFee)
-		if err != nil {
-			return ce.WrapContractError(ce.ErrArithmetic, err, "error computing final amount")
-		}
-	} else {
-		finalAmt, err = safeAdd64(amount, vscFee)
-		if err != nil {
-			return ce.WrapContractError(ce.ErrArithmetic, err, "error computing final amount")
-		}
-		finalAmt, err = safeAdd64(finalAmt, btcFee)
-		if err != nil {
-			return ce.WrapContractError(ce.ErrArithmetic, err, "error computing final amount")
-		}
-	}
+	finalAmt := plan.finalAmt
 
 	// check whether caller (or delegated from) has enough balance to cover transaction
 	err = checkAndDeductBalance(env, from, finalAmt)
@@ -315,45 +238,9 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 		return err
 	}
 
-	// All checks passed — now request TSS signing (the node reads only the "d-" record +
-	// TxSpendsList entry written below; the "us-" record + reservations are contract-internal,
-	// so the node/broadcast side is UNCHANGED — exactly like BRK-1's migration "ms-" record).
-	signingData, err := signSpendTransaction(tx, inputUtxos, witnessScripts)
-	if err != nil {
-		return ce.WrapContractError(ce.ErrTransaction, err, "error signing spend transaction")
+	if _, err := cs.commitUnmap(plan, from, instructions.To, vscFee); err != nil {
+		return err
 	}
-
-	// Guard 1 (delete-at-confirm, BRK-1 mirror for the withdrawal path). DO NOT delete the
-	// input UTXOs and DO NOT index the change here. Keep the inputs registered + RESERVE them,
-	// store a "us-" pending record, and defer BOTH the input-delete and the (now confirmed)
-	// change-index to settleUnmap in HandleConfirmSpend under the tx's SPV proof. This makes a
-	// never-confirming unmap fund-safe (inputs stay tracked → recoverable, not stranded on L1)
-	// and closes M1.1b FN-3 (a rogue re-sign of a still-registered input is theft-detected).
-	// The balance debit + FeeSupply(vscFee) credit STAY at build (below): during the in-flight
-	// window Σ(UTXO) is unchanged while Supply is down, so the vault is temporarily OVER-
-	// collateralised (safe — never under, no false insolvency), rebalancing exactly at settle.
-	txId := tx.TxID()
-	signingDataBytes, err := MarshalSigningData(signingData)
-	if err != nil {
-		return ce.WrapContractError(ce.ErrJson, err, "error marshalling signing data")
-	}
-	sdk.StateSetObject(constants.TxSpendsPrefix+txId, string(signingDataBytes))
-	cs.TxSpendsList = append(cs.TxSpendsList, txId)
-
-	unmapRecord := &PendingUnmap{
-		InputIds:      inputUtxoIds,
-		ChangeAddress: changeAddress,
-		ChangeGen:     cs.ActiveGen,
-		BtcFee:        btcFee,             // L7-01: true miner fee this tx pays (re-drive delta basis)
-		BuildHeight:   currentLastHeight(), // L7-01: re-drive staleness clock
-	}
-	sdk.StateSetObject(constants.PendingUnmapPrefix+txId, string(MarshalPendingUnmap(unmapRecord)))
-	// VR2-03: hold header retention open for this spend until it settles.
-	notePendingSpend(unmapRecord.BuildHeight)
-	for _, inputId := range inputUtxoIds {
-		reserveUtxo(inputId)
-	}
-	sdk.Log(createUnmapLog(txId, from, instructions.To, finalAmt, sendAmount))
 
 	// update supply
 	newActive, err := safeSubtract64(cs.Supply.ActiveSupply, finalAmt)
@@ -375,6 +262,204 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	cs.Supply.FeeSupply = newFee
 
 	return nil
+}
+
+// unmapSelectionAmount is the value the selected inputs must cover. With deduct_fee the
+// vsc fee comes out of amount, since sendAmount + btcFee = amount - vscFee.
+func unmapSelectionAmount(amount, vscFee int64, deductFee bool) (int64, error) {
+	if !deductFee {
+		return amount, nil
+	}
+	sel, err := safeSubtract64(amount, vscFee)
+	if err != nil || sel <= 0 {
+		return 0, ce.NewContractError(ce.ErrBalance, "amount too small to cover vsc fee")
+	}
+	return sel, nil
+}
+
+// unmapPlan is a priced, unsigned withdrawal: everything HandleUnmap works out before it
+// charges anyone. The direct path and the withdrawal queue (WQ-1) both build through
+// planUnmap and commitUnmap, so a queued withdrawal is shaped and priced exactly like one
+// built on the spot.
+type unmapPlan struct {
+	inputIds       []uint16
+	inputUtxos     []*Utxo
+	changeAddress  string
+	tx             *wire.MsgTx
+	witnessScripts map[int][]byte
+	btcFee         int64
+	sendAmount     int64
+	finalAmt       int64 // what leaves the payer's balance: amount (or sendAmount) + vscFee + true miner fee
+}
+
+// planUnmap selects inputs and builds the withdrawal. It writes no state. held reports
+// that the selection failed while coins were skipped only because they are held for now
+// (reserved by a spend in flight, or on a superseded generation awaiting its sweep), the
+// one failure the withdrawal queue treats as "not yet" rather than "no".
+func (cs *ContractState) planUnmap(to string, amount, vscFee, utxoSelectionAmount int64, deductFee bool, maxFee *int64) (*unmapPlan, bool, error) {
+	inputUtxoIds, totalInputAmt, held, err := cs.getInputUtxoIds(utxoSelectionAmount)
+	if err != nil {
+		return nil, held, ce.Prepend(err, "error getting input utxos")
+	}
+
+	inputUtxos, err := getInputUtxos(inputUtxoIds)
+	if err != nil {
+		return nil, false, ce.Prepend(err, "error getting input utxos")
+	}
+
+	changeAddress, _, err := createP2WSHAddressWithBackup(
+		cs.PublicKeys.Primary,
+		cs.PublicKeys.Backup,
+		nil,
+		cs.NetworkParams,
+	)
+	if err != nil {
+		return nil, false, ce.WrapContractError(ce.ErrTransaction, err, "error creating change address")
+	}
+	// Guard 1: the destination must differ from the vault change address so settleUnmap can
+	// identify the change output(s) unambiguously by address at confirm. A To == changeAddress
+	// collision would index the user's own withdrawal output as change (the vault over-
+	// collateralises and the user donates the withdrawal) — self-harm, no theft, but cheap to
+	// reject outright and it removes the only conservation ambiguity at settle.
+	// ADDR-1: compare case-INSENSITIVELY. The change address is bech32 (P2WSH), and bech32 is
+	// case-insensitive (BIP173: a valid string is all-lower or all-upper, same witness program).
+	// A raw == let an UPPERCASE form of the change address through - both outputs would then
+	// carry the identical pkScript and settleUnmap would match the user's withdrawal as change.
+	// EqualFold is exact here: bech32's only aliasing is case, and a base58 To can never fold-
+	// equal a bech32 address (different charset/format), so no legitimate destination is rejected.
+	if strings.EqualFold(to, changeAddress) {
+		return nil, false, ce.NewContractError(ce.ErrInput, "destination address must differ from the vault change address")
+	}
+	// When deduct_fee=true, estimate btcFee to derive the send amount so that
+	// vscFee + btcFee + sendAmount ≈ amount. The actual fee from
+	// createSpendTransaction may differ slightly; any discrepancy is absorbed
+	// by the change output.
+	sendAmount := amount
+	if deductFee {
+		btcFeeEst, err := cs.estimateFee(int64(len(inputUtxoIds)), utxoSelectionAmount, totalInputAmt)
+		if err != nil {
+			return nil, false, err
+		}
+		sendAmount, err = safeSubtract64(utxoSelectionAmount, btcFeeEst)
+		if err != nil || sendAmount <= dustThreshold {
+			return nil, false, ce.NewContractError(ce.ErrBalance, "amount too small to cover fees")
+		}
+	}
+
+	tx, witnessScripts, btcFee, err := cs.buildSpendTransaction(
+		inputUtxos,
+		totalInputAmt,
+		to,
+		changeAddress,
+		sendAmount,
+	)
+	if err != nil {
+		return nil, false, err
+	}
+
+	totalFee, err := safeAdd64(vscFee, btcFee)
+	if err != nil {
+		return nil, false, ce.WrapContractError(ce.ErrArithmetic, err, "error computing total fee")
+	}
+	if maxFee != nil && totalFee > *maxFee {
+		return nil, false, ce.NewContractError(
+			ce.ErrTransaction,
+			"total fee "+strconv.FormatInt(totalFee, 10)+
+				" exceeds max_fee "+strconv.FormatInt(*maxFee, 10),
+		)
+	}
+
+	var finalAmt int64
+	if deductFee {
+		// ACCT-1: debit what actually leaves the vault, not `amount`. sendAmount was
+		// derived from an ESTIMATE of the miner fee and the built tx's true fee
+		// (inputs - outputs) differs both ways. With a change output the estimate is
+		// higher and the difference stayed in change, counted by no supply bucket
+		// (over-backed drift). With sub-dust leftover change the remainder is burned to
+		// the miner, so the vault lost more than the user was charged (under-backed by
+		// up to the dust threshold per withdrawal, repeatable by anyone). Debiting
+		// vscFee + sendAmount + trueFee keeps Σ(UTXO) == Active+Fee exactly, as the
+		// add-fee path already does: the unused estimate stays with the user and a
+		// burned remainder is charged to them. A balance that cannot cover it fails
+		// below; the user retries with a smaller amount.
+		finalAmt, err = safeAdd64(vscFee, sendAmount)
+		if err != nil {
+			return nil, false, ce.WrapContractError(ce.ErrArithmetic, err, "error computing final amount")
+		}
+		finalAmt, err = safeAdd64(finalAmt, btcFee)
+		if err != nil {
+			return nil, false, ce.WrapContractError(ce.ErrArithmetic, err, "error computing final amount")
+		}
+	} else {
+		finalAmt, err = safeAdd64(amount, vscFee)
+		if err != nil {
+			return nil, false, ce.WrapContractError(ce.ErrArithmetic, err, "error computing final amount")
+		}
+		finalAmt, err = safeAdd64(finalAmt, btcFee)
+		if err != nil {
+			return nil, false, ce.WrapContractError(ce.ErrArithmetic, err, "error computing final amount")
+		}
+	}
+
+	return &unmapPlan{
+		inputIds:       inputUtxoIds,
+		inputUtxos:     inputUtxos,
+		changeAddress:  changeAddress,
+		tx:             tx,
+		witnessScripts: witnessScripts,
+		btcFee:         btcFee,
+		sendAmount:     sendAmount,
+		finalAmt:       finalAmt,
+	}, false, nil
+}
+
+// commitUnmap signs a planned withdrawal and records it as an in-flight spend: the "d-"
+// signing record and TxSpendsList entry the node and bot read, the "us-" settle record,
+// and the input reservations. Every step that can fail runs before the first state write,
+// so a caller that does not abort on an error (the withdrawal queue) is left with no
+// partial record. It moves no Supply or balance; the caller does that.
+func (cs *ContractState) commitUnmap(plan *unmapPlan, from, to string, vscFee int64) (string, error) {
+	// All checks passed — now request TSS signing (the node reads only the "d-" record +
+	// TxSpendsList entry written below; the "us-" record + reservations are contract-internal,
+	// so the node/broadcast side is UNCHANGED — exactly like BRK-1's migration "ms-" record).
+	signingData, err := signSpendTransaction(plan.tx, plan.inputUtxos, plan.witnessScripts)
+	if err != nil {
+		return "", ce.WrapContractError(ce.ErrTransaction, err, "error signing spend transaction")
+	}
+
+	// Guard 1 (delete-at-confirm, BRK-1 mirror for the withdrawal path). DO NOT delete the
+	// input UTXOs and DO NOT index the change here. Keep the inputs registered + RESERVE them,
+	// store a "us-" pending record, and defer BOTH the input-delete and the (now confirmed)
+	// change-index to settleUnmap in HandleConfirmSpend under the tx's SPV proof. This makes a
+	// never-confirming unmap fund-safe (inputs stay tracked → recoverable, not stranded on L1)
+	// and closes M1.1b FN-3 (a rogue re-sign of a still-registered input is theft-detected).
+	// The balance debit + FeeSupply(vscFee) credit STAY at build (below): during the in-flight
+	// window Σ(UTXO) is unchanged while Supply is down, so the vault is temporarily OVER-
+	// collateralised (safe — never under, no false insolvency), rebalancing exactly at settle.
+	txId := plan.tx.TxID()
+	signingDataBytes, err := MarshalSigningData(signingData)
+	if err != nil {
+		return "", ce.WrapContractError(ce.ErrJson, err, "error marshalling signing data")
+	}
+	sdk.Log(createFeeLog(vscFee, plan.btcFee))
+	sdk.StateSetObject(constants.TxSpendsPrefix+txId, string(signingDataBytes))
+	cs.TxSpendsList = append(cs.TxSpendsList, txId)
+
+	unmapRecord := &PendingUnmap{
+		InputIds:      plan.inputIds,
+		ChangeAddress: plan.changeAddress,
+		ChangeGen:     cs.ActiveGen,
+		BtcFee:        plan.btcFee,         // L7-01: true miner fee this tx pays (re-drive delta basis)
+		BuildHeight:   currentLastHeight(), // L7-01: re-drive staleness clock
+	}
+	sdk.StateSetObject(constants.PendingUnmapPrefix+txId, string(MarshalPendingUnmap(unmapRecord)))
+	// VR2-03: hold header retention open for this spend until it settles.
+	notePendingSpend(unmapRecord.BuildHeight)
+	for _, inputId := range plan.inputIds {
+		reserveUtxo(inputId)
+	}
+	sdk.Log(createUnmapLog(txId, from, to, plan.finalAmt, plan.sendAmount))
+	return txId, nil
 }
 
 // HandleApprove sets the spending allowance for spender to spend owner's tokens.
@@ -714,6 +799,12 @@ func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices
 		sdk.StateDeleteObject(constants.TxSpendsPrefix + txId)
 		cs.TxSpendsList = removeTxid(cs.TxSpendsList, txId)
 	}
+
+	// WQ-1: a settle is what frees held coins (a sweep's output is now on the active
+	// generation, an unmap's change is a new coin, its inputs are no longer reserved), so
+	// queued withdrawals get them first, oldest first. Last, after the settle is complete,
+	// and it never fails the settle: a withdrawal that cannot be built stays queued.
+	cs.drainUnmapQueue(constants.MaxQueuePlansPerSettle)
 
 	return nil
 }

@@ -168,15 +168,11 @@ func (cs *ContractState) gatherMigrationInputs(gen uint32, excluded map[uint16]s
 			break
 		}
 		// Value cap (money-math lens pre-mortem): keep the tranche total ≤ MaxUtxoAmount so
-		// the single consolidated sweep output fits the uint48 registry (matches the L-1
+		// every sweep output fits the uint48 registry, even a single one (matches the L-1
 		// change cap). Without this, a tranche summing above MaxUtxoAmount could never
 		// index its own output → that generation could never drain (a brick). Each deposit
 		// is itself ≤ MaxUtxoAmount, so stopping here always leaves ≥1 input = a buildable
 		// tranche; the overflow input drains in the next tranche.
-		// Value cap: MaxUtxoAmount for a normal tranche (so the consolidated output fits the
-		// uint48 registry), OR MigrationCanaryValue for a gen's FIRST (canary) tranche. The
-		// first input is always included (the len>0 guard) so a single UTXO above the cap
-		// still forms a buildable tranche; the overflow drains next.
 		if len(inputIds) > 0 && total+entry.Amount > maxTrancheValue {
 			moreRemain = true
 			break
@@ -255,9 +251,27 @@ func assertOutputsPaySuccessor(tx *wire.MsgTx, successorScript []byte) error {
 	return nil
 }
 
+// migrationOutputCount is how many equal coins a sweep of `inputs` UTXOs worth `total`
+// pays the successor (SWEEP-SPLIT): at most MaxMigrationOutputs, never more than it spends,
+// and none planned below MinMigrationOutputValue. Deterministic in the recorded inputs, so a
+// re-drive rebuilds the same shape.
+func migrationOutputCount(inputs int, total int64) int {
+	k := inputs
+	if k > constants.MaxMigrationOutputs {
+		k = constants.MaxMigrationOutputs
+	}
+	if byValue := total / constants.MinMigrationOutputValue; int64(k) > byValue {
+		k = int(byValue)
+	}
+	if k < 1 {
+		k = 1
+	}
+	return k
+}
+
 // buildMigrationTransaction builds a sweep spending `inputs` (all of the retiring gen)
-// and paying the entire value, minus the miner fee, to a single output at
-// successorAddress (the active generation's vault address). Does NOT request signing.
+// and paying the entire value, minus the miner fee, to migrationOutputCount equal outputs
+// at successorAddress (the active generation's vault address). Does NOT request signing.
 func (cs *ContractState) buildMigrationTransaction(inputs []*Utxo, totalInputs int64, successorAddress string, prevFee int64) (*wire.MsgTx, map[int][]byte, int64, error) {
 	tx := wire.NewMsgTx(wire.TxVersion)
 	witnessScripts, err := cs.addInputsWithWitnesses(tx, inputs)
@@ -274,10 +288,13 @@ func (cs *ContractState) buildMigrationTransaction(inputs []*Utxo, totalInputs i
 		return nil, nil, 0, err
 	}
 
-	// Single sweep output. Provisional value = total for size estimation (the value
-	// field width is fixed, so setting the final value below does not change tx size).
-	sweepOut := wire.NewTxOut(totalInputs, successorScript)
-	tx.AddTxOut(sweepOut)
+	// Sweep outputs. Provisional value = total for size estimation (the value field width
+	// is fixed, so setting the final values below does not change tx size).
+	sweepOuts := make([]*wire.TxOut, migrationOutputCount(len(inputs), totalInputs))
+	for i := range sweepOuts {
+		sweepOuts[i] = wire.NewTxOut(totalInputs, successorScript)
+		tx.AddTxOut(sweepOuts[i])
+	}
 
 	fee, err := cs.calculateSegwitFee(int64(tx.SerializeSize()), witnessScripts)
 	if err != nil {
@@ -364,18 +381,22 @@ func (cs *ContractState) buildMigrationTransaction(inputs []*Utxo, totalInputs i
 		// recoverable). Dust-burn / reserve-subsidy handling is deferred (S2.4/S5).
 		return nil, nil, 0, ce.NewContractError(ce.ErrBalance, "migration tranche value too small to cover the sweep fee")
 	}
-	sweepOut.Value = sendAmount
+	share := sendAmount / int64(len(sweepOuts))
+	for _, out := range sweepOuts {
+		out.Value = share
+	}
+	sweepOuts[0].Value += sendAmount - share*int64(len(sweepOuts))
 
-	// NN#1 Layer-1 (consensus-re-executed): the sole output MUST pay the successor.
+	// NN#1 Layer-1 (consensus-re-executed): every output MUST pay the successor.
 	if aerr := assertOutputsPaySuccessor(tx, successorScript); aerr != nil {
 		return nil, nil, 0, aerr
 	}
 	return tx, witnessScripts, fee, nil
 }
 
-// HandleMigrateVault sweeps ONE tranche of a retiring/draining generation's confirmed
-// UTXOs to the active successor vault. Returns a txid (or a benign "nothing to migrate"
-// status). Never touches the active vault's funds; never sweeps to anything but the
+// HandleMigrateVault sweeps one or more tranches (MIG-PAR) of a retiring/draining
+// generation's UTXOs to the active successor vault. Returns the first tranche's txid (or a
+// benign "nothing to migrate" status). Never touches the active vault's funds; never sweeps to anything but the
 // consensus-derived successor address (NN#1). Any failure aborts the whole tx, so the
 // retiring gen keeps its UTXOs, fully recoverable (never-brick).
 func (cs *ContractState) HandleMigrateVault() (string, error) {
@@ -454,32 +475,35 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 	// the registry until its sweep confirms, so without this a retry/tranche re-selects and
 	// double-sweeps it), and the SUM of their reserved fees feeds the build-time fee-reserve
 	// check below.
-	excluded, pendingFeeSum, err := cs.pendingMigrationState()
-	if err != nil {
-		return "", err
+	// MIG-PAR: build tranches back to back in this one call, each excluding the inputs the
+	// ones before it took, until nothing is left to select or the call has taken
+	// MaxMigrationInputs inputs or MaxTranchesPerMigrate tranches. A gen of legacy entries
+	// (one per tranche, H-2) then drains in a few parallel rounds instead of one confirmation
+	// per entry. A later tranche that cannot be built (fee reserve, fee ceiling) ends the
+	// loop and keeps what was built; the first one's error is returned as before. A signing
+	// or state error aborts the whole call, as it always did.
+	first := ""
+	inputs := 0
+	for n := 0; n < constants.MaxTranchesPerMigrate && inputs < constants.MaxMigrationInputs; n++ {
+		txId, taken, preSign, err := cs.migrateTranche(targetIdx, successorAddress, successorGen)
+		if err != nil {
+			return "", err
+		}
+		if preSign != nil {
+			if first == "" {
+				return "", preSign
+			}
+			break
+		}
+		if txId == "" {
+			break
+		}
+		if first == "" {
+			first = txId
+		}
+		inputs += taken
 	}
-
-	// CANARY (THORChain small-first-then-ramp): a gen's FIRST tranche is taken while it is
-	// still RETIRING (this call transitions RETIRING→DRAINING below); cap it to
-	// MigrationCanaryValue so only a small "test" amount moves to the new successor vault
-	// first, bounding the exposure of the first move. Subsequent (DRAINING) tranches drain
-	// the bulk at MaxUtxoAmount. Defense-in-depth atop BRK-2's pre-activation sign proof + NN#1
-	// output-scoping. NOTE (canary council F2): the bulk is NOT contract-gated on the canary
-	// CONFIRMING — BRK-1 only excludes the canary's own inputs from later tranches; "wait for
-	// the canary to confirm before the bulk" is operator/driver discipline, not enforced here.
-	// A confirm-gate (serialise the canary before any DRAINING tranche) is a tracked stronger
-	// variant.
-	maxTrancheValue := constants.MaxUtxoAmount
-	usingCanary := false
-	if cs.Vaults[targetIdx].Status == VaultStatusRetiring && constants.MigrationCanaryValue < constants.MaxUtxoAmount {
-		maxTrancheValue = constants.MigrationCanaryValue
-		usingCanary = true
-	}
-	inputIds, total, moreRemain, err := cs.getMigrationInputs(targetGen, excluded, maxTrancheValue)
-	if err != nil {
-		return "", err
-	}
-	if len(inputIds) == 0 {
+	if first == "" {
 		// No selectable confirmed UTXOs for this gen — either it holds none, or every one
 		// it holds is already committed to a pending sweep (delete-at-confirm keeps them in
 		// the registry until confirmation). It STAYS retiring/draining — still fund-holding,
@@ -493,30 +517,35 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 		// never blocks progress even though it is not marked inactive here.
 		return "nothing to migrate for generation " + strconv.FormatUint(uint64(targetGen), 10), nil
 	}
+	return first, nil
+}
+
+// migrateTranche builds and records one tranche of the target generation into the
+// successor. It returns an empty txId when nothing is selectable. preSign is an error raised
+// before any signing request or state write, which a caller may stop on and keep the
+// tranches it already built; err is anything else and must abort the call.
+func (cs *ContractState) migrateTranche(targetIdx int, successorAddress string, successorGen uint32) (string, int, error, error) {
+	targetGen := cs.Vaults[targetIdx].Generation
+	excluded, pendingFeeSum, err := cs.pendingMigrationState()
+	if err != nil {
+		return "", 0, nil, err
+	}
+
+	inputIds, total, moreRemain, err := cs.getMigrationInputs(targetGen, excluded, constants.MaxUtxoAmount)
+	if err != nil {
+		return "", 0, nil, err
+	}
+	if len(inputIds) == 0 {
+		return "", 0, nil, nil
+	}
 
 	inputUtxos, err := getInputUtxos(inputIds)
 	if err != nil {
-		return "", err
+		return "", 0, nil, err
 	}
 	tx, witnessScripts, btcFee, err := cs.buildMigrationTransaction(inputUtxos, total, successorAddress, 0)
-	if err != nil && usingCanary {
-		// F1 (canary council, MEDIUM): the small canary cap can make the FIRST tranche too
-		// small to cover its own sweep fee (fee>half, or below the dust floor) at a high fee
-		// rate — a full tranche amortizes the fixed overhead and would build fine. Left
-		// unfixed, the gen would wedge RETIRING forever (re-selected + re-aborted every call →
-		// NN#3 blocks all future rotation). The canary is pure defense-in-depth and must NEVER
-		// block migration → FALL BACK to a normal full-cap tranche. If the full tranche ALSO
-		// can't build, that is the genuine V-1 dust residual → abort as before (unchanged).
-		inputIds, total, moreRemain, err = cs.getMigrationInputs(targetGen, excluded, constants.MaxUtxoAmount)
-		if err == nil && len(inputIds) > 0 {
-			inputUtxos, err = getInputUtxos(inputIds)
-			if err == nil {
-				tx, witnessScripts, btcFee, err = cs.buildMigrationTransaction(inputUtxos, total, successorAddress, 0)
-			}
-		}
-	}
 	if err != nil {
-		return "", err
+		return "", 0, err, nil
 	}
 
 	// BRK-1 fee RESERVE CHECK (pre-mortem F-FEE/C-1 — all 3 lenses HIGH): the FeeSupply
@@ -535,16 +564,16 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 	// FeeSupply therefore holds trivially at build (nothing settled).
 	feeNeeded, err := safeAdd64(pendingFeeSum, btcFee)
 	if err != nil {
-		return "", ce.WrapContractError(ce.ErrArithmetic, err, "migration pending-fee sum overflow")
+		return "", 0, nil, ce.WrapContractError(ce.ErrArithmetic, err, "migration pending-fee sum overflow")
 	}
 	if cs.Supply.FeeSupply < feeNeeded {
-		return "", ce.NewContractError(ce.ErrBalance, "insufficient fee reserve to cover pending and current migration sweeps")
+		return "", 0, ce.NewContractError(ce.ErrBalance, "insufficient fee reserve to cover pending and current migration sweeps"), nil
 	}
 
 	// Sign each input with its (retiring) generation's keyId.
 	signingData, err := signSpendTransaction(tx, inputUtxos, witnessScripts)
 	if err != nil {
-		return "", ce.WrapContractError(ce.ErrTransaction, err, "error signing migration sweep")
+		return "", 0, nil, ce.WrapContractError(ce.ErrTransaction, err, "error signing migration sweep")
 	}
 
 	// Record the pending sweep. Under BRK-1 (delete-at-confirm) BUILD settles NOTHING: the
@@ -558,7 +587,7 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 	// UNCHANGED (it reads only "p"/"d-", never "ms-").
 	signingBytes, err := MarshalSigningData(signingData)
 	if err != nil {
-		return "", ce.WrapContractError(ce.ErrJson, err, "error marshalling migration signing data")
+		return "", 0, nil, ce.WrapContractError(ce.ErrJson, err, "error marshalling migration signing data")
 	}
 	txId := tx.TxID()
 	sdk.StateSetObject(constants.TxSpendsPrefix+txId, string(signingBytes))
@@ -602,7 +631,7 @@ func (cs *ContractState) HandleMigrateVault() (string, error) {
 		"|swept=" + strconv.FormatInt(total, 10) +
 		"|fee=" + strconv.FormatInt(btcFee, 10) +
 		"|more=" + strconv.FormatBool(moreRemain))
-	return txId, nil
+	return txId, len(inputIds), nil, nil
 }
 
 // pendingMigrationState scans the in-flight migration sweeps and returns (1) the set of
