@@ -92,7 +92,7 @@ func TestRetireVault_DrainingToInactiveWhenEmpty(t *testing.T) {
 func TestRetireVault_InactiveHoldsBeforeGrace(t *testing.T) {
 	ct, contractId, owner := newRetireCT(t)
 	const anchor = 900000
-	seedRetireState(ct, contractId, anchor+constants.VaultPurgeGraceBlocks-1, mapping.VaultRegistry{
+	seedRetireState(ct, contractId, anchor+constants.VaultPurgeGraceBlocks(constants.Regtest)-1, mapping.VaultRegistry{
 		{Generation: 1, Status: mapping.VaultStatusInactive, InactiveHeight: anchor},
 		{Generation: 2, Status: mapping.VaultStatusActive},
 	}, 3, 2)
@@ -109,7 +109,7 @@ func TestRetireVault_InactiveHoldsBeforeGrace(t *testing.T) {
 func TestRetireVault_InactiveToPurgedAtGraceBoundary(t *testing.T) {
 	ct, contractId, owner := newRetireCT(t)
 	const anchor = 900000
-	seedRetireState(ct, contractId, anchor+constants.VaultPurgeGraceBlocks, mapping.VaultRegistry{
+	seedRetireState(ct, contractId, anchor+constants.VaultPurgeGraceBlocks(constants.Regtest), mapping.VaultRegistry{
 		{Generation: 1, Status: mapping.VaultStatusInactive, InactiveHeight: anchor},
 		{Generation: 2, Status: mapping.VaultStatusActive},
 	}, 3, 2)
@@ -146,7 +146,7 @@ func TestRetireVault_RevertsFundedInactiveAndNeverPurges(t *testing.T) {
 	ct, contractId, owner := newRetireCT(t)
 	const anchor = 900000
 	// height WELL past grace — purge would fire if the funded UTXO were ignored.
-	seedRetireState(ct, contractId, anchor+constants.VaultPurgeGraceBlocks+500, mapping.VaultRegistry{
+	seedRetireState(ct, contractId, anchor+constants.VaultPurgeGraceBlocks(constants.Regtest)+500, mapping.VaultRegistry{
 		{Generation: 1, Status: mapping.VaultStatusInactive, InactiveHeight: anchor},
 		{Generation: 2, Status: mapping.VaultStatusActive},
 	}, 3, 2)
@@ -158,7 +158,7 @@ func TestRetireVault_RevertsFundedInactiveAndNeverPurges(t *testing.T) {
 	vaults, _, _ := loadVaults(t, ct, contractId)
 	g1 := vaultByGen(t, vaults, 1)
 	require.Equal(t, mapping.VaultStatusDraining, g1.Status, "funded inactive gen must revert to draining, NOT purge")
-	require.Equal(t, uint32(0), g1.InactiveHeight, "grace anchor reset on revert (a fresh emptying restarts the clock)")
+	require.Equal(t, uint32(anchor), g1.InactiveHeight, "PURGE-GRIEF-1: the grace anchor is kept on revert (the next emptying moves it only by the reorg margin)")
 }
 
 // (6) No-op / idempotent: nothing to reconcile (only an ACTIVE gen) → registry unchanged,
@@ -276,14 +276,20 @@ func TestUnmapExcludesInactiveGenUtxo(t *testing.T) {
 		ContractId: contractId, Action: "unmap", Payload: unmapPayload,
 		RcLimit: 100000000, Intents: []contracts.Intent{}, Caller: owner,
 	})
-	require.False(t, r.Success, "unmap must be refused: only the INACTIVE gen-0 UTXO exists (D-1 / S5 council HIGH)")
-
-	// Fail-safe: no debit, the gen-0 UTXO untouched.
-	require.Equal(t, encodeBalance(t, amount), ct.StateGet(contractId, constants.BalancePrefix+owner),
-		"a refused unmap must not debit the caller")
+	// WQ-1: queued, not refused (an INACTIVE gen holding a UTXO is swept again once
+	// retireVault reverts it to DRAINING). D-1 is unchanged: the INACTIVE gen-0 UTXO is never
+	// selected, nothing is built or signed.
+	require.True(t, r.Success, "a withdrawal whose coins sit on the INACTIVE gen is queued: %s", r.ErrMsg)
+	require.Empty(t, ct.StateGet(contractId, constants.TxSpendsRegistryKey), "no spend may be built from the INACTIVE gen-0 UTXO (D-1 / S5 council HIGH)")
+	require.Empty(t, r.Logs[contractId].TssOps, "nothing may be signed for a queued withdrawal")
+	q, qerr := mapping.UnmarshalQueuedUnmap([]byte(ct.StateGet(contractId, constants.UnmapQueuePrefix+"0")))
+	require.NoError(t, qerr)
+	require.Greater(t, q.Escrow, int64(50000), "escrow = amount + the smallest possible miner fee")
+	require.Equal(t, encodeBalance(t, amount-q.Escrow), ct.StateGet(contractId, constants.BalancePrefix+owner),
+		"the queued withdrawal's escrow is debited")
 	reg, err := mapping.UnmarshalUtxoRegistry([]byte(ct.StateGet(contractId, constants.UtxoRegistryKey)))
 	require.NoError(t, err)
-	require.Len(t, reg, 1, "the inactive gen-0 UTXO is untouched by the refused unmap")
+	require.Len(t, reg, 1, "the inactive gen-0 UTXO is untouched by the queued unmap")
 	require.Equal(t, uint32(0), utxoGenerationForId(t, &ct, contractId, reg[0].Id))
 }
 

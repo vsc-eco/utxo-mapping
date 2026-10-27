@@ -61,12 +61,19 @@ func newOneRotationCT(t *testing.T, gen0 []utxoSeed) (*test_utils.ContractTest, 
 // newShadowCT rotates twice through the real ops with gen-0 empty the whole time: gen-0
 // retires holding nothing, users fund gen-1, NN#3 admits the gen-2 createKey (it counts
 // funds, and gen-0 has none), and gen-2 activates. It ends with gen-0 RETIRING (empty),
-// gen-1 RETIRING (two 900k UTXOs, so the 1M canary tranche takes one), gen-2 ACTIVE, and
-// a fee reserve on gen-2.
+// gen-1 RETIRING (MaxMigrationInputs+1 UTXOs, so it drains in two tranches), gen-2 ACTIVE,
+// and a fee reserve on gen-2.
 func newShadowCT(t *testing.T) (*test_utils.ContractTest, string, string) {
 	t.Helper()
-	return newShadowCTWith(t, []utxoSeed{{1100, 900_000}, {1101, 900_000}})
+	seeds := make([]utxoSeed, constants.MaxMigrationInputs+1)
+	for i := range seeds {
+		seeds[i] = utxoSeed{shadowGen1FirstId + uint16(i), 20_000}
+	}
+	return newShadowCTWith(t, seeds)
 }
+
+// shadowGen1FirstId is the first registry id newShadowCT gives gen-1 (confirmed pool).
+const shadowGen1FirstId uint16 = 1100
 
 // newShadowCTWith is newShadowCT with gen-1 holding exactly `gen1` (possibly nothing).
 func newShadowCTWith(t *testing.T, gen1 []utxoSeed) (*test_utils.ContractTest, string, string) {
@@ -126,7 +133,7 @@ func gen1Ids(t *testing.T, ct *test_utils.ContractTest, contractId string) []uin
 	t.Helper()
 	var out []uint16
 	for id := range registryIds(t, ct, contractId) {
-		if id == 1100 || id == 1101 {
+		if id >= shadowGen1FirstId && id <= shadowGen1FirstId+constants.MaxMigrationInputs {
 			out = append(out, id)
 		}
 	}
@@ -183,26 +190,27 @@ func TestSHADOWFIX_Control_Gen1SweepsWithoutGen0(t *testing.T) {
 	require.Equal(t, mapping.VaultStatusDraining, vaultByGen(t, vaults, 1).Status)
 }
 
-// RETIRING variant, end to end: gen-1 drains past the empty RETIRING gen-0 (canary, then
-// bulk), both sweeps settle, retireVault moves both emptied gens to INACTIVE, and at the
+// RETIRING variant, end to end: gen-1 drains past the empty RETIRING gen-0 (a full
+// tranche, then the rest), both sweeps settle, retireVault moves both emptied gens to INACTIVE, and at the
 // grace boundary to PURGED. Conservation holds throughout.
 func TestSHADOWFIX_RetiringVariant_DrainsAndFinalizes(t *testing.T) {
 	ct, cid, owner := newShadowCT(t)
 
-	canary := callKeyAction(t, ct, cid, owner, "migrateVault", []byte(""))
-	require.Empty(t, canary.Err, canary.ErrMsg)
-	require.NotEqual(t, shadowNothingGen0, canary.Ret, "gen-1 is the first FUNDED retiring gen")
-	require.Len(t, readSweepRecord(t, ct, cid, canary.Ret).InputIds, 1, "the 1M canary takes one 900k input")
+	first := callKeyAction(t, ct, cid, owner, "migrateVault", []byte(""))
+	require.Empty(t, first.Err, first.ErrMsg)
+	require.NotEqual(t, shadowNothingGen0, first.Ret, "gen-1 is the first FUNDED retiring gen")
+	require.Len(t, readSweepRecord(t, ct, cid, first.Ret).InputIds, constants.MaxMigrationInputs, "the first tranche takes the input cap")
 	vaults, _, _ := loadVaults(t, ct, cid)
 	require.Equal(t, mapping.VaultStatusRetiring, vaultByGen(t, vaults, 0).Status, "the empty gen-0 is skipped, not touched")
 	require.Equal(t, mapping.VaultStatusDraining, vaultByGen(t, vaults, 1).Status)
 
 	bulk := callKeyAction(t, ct, cid, owner, "migrateVault", []byte(""))
 	require.Empty(t, bulk.Err, bulk.ErrMsg)
-	require.NotEqual(t, shadowNothingGen0, bulk.Ret, "the bulk tranche builds past the empty gen-0")
-	require.NotEqual(t, canary.Ret, bulk.Ret)
+	require.NotEqual(t, shadowNothingGen0, bulk.Ret, "the second tranche builds past the empty gen-0")
+	require.NotEqual(t, first.Ret, bulk.Ret)
+	require.Len(t, readSweepRecord(t, ct, cid, bulk.Ret).InputIds, 1)
 
-	require.True(t, confirmMigrationSweep(t, ct, cid, owner, canary.Ret, 200).Success)
+	require.True(t, confirmMigrationSweep(t, ct, cid, owner, first.Ret, 200).Success)
 	require.True(t, confirmMigrationSweep(t, ct, cid, owner, bulk.Ret, 210).Success)
 	require.Empty(t, gen1Ids(t, ct, cid), "gen-1 fully drained")
 	i1Holds(t, ct, cid)
@@ -215,7 +223,7 @@ func TestSHADOWFIX_RetiringVariant_DrainsAndFinalizes(t *testing.T) {
 	require.Equal(t, h, vaultByGen(t, vaults, 0).InactiveHeight)
 	require.Equal(t, mapping.VaultStatusInactive, vaultByGen(t, vaults, 1).Status)
 
-	setHeight(ct, cid, h+constants.VaultPurgeGraceBlocks)
+	setHeight(ct, cid, h+constants.VaultPurgeGraceBlocks(constants.Regtest))
 	r = callKeyAction(t, ct, cid, owner, "retireVault", []byte(""))
 	require.Empty(t, r.Err, r.ErrMsg)
 	vaults, _, _ = loadVaults(t, ct, cid)
@@ -231,14 +239,14 @@ func TestSHADOWFIX_DrainingVariant_BulkBuilds(t *testing.T) {
 	ct, cid, owner := newShadowCT(t)
 	setGenStatus(t, ct, cid, 0, mapping.VaultStatusDraining)
 
-	canary := callKeyAction(t, ct, cid, owner, "migrateVault", []byte(""))
-	require.Empty(t, canary.Err, canary.ErrMsg)
-	require.NotEqual(t, shadowNothingGen0, canary.Ret)
+	first := callKeyAction(t, ct, cid, owner, "migrateVault", []byte(""))
+	require.Empty(t, first.Err, first.ErrMsg)
+	require.NotEqual(t, shadowNothingGen0, first.Ret)
 
 	bulk := callKeyAction(t, ct, cid, owner, "migrateVault", []byte(""))
 	require.Empty(t, bulk.Err, bulk.ErrMsg)
 	require.NotEqual(t, shadowNothingGen0, bulk.Ret, "the empty DRAINING gen-0 no longer shadows gen-1")
-	require.NotEqual(t, canary.Ret, bulk.Ret)
+	require.NotEqual(t, first.Ret, bulk.Ret)
 	require.NotEmpty(t, ct.StateGet(cid, constants.TxSpendsPrefix+bulk.Ret))
 	vaults, _, _ := loadVaults(t, ct, cid)
 	require.Equal(t, mapping.VaultStatusDraining, vaultByGen(t, vaults, 0).Status, "the empty gen-0 is skipped, not touched")
@@ -255,12 +263,12 @@ func TestSHADOWFIX_R1_EmptyRetiringGenPurgesOnGrace(t *testing.T) {
 	require.Equal(t, mapping.VaultStatusInactive, vaultByGen(t, vaults, 0).Status)
 	require.Equal(t, h, vaultByGen(t, vaults, 0).InactiveHeight)
 
-	setHeight(ct, cid, h+constants.VaultPurgeGraceBlocks-1)
+	setHeight(ct, cid, h+constants.VaultPurgeGraceBlocks(constants.Regtest)-1)
 	require.Empty(t, callKeyAction(t, ct, cid, owner, "retireVault", []byte("")).Err)
 	vaults, _, _ = loadVaults(t, ct, cid)
 	require.Equal(t, mapping.VaultStatusInactive, vaultByGen(t, vaults, 0).Status, "one block short of grace: still matchable")
 
-	setHeight(ct, cid, h+constants.VaultPurgeGraceBlocks)
+	setHeight(ct, cid, h+constants.VaultPurgeGraceBlocks(constants.Regtest))
 	require.Empty(t, callKeyAction(t, ct, cid, owner, "retireVault", []byte("")).Err)
 	vaults, _, _ = loadVaults(t, ct, cid)
 	require.Equal(t, mapping.VaultStatusPurged, vaultByGen(t, vaults, 0).Status)
@@ -278,7 +286,7 @@ func TestSHADOWFIX_R1_LateDepositRevertsAndSweeps(t *testing.T) {
 	require.Empty(t, callKeyAction(t, ct, cid, owner, "retireVault", []byte("")).Err)
 	vaults, _, _ = loadVaults(t, ct, cid)
 	require.Equal(t, mapping.VaultStatusDraining, vaultByGen(t, vaults, 0).Status, "re-funded INACTIVE reverts to DRAINING")
-	require.Equal(t, uint32(0), vaultByGen(t, vaults, 0).InactiveHeight, "the grace anchor resets")
+	require.NotZero(t, vaultByGen(t, vaults, 0).InactiveHeight, "PURGE-GRIEF-1: the grace anchor is kept on revert")
 
 	r := callKeyAction(t, ct, cid, owner, "migrateVault", []byte(""))
 	require.Empty(t, r.Err, r.ErrMsg)
@@ -373,8 +381,8 @@ func TestSHADOWFIX_Gas(t *testing.T) {
 }
 
 // R2, like for like: gen-0 PURGED leaves ONE superseded gen, the normal case, where the
-// fix skips its registry scan. Canary and bulk cost must match the code before the fix. The
-// bulk tranche is the worst case: its input gather scans the whole registry.
+// fix skips its registry scan. First and second tranche cost must match the code before the
+// fix. The second tranche is the worst case: its input gather scans the whole registry.
 func TestSHADOWFIX_GasBulkLikeForLike(t *testing.T) {
 	for _, n := range []int{0, 200, 1000} {
 		ct, cid, owner := newShadowCT(t)
@@ -382,10 +390,10 @@ func TestSHADOWFIX_GasBulkLikeForLike(t *testing.T) {
 		for i := 0; i < n; i++ {
 			appendGenUtxo(t, ct, cid, 2, uint16(3000+i), 10_000)
 		}
-		canary := callKeyAction(t, ct, cid, owner, "migrateVault", []byte(""))
+		first := callKeyAction(t, ct, cid, owner, "migrateVault", []byte(""))
 		bulk := callKeyAction(t, ct, cid, owner, "migrateVault", []byte(""))
 		require.Empty(t, bulk.Err, bulk.ErrMsg)
-		require.NotEqual(t, canary.Ret, bulk.Ret)
-		t.Logf("N=%d canary rc=%d | bulk rc=%d", n, canary.RcUsed, bulk.RcUsed)
+		require.NotEqual(t, first.Ret, bulk.Ret)
+		t.Logf("N=%d first rc=%d | second rc=%d", n, first.RcUsed, bulk.RcUsed)
 	}
 }
