@@ -375,6 +375,29 @@ func (cs *ContractState) buildMigrationTransaction(inputs []*Utxo, totalInputs i
 		fee = reducedFee
 	}
 	sendAmount, err := safeSubtract64(totalInputs, fee)
+	if err == nil && sendAmount <= dustThreshold && prevFee == 0 {
+		// VR2-11 for the dust floor: a tranche whose output clears dust at a lower rate
+		// but not at the oracle's is swept at the highest rate that leaves more than dust,
+		// instead of wedging every legacy entry behind it until fees fall.
+		vSize, vErr := calculateSegwitFeeAt(1, int64(tx.SerializeSize()), witnessScripts)
+		if vErr != nil {
+			return nil, nil, 0, vErr
+		}
+		if vSize > 0 {
+			if dustRate := (totalInputs - dustThreshold - 1) / vSize; dustRate >= 1 {
+				reducedFee, rErr := calculateSegwitFeeAt(dustRate, int64(tx.SerializeSize()), witnessScripts)
+				if rErr != nil {
+					return nil, nil, 0, rErr
+				}
+				if reducedFee < fee {
+					sdk.Log("migrate-fee-reduced|rate=" + strconv.FormatInt(dustRate, 10) +
+						"|oracle=" + strconv.FormatInt(clampedFeeRate(cs.Supply.BaseFeeRate), 10))
+					fee = reducedFee
+					sendAmount = totalInputs - fee
+				}
+			}
+		}
+	}
 	if err != nil || sendAmount <= dustThreshold {
 		// V-1 dust residual: a tranche too small to cover its own sweep fee can't be
 		// migrated economically — abort (the retiring gen keeps these UTXOs, fully
