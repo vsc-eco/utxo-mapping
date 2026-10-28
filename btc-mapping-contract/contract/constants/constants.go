@@ -204,11 +204,11 @@ const VaultActiveGenKey = "va" // 4-byte BE: generation currently receiving new 
 // a day, so on mainnet an emptied generation keeps crediting for one CSV period (~30 days):
 // a coin either arrives in time to be credited and swept, or its sender waits the same 30
 // days the backup path needs anyway. Testnets and regtest keep 144 blocks (~24h, far beyond
-// any reorg) so a rotation can be exercised end to end. The cost is that the old
-// committee's POA-1 bonds release ~30 days after the generation empties instead of ~1.
-// NOTE: purge (this op) only STOPS matching the address and lets POA-1 release the
-// committee's bonds; it destroys no keys. Key destruction (node-side S5.1) is the separate
-// irreversible step and carries its own independent zero-balance check there.
+// any reorg) so a rotation can be exercised end to end. The node's bond locks release
+// once a generation is empty (Inactive), so the grace holds no committee's bond.
+// NOTE: purge (this op) only STOPS matching the address; it destroys no keys. Key
+// destruction (node-side S5.1) is the separate irreversible step and carries its own
+// independent zero-balance check there.
 func VaultPurgeGraceBlocks(networkMode string) uint32 {
 	switch networkMode {
 	case Testnet3, Testnet4, Regtest:
