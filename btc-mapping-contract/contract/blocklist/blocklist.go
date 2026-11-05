@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"math"
+	"math/big"
 	"strconv"
 
 	"btc-mapping-contract/contract/constants"
@@ -153,6 +154,14 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 			return 0, ce.NewContractError(ce.ErrInput, "block sequence incorrect")
 		}
 
+		// BTC-HDR-1: CheckProofOfWork above only asserts the hash meets the
+		// header's OWN declared target, and that the target is no easier than
+		// PowLimit. It never asks whether that target is the one the retarget
+		// rules require, so a header claiming minimum difficulty passed.
+		if err := validateDifficulty(networkParams, blockHeight, &blockHeader, &lastBlockHeader); err != nil {
+			return 0, err
+		}
+
 		// store raw 80 bytes (not hex)
 		sdk.StateSetObject(
 			constants.BlockPrefix+strconv.FormatUint(uint64(blockHeight), 10),
@@ -165,6 +174,170 @@ func HandleAddBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uint32,
 	PruneOldHeaders(lastHeight)
 
 	return lastHeight, nil
+}
+
+// validateDifficulty enforces Bitcoin's difficulty rules on an incoming header
+// (BTC-HDR-1).
+//
+// THE GAP. blockchain.CheckProofOfWork answers only "does this hash meet the
+// target this header declares, and is that target no easier than PowLimit?".
+// Both are true of a header mined at MINIMUM difficulty. Nothing asked whether
+// the declared target is the one the retarget schedule actually requires, so
+// the only thing standing between the contract and a fabricated chain was the
+// 2/3 oracle quorum. That matters because the header chain is what SPV deposit
+// proofs are checked against: a cheap fake chain mints unbacked wrapped BTC,
+// and the amount is bounded only by the pool depth it is swapped into -- which
+// makes this the amplifier that turns an oracle compromise into an unbounded
+// loss rather than a bounded one.
+//
+// THE RULES, which are entirely local and need no chain walk:
+//
+//   - Between retargets (2015 of every 2016 blocks) nBits must be IDENTICAL to
+//     the parent's. This single check is what kills the attack: difficulty can
+//     then only ease at a boundary, and only by RetargetAdjustmentFactor (4x),
+//     so walking mainnet difficulty down to the minimum needs ~23 consecutive
+//     retargets -- ~46,000 blocks, each still mined at the prevailing (high)
+//     difficulty. Computationally out of reach.
+//   - At a boundary, nBits must equal the value the retarget formula produces
+//     from the period's first block. Verified against real mainnet history
+//     before being written: at height 973,728 the formula reproduces the live
+//     chain's 0x1701e5ac exactly (see the difficulty tests).
+//
+// Test networks are exempt because ReduceMinDifficulty is true for them: the
+// 20-minute rule lets a testnet/regtest block legitimately carry minimum
+// difficulty, so "nBits unchanged" is simply not a rule there. Mainnet is the
+// only network the contract uses that has ReduceMinDifficulty false, and it is
+// the only one holding funds.
+func validateDifficulty(
+	networkParams *chaincfg.Params,
+	blockHeight uint32,
+	blockHeader *wire.BlockHeader,
+	lastBlockHeader *wire.BlockHeader,
+) error {
+	if networkParams.ReduceMinDifficulty {
+		return nil
+	}
+	interval := retargetInterval(networkParams)
+	if interval == 0 {
+		return nil
+	}
+
+	if blockHeight%interval != 0 {
+		if blockHeader.Bits != lastBlockHeader.Bits {
+			return ce.NewContractError(
+				ce.ErrInput,
+				"block "+strconv.FormatUint(uint64(blockHeight), 10)+
+					" changes difficulty outside a retarget boundary: bits "+
+					strconv.FormatUint(uint64(blockHeader.Bits), 16)+" != parent "+
+					strconv.FormatUint(uint64(lastBlockHeader.Bits), 16),
+			)
+		}
+		return nil
+	}
+
+	// Retarget boundary. Reject anything easier than the network floor up front
+	// (CheckProofOfWork covers this too, but this keeps the branch total).
+	newTarget := blockchain.CompactToBig(blockHeader.Bits)
+	if newTarget.Sign() <= 0 || newTarget.Cmp(networkParams.PowLimit) > 0 {
+		return ce.NewContractError(
+			ce.ErrInput,
+			"block "+strconv.FormatUint(uint64(blockHeight), 10)+" retarget target out of range",
+		)
+	}
+
+	// The period's first block is blockHeight-interval: with retention at 4608
+	// and the interval 2016 it is normally still in state.
+	if firstHeader, ok := loadHeaderAt(blockHeight - interval); ok {
+		expected := calcNextRequiredBits(networkParams, lastBlockHeader, firstHeader)
+		if blockHeader.Bits != expected {
+			return ce.NewContractError(
+				ce.ErrInput,
+				"block "+strconv.FormatUint(uint64(blockHeight), 10)+
+					" retarget bits "+strconv.FormatUint(uint64(blockHeader.Bits), 16)+
+					" != required "+strconv.FormatUint(uint64(expected), 16),
+			)
+		}
+		return nil
+	}
+
+	// The first header is gone (pruned, or the contract was seeded inside this
+	// period). Fall back to the protocol's own clamp rather than fail: the exact
+	// value cannot be recomputed, but the ADJUSTMENT can still be bounded, which
+	// is what keeps the walk-down attack infeasible. Refusing instead would stall
+	// the whole bridge at a boundary for a header that is almost certainly honest.
+	oldTarget := blockchain.CompactToBig(lastBlockHeader.Bits)
+	factor := big.NewInt(networkParams.RetargetAdjustmentFactor)
+	maxTarget := new(big.Int).Mul(oldTarget, factor)
+	if maxTarget.Cmp(networkParams.PowLimit) > 0 {
+		maxTarget.Set(networkParams.PowLimit)
+	}
+	minTarget := new(big.Int).Div(oldTarget, factor)
+	if newTarget.Cmp(maxTarget) > 0 || newTarget.Cmp(minTarget) < 0 {
+		return ce.NewContractError(
+			ce.ErrInput,
+			"block "+strconv.FormatUint(uint64(blockHeight), 10)+
+				" retarget exceeds the permitted "+strconv.FormatInt(networkParams.RetargetAdjustmentFactor, 10)+
+				"x adjustment (first header of the period unavailable)",
+		)
+	}
+	return nil
+}
+
+// retargetInterval is the number of blocks between difficulty retargets (2016
+// on mainnet), derived from the network params rather than hard-coded.
+func retargetInterval(networkParams *chaincfg.Params) uint32 {
+	if networkParams.TargetTimePerBlock <= 0 {
+		return 0
+	}
+	return uint32(networkParams.TargetTimespan / networkParams.TargetTimePerBlock)
+}
+
+// calcNextRequiredBits is Bitcoin's retarget formula: scale the previous
+// period's target by how long that period actually took against how long it
+// should have taken, clamped to a factor of RetargetAdjustmentFactor either way
+// and capped at PowLimit.
+//
+// `lastHeader` is the period's last block (the new block's parent) and
+// `firstHeader` its first, which for a new block at height H are H-1 and
+// H-interval. Matches Bitcoin Core's CalculateNextWorkRequired, and is
+// checked against real mainnet history in the tests.
+func calcNextRequiredBits(
+	networkParams *chaincfg.Params,
+	lastHeader *wire.BlockHeader,
+	firstHeader *wire.BlockHeader,
+) uint32 {
+	targetTimespan := int64(networkParams.TargetTimespan / 1e9) // ns -> s
+	actualTimespan := lastHeader.Timestamp.Unix() - firstHeader.Timestamp.Unix()
+
+	minTimespan := targetTimespan / networkParams.RetargetAdjustmentFactor
+	maxTimespan := targetTimespan * networkParams.RetargetAdjustmentFactor
+	if actualTimespan < minTimespan {
+		actualTimespan = minTimespan
+	} else if actualTimespan > maxTimespan {
+		actualTimespan = maxTimespan
+	}
+
+	newTarget := blockchain.CompactToBig(lastHeader.Bits)
+	newTarget.Mul(newTarget, big.NewInt(actualTimespan))
+	newTarget.Div(newTarget, big.NewInt(targetTimespan))
+	if newTarget.Cmp(networkParams.PowLimit) > 0 {
+		newTarget.Set(networkParams.PowLimit)
+	}
+	return blockchain.BigToCompact(newTarget)
+}
+
+// loadHeaderAt reads and decodes the stored 80-byte header at a height.
+// ok=false when no header is stored there (pruned, or below the seed height).
+func loadHeaderAt(height uint32) (*wire.BlockHeader, bool) {
+	raw := sdk.StateGetObject(constants.BlockPrefix + strconv.FormatUint(uint64(height), 10))
+	if raw == nil || *raw == "" {
+		return nil, false
+	}
+	var header wire.BlockHeader
+	if err := header.BtcDecode(bytes.NewReader([]byte(*raw)), wire.ProtocolVersion, wire.LatestEncoding); err != nil {
+		return nil, false
+	}
+	return &header, true
 }
 
 // PruneOldHeaders removes block headers beyond the retention window.
