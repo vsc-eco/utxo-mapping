@@ -28,3 +28,14 @@ var MockRouterWasm []byte
 //
 //go:embed mockdrainrouter/bin/mock_drain_router.wasm
 var MockDrainRouterWasm []byte
+
+// MockReentrantRouterWasm is the compiled RE-ENTRANT mock router used by the
+// MAP-CEI (15a) regression test. It calls straight back into a blob-writing
+// export of the mapping contract from inside its `execute` entrypoint — the one
+// instant when the contract's persisted state disagrees with its in-memory
+// state — and reports whether that re-entry was allowed through `amount_out`
+// ("1" = it got through, i.e. the guard is missing; "0" = refused).
+// Source: tests/mocks/mockreentrantrouter/main.go.
+//
+//go:embed mockreentrantrouter/bin/mock_reentrant_router.wasm
+var MockReentrantRouterWasm []byte

@@ -47,6 +47,63 @@ import (
 // real deposit is self-authorising — anyone may fund the reserve to un-wedge a rotation)
 // and NOT pause-gated (it moves no funds OUT and can only help; the operator must be able
 // to fund even during a pause so migration flows the instant it unpauses).
+// InitTopUpProvenanceFloor pins the TOPUP-REPLAY-1 floor the first time it is
+// called and is a no-op afterwards. Called from the addBlocks and seedBlocks
+// exports, so it self-initialises from the oracle's ordinary header relay
+// within one block of this code going live -- no migration and no operator
+// step, which matters because an owner-driven step would leave the window open
+// for however long the owner took.
+//
+// `tip` is the height addBlocks just wrote to LastHeight. Deliberately pinned
+// to the TIP and not tip-minus-a-grace-window: any grace is exactly the replay
+// window this closes. The cost is that a deposit confirmed shortly BEFORE
+// activation cannot fund the reserve, which is acceptable here -- FeeSupply is
+// 0, so no legitimate top-up is in flight, and funding the reserve again costs
+// a new deposit, not a stuck rotation.
+func InitTopUpProvenanceFloor(tip uint32) {
+	if v := sdk.StateGetObject(constants.V2TopUpFeeReserveFloorKey); v != nil && *v != "" {
+		return
+	}
+	sdk.StateSetObject(constants.V2TopUpFeeReserveFloorKey, strconv.FormatUint(uint64(tip), 10))
+	sdk.Log("feereserve|floor-init|height=" + strconv.FormatUint(uint64(tip), 10))
+}
+
+// topUpProvenanceFloor returns the pinned floor, and false when it is unset or
+// unparseable.
+//
+// An unset floor does NOT reject. That is a deliberate trade, and worth stating
+// because the instinct is the other way round:
+//
+//   - Pinning CANNOT be done lazily on the first top-up. A legitimate deposit is
+//     always some confirmations BELOW the tip (requireConfirmationDepth insists
+//     on it), so a floor pinned to the tip at that moment would reject the very
+//     deposit that triggered it, and every other already-confirmed one. The
+//     floor has to be pinned to the tip as of ACTIVATION, which is what the
+//     addBlocks hook gives.
+//   - So "unset" means "this code is live but the oracle has not relayed a
+//     header yet" -- at most one relay. Rejecting during it would break the
+//     NEVER-TERMINAL guarantee the whole file is built around (a fee-starved
+//     migration must always be un-wedgeable by adding BTC), to defend a window
+//     the attacker also has to win a race inside.
+//   - And the thing being defended is bounded: a replay credits FeeSupply for a
+//     coin genuinely sitting in the vault, leaves ActiveSupply/UserSupply
+//     untouched, and cannot re-index a coin already in the registry
+//     (outpointRegistered). It is an accounting fault, not a theft.
+//
+// Pre-upgrade deployments therefore behave exactly as before until their first
+// addBlocks, and are protected permanently after it, with no operator step.
+func topUpProvenanceFloor() (uint32, bool) {
+	raw := sdk.StateGetObject(constants.V2TopUpFeeReserveFloorKey)
+	if raw == nil || *raw == "" {
+		return 0, false
+	}
+	h, err := strconv.ParseUint(*raw, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(h), true
+}
+
 func (cs *ContractState) HandleTopUpFeeReserve(txData *VerificationRequest) error {
 	if txData == nil {
 		return ce.NewContractError(ce.ErrInput, "tx_data required")
@@ -111,6 +168,17 @@ func (cs *ContractState) HandleTopUpFeeReserve(txData *VerificationRequest) erro
 		return ce.NewContractError(ce.ErrInput, "fee-reserve tx is an abandoned migration sweep, not a deposit")
 	}
 
+	// TOPUP-REPLAY-1: the deposit must be confirmed at or above the provenance
+	// floor. Placed after the four vault-spend guards above deliberately -- they
+	// identify exactly WHY a tx is not a deposit, and a provenance refusal in
+	// front of them would mask that with a less useful message.
+	if floor, haveFloor := topUpProvenanceFloor(); haveFloor && txData.BlockHeight < floor {
+		return ce.NewContractError(ce.ErrInput,
+			"fee-reserve deposit at height "+strconv.FormatUint(uint64(txData.BlockHeight), 10)+
+				" predates the provenance floor "+strconv.FormatUint(uint64(floor), 10)+
+				"; fund the reserve with a new deposit")
+	}
+
 	// Derive the untagged address of every generation that can still hold funds (the same
 	// set the deposit path matches: depositAddressGenerations, active first) and tag each
 	// matched output with the generation it paid, so it is a normal, spendable UTXO of that
@@ -140,6 +208,18 @@ func (cs *ContractState) HandleTopUpFeeReserve(txData *VerificationRequest) erro
 	observedList := loadObservedList(txData.BlockHeight)
 	var credited int64
 	changed := false
+	dustSkipped := false
+	// 18o: the V-1 dust floor applies here too. The deposit path (mapping.go
+	// indexOutputs) skips a sub-MinDepositSats output once a superseded
+	// generation exists, because such an output can never be swept economically
+	// and, sitting on a superseded generation, permanently deadlocks rotation
+	// (NN#3 - AnyFundedSupersededGen never sees that generation empty). This
+	// path had no floor at all, and it is strictly MORE exposed than the
+	// deposit path: STRAND-1 made it tag outputs with whichever generation
+	// they paid, retiring and draining included, so dust routed through a
+	// top-up lands precisely on the generations where it wedges the drain.
+	// Same gate as the deposit path, so a pre-rotation deploy is unaffected.
+	enforceDustFloor := hasSupersededGen(cs.Vaults)
 	for index, txOut := range msgTx.TxOut {
 		_, addrs, _, aerr := txscript.ExtractPkScriptAddrs(txOut.PkScript, cs.NetworkParams)
 		if aerr != nil {
@@ -155,6 +235,17 @@ func (cs *ContractState) HandleTopUpFeeReserve(txData *VerificationRequest) erro
 		// Cap at the uint48 registry width exactly like the deposit/change/migration paths.
 		if txOut.Value > constants.MaxUtxoAmount {
 			return ce.NewContractError(ce.ErrInput, "fee-reserve deposit output exceeds maximum utxo amount")
+		}
+		// 18o: per-output SKIP, not a tx abort - mirroring the deposit path, so a
+		// top-up carrying one fundable and one dust output still credits the
+		// fundable one. That keeps this op NEVER-TERMINAL: funding the reserve
+		// above the floor always works, so dust can never brick a rotation here
+		// either by being indexed or by being rejected.
+		if enforceDustFloor && txOut.Value < constants.MinDepositSats {
+			sdk.Log("feereserve|dust-skip|txid=" + txId + "|vout=" + strconv.Itoa(index) +
+				"|sats=" + strconv.FormatInt(txOut.Value, 10))
+			dustSkipped = true
+			continue
 		}
 		entry, eerr := makeObservedEntry(txId, uint32(index))
 		if eerr != nil {
@@ -195,6 +286,13 @@ func (cs *ContractState) HandleTopUpFeeReserve(txData *VerificationRequest) erro
 		changed = true
 	}
 	if !changed {
+		if dustSkipped {
+			// Distinguish "wrong address" from "right address, below the floor",
+			// or the operator cannot tell why a real deposit credited nothing.
+			return ce.NewContractError(ce.ErrInput,
+				"fee-reserve output(s) pay a vault address but are below the minimum deposit of "+
+					strconv.FormatInt(constants.MinDepositSats, 10)+" sats")
+		}
 		return ce.NewContractError(ce.ErrInput, "no output pays a vault fee-reserve address")
 	}
 	saveObservedList(txData.BlockHeight, observedList)

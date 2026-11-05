@@ -92,11 +92,34 @@ func requireOwnerActive(env sdk.Env) {
 // already-authorized spend), so a compromised operator key cannot move funds
 // anywhere except toward the successor vault the committee already elected.
 func checkOperator() {
-	caller := sdk.GetEnv().Caller.String()
+	env := sdk.GetEnv()
+	caller := env.Caller.String()
 	if caller == *sdk.GetEnvKey("contract.owner") {
+		// 18p: this was the only one of the four gates that let the owner
+		// through without checking active authority -- checkOwner, checkAdmin
+		// and checkOracle all call requireOwnerActive on their owner branch.
+		// A posting-only signature makes the owner the Caller, so a posting
+		// key alone could drive migrateVault, retireVault, writeOffDust and
+		// redriveSpend. Posting keys are handled far more loosely than active
+		// keys (they sign ordinary social ops), so this materially widened the
+		// blast radius of a leaked key even though the ops themselves are
+		// self-validating.
+		requireOwnerActive(env)
 		return
 	}
 	if op := sdk.StateGetObject(constants.VaultOperatorKey); op != nil && *op != "" && caller == *op {
+		// The operator is TYPICALLY a did:pkh identity, which has no posting
+		// variant -- such a DID never appears in a Hive tx's required_auths at
+		// all, so requiring active auth unconditionally here would break the
+		// operator path outright. But the operator may also be set to a hive:
+		// account (setVaultOperator accepts one), and that configuration IS
+		// exposed to exactly the gap closed above. So the check applies to
+		// hive: operators only.
+		if strings.HasPrefix(*op, "hive:") && !slices.Contains(env.Sender.RequiredAuths, env.Caller) {
+			ce.CustomAbort(
+				ce.NewContractError(ce.ErrNoPermission, "vault operator action requires active authority (posting authority cannot authorize it)"),
+			)
+		}
 		return
 	}
 	ce.CustomAbort(
@@ -112,6 +135,19 @@ func checkOwner() {
 		)
 	}
 	requireOwnerActive(env)
+}
+
+// checkNoReentry refuses an export that writes any of the eight whole-state
+// blobs while one of our own external contract calls is still outstanding
+// (MAP-CEI / 15a). Applied to exactly the ten exports that call SaveToState;
+// see constants.ExternalCallGuardKey for why the token exports are left open.
+func checkNoReentry(op string) {
+	if mapping.InExternalCallGuard() {
+		ce.CustomAbort(
+			ce.NewContractError(ce.ErrTransaction,
+				"re-entrant "+op+" refused: an external contract call from this contract is still in progress"),
+		)
+	}
 }
 
 func checkNotPaused() {
@@ -145,6 +181,10 @@ func SeedBlocks(blockSeedInput *string) *string {
 	if v := sdk.StateGetObject(constants.MigrateVersionKey); v == nil || *v == "" {
 		sdk.StateSetObject(constants.MigrateVersionKey, constants.LatestMigrateVersion)
 	}
+
+	// TOPUP-REPLAY-1: a fresh deploy pins the floor at its seed height, so it
+	// never has an unset-floor window at all.
+	mapping.InitTopUpProvenanceFloor(newLastHeight)
 
 	outMsg := "last height: " + strconv.FormatUint(uint64(newLastHeight), 10)
 	return &outMsg
@@ -248,6 +288,10 @@ func AddBlocks(addBlocksInput *string) *string {
 
 	blocklist.LastHeightToState(lastHeight)
 
+	// TOPUP-REPLAY-1: pin the fee-reserve provenance floor on the first relay
+	// after this code goes live. No-op once set.
+	mapping.InitTopUpProvenanceFloor(lastHeight)
+
 	// update base fee rate, do this after blocks because blocks more likely to fail
 	systemSupply, err := mapping.SupplyFromState()
 	if err != nil {
@@ -316,6 +360,7 @@ func ReplaceBlocks(input *string) *string {
 
 //go:wasmexport map
 func Map(incomingTx *string) *string {
+	checkNoReentry("map")
 	checkNotPaused()
 	var mapInstructions mapping.MapParams
 	err := tinyjson.Unmarshal([]byte(*incomingTx), &mapInstructions)
@@ -386,6 +431,11 @@ func UnmapFrom(tx *string) *string {
 }
 
 func doUnmap(instructions *mapping.TransferParams) {
+	// Guarded here rather than on the two exports above: `unmap` and
+	// `unmapFrom` both funnel through this helper, and it is the thing that
+	// calls SaveToState, so one check covers both and cannot drift from them.
+	checkNoReentry("unmap")
+
 	checkNotPaused()
 	if len(instructions.To) < 26 {
 		ce.CustomAbort(
@@ -420,6 +470,7 @@ func doUnmap(instructions *mapping.TransferParams) {
 //
 //go:wasmexport drainUnmapQueue
 func DrainUnmapQueue(_ *string) *string {
+	checkNoReentry("drainUnmapQueue")
 	checkNotPaused()
 	publicKeys, err := loadPublicKeys()
 	if err != nil {
@@ -443,6 +494,7 @@ func DrainUnmapQueue(_ *string) *string {
 //
 //go:wasmexport cancelUnmap
 func CancelUnmap(input *string) *string {
+	checkNoReentry("cancelUnmap")
 	if input == nil || *input == "" {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "cancelUnmap requires the queued withdrawal's sequence number"))
 	}
@@ -602,6 +654,7 @@ func DecreaseAllowance(input *string) *string {
 //
 //go:wasmexport confirmSpend
 func ConfirmSpend(input *string) *string {
+	checkNoReentry("confirmSpend")
 	// BRK-4b (brick council FS-1/V-8): the pause check is applied INSIDE
 	// HandleConfirmSpend, which EXEMPTS a confirm of an already-pending spend (in
 	// the TxSpends registry) — reconciling an already-authorized, already-broadcast
@@ -687,6 +740,7 @@ func ClearTheftHalt(_ *string) *string {
 
 //go:wasmexport topUpFeeReserve
 func TopUpFeeReserve(input *string) *string {
+	checkNoReentry("topUpFeeReserve")
 	// Operator-funded migration fee reserve (council FeeSupply lens). PERMISSIONLESS +
 	// NOT pause-gated: it only SPV-proves a real BTC deposit to the active vault and
 	// credits FeeSupply by it (conservation-preserving; moves no funds OUT), so anyone may
@@ -1122,6 +1176,7 @@ func DiscardPendingKey(_ *string) *string {
 
 //go:wasmexport migrateVault
 func MigrateVault(_ *string) *string {
+	checkNoReentry("migrateVault")
 	// Owner or the appointed vault operator (see checkOperator): an operational op
 	// an off-chain driver must be able to call. NN#1 still constrains the destination
 	// regardless of caller.
@@ -1156,6 +1211,7 @@ func MigrateVault(_ *string) *string {
 
 //go:wasmexport redriveSpend
 func RedriveSpend(input *string) *string {
+	checkNoReentry("redriveSpend")
 	// L7-01: owner or the appointed vault operator (see checkOperator), like
 	// migrateVault. A re-drive can only RAISE the fee on an already-authorized spend,
 	// so it is safe for the operator to trigger.
@@ -1188,6 +1244,7 @@ func RedriveSpend(input *string) *string {
 
 //go:wasmexport abandonSweep
 func AbandonSweep(input *string) *string {
+	checkNoReentry("abandonSweep")
 	// H-2 (VR2-27): PERMISSIONLESS. Every condition is on-chain state (a single legacy
 	// input, re-driven at least once, unconfirmed SweepAbandonBlocks after its latest build,
 	// the write-off covered by the reserve surplus), so no trusted caller is needed, the
@@ -1251,6 +1308,7 @@ func RetireVault(_ *string) *string {
 
 //go:wasmexport writeOffDust
 func WriteOffDust(_ *string) *string {
+	checkNoReentry("writeOffDust")
 	// Owner or the appointed vault operator (see checkOperator). Gated on provable
 	// un-sweepability inside HandleWriteOffDust, so the operator cannot write off a
 	// residual that could still be swept economically.
