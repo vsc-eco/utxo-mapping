@@ -5,7 +5,6 @@ import (
 	ce "btc-mapping-contract/contract/contracterrors"
 	"btc-mapping-contract/sdk"
 	"bytes"
-	"encoding/hex"
 	"strconv"
 
 	"github.com/btcsuite/btcd/wire"
@@ -66,12 +65,12 @@ import (
 // never confirmed) is the pre-existing unmap delete-at-build gap, out of scope here. The
 // S5/M1.1b council must independently try to break this "no append-only needed" claim.
 func (cs *ContractState) HandleReportUnauthorizedSpend(txData *VerificationRequest) error {
-	if txData == nil || txData.RawTxHex == "" {
-		return ce.NewContractError(ce.ErrInput, "tx_data.raw_tx_hex required")
+	if txData == nil {
+		return ce.NewContractError(ce.ErrInput, "tx_data required")
 	}
-	rawTx, err := hex.DecodeString(txData.RawTxHex)
+	rawTx, err := txData.rawTx()
 	if err != nil {
-		return ce.WrapContractError(ce.ErrInput, err, "invalid raw tx hex")
+		return ce.WrapContractError(ce.ErrInput, err, "invalid raw tx")
 	}
 	// ★ NO CONFIRMATION-DEPTH GATE HERE, DELIBERATELY. Do not "fix" this by adding
 	// requireConfirmationDepth to match map / confirmSpend / topUpFeeReserve (VR2-07,

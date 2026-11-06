@@ -1,6 +1,9 @@
 package mapping
 
 import (
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
 	"net/url"
 
 	"github.com/btcsuite/btcd/chaincfg"
@@ -15,10 +18,33 @@ type MapParams struct {
 
 //tinyjson:json
 type VerificationRequest struct {
-	BlockHeight    uint32 `json:"block_height"`
-	RawTxHex       string `json:"raw_tx_hex"`
+	BlockHeight uint32 `json:"block_height"`
+	RawTxHex    string `json:"raw_tx_hex"`
+	// RawTxB64 carries the transaction in base64 instead of raw_tx_hex; set one of
+	// the two (MAP-SIZE-1, mainnet 11-05). The node refuses a contract call whose
+	// payload passes 8,192 bytes (state-processing MAX_CONTRACT_PAYLOAD_SIZE), and
+	// raw_tx_hex doubles the transaction, so a deposit inside a batched exchange
+	// withdrawal (Uphold, 122 outputs, 4,100 bytes: a 9,040-byte map) could never be
+	// mapped. base64 of the transaction without its witness (the txid and the
+	// outputs are all a proof uses) fits about 170 outputs.
+	RawTxB64       string `json:"raw_tx_b64,omitempty"`
 	MerkleProofHex string `json:"merkle_proof_hex"` // array of byte arrays, each of which is guaranteed 32 bytes
 	TxIndex        uint32 `json:"tx_index"`         // position of the tx in the block
+}
+
+// rawTx returns the transaction from raw_tx_hex or raw_tx_b64 (MAP-SIZE-1). Either
+// serialization works, with or without the witness: the Merkle proof binds the txid,
+// which does not cover the witness.
+func (r *VerificationRequest) rawTx() ([]byte, error) {
+	switch {
+	case r.RawTxHex != "" && r.RawTxB64 != "":
+		return nil, errors.New("set raw_tx_hex or raw_tx_b64, not both")
+	case r.RawTxB64 != "":
+		return base64.StdEncoding.DecodeString(r.RawTxB64)
+	case r.RawTxHex != "":
+		return hex.DecodeString(r.RawTxHex)
+	}
+	return nil, errors.New("raw_tx_hex or raw_tx_b64 required")
 }
 
 type Deposit struct {

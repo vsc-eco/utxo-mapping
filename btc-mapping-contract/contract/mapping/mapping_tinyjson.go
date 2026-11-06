@@ -38,6 +38,8 @@ func tinyjsonA043f2bcDecodeBtcMappingContractContractMappingTinyjsonTmp(in *jlex
 			out.BlockHeight = uint32(in.Uint32())
 		case "raw_tx_hex":
 			out.RawTxHex = string(in.String())
+		case "raw_tx_b64":
+			out.RawTxB64 = string(in.String())
 		case "merkle_proof_hex":
 			out.MerkleProofHex = string(in.String())
 		case "tx_index":
@@ -65,6 +67,11 @@ func tinyjsonA043f2bcEncodeBtcMappingContractContractMappingTinyjsonTmp(out *jwr
 		const prefix string = ",\"raw_tx_hex\":"
 		out.RawString(prefix)
 		out.String(string(in.RawTxHex))
+	}
+	if in.RawTxB64 != "" {
+		const prefix string = ",\"raw_tx_b64\":"
+		out.RawString(prefix)
+		out.String(string(in.RawTxB64))
 	}
 	{
 		const prefix string = ",\"merkle_proof_hex\":"

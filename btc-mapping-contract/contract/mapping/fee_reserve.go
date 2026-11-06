@@ -5,7 +5,6 @@ import (
 	ce "btc-mapping-contract/contract/contracterrors"
 	"btc-mapping-contract/sdk"
 	"bytes"
-	"encoding/hex"
 	"strconv"
 
 	"github.com/btcsuite/btcd/txscript"
@@ -49,12 +48,12 @@ import (
 // and NOT pause-gated (it moves no funds OUT and can only help; the operator must be able
 // to fund even during a pause so migration flows the instant it unpauses).
 func (cs *ContractState) HandleTopUpFeeReserve(txData *VerificationRequest) error {
-	if txData == nil || txData.RawTxHex == "" {
-		return ce.NewContractError(ce.ErrInput, "tx_data.raw_tx_hex required")
+	if txData == nil {
+		return ce.NewContractError(ce.ErrInput, "tx_data required")
 	}
-	rawTx, err := hex.DecodeString(txData.RawTxHex)
+	rawTx, err := txData.rawTx()
 	if err != nil {
-		return ce.WrapContractError(ce.ErrInput, err, "invalid raw tx hex")
+		return ce.WrapContractError(ce.ErrInput, err, "invalid raw tx")
 	}
 	// VR2-25: this is the THIRD permissionless SPV-crediting path, and it needs the same
 	// maturity gate as its two siblings (HandleMap's deposit gate, HandleConfirmSpend's

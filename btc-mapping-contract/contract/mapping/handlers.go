@@ -4,7 +4,6 @@ import (
 	"btc-mapping-contract/contract/constants"
 	"btc-mapping-contract/sdk"
 	"bytes"
-	"encoding/hex"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,9 +16,9 @@ import (
 const MaxMerkleProofLength = 33 // 2^33 blocks > total BTC supply
 
 func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
-	rawTx, err := hex.DecodeString(txData.RawTxHex)
+	rawTx, err := txData.rawTx()
 	if err != nil {
-		return ce.WrapContractError(ce.ErrInvalidHex, err, "error decoding raw transaction hex")
+		return ce.WrapContractError(ce.ErrInvalidHex, err, "error decoding the raw transaction")
 	}
 	if err := verifyTransaction(txData, rawTx); err != nil {
 		return ce.Prepend(err, "error verifying tranasction")
@@ -292,6 +291,38 @@ type unmapPlan struct {
 	finalAmt       int64 // what leaves the payer's balance: amount (or sendAmount) + vscFee + true miner fee
 }
 
+// dustFreeDeductBuild is DUST-DEDUCT-1's second build for a deduct_fee withdrawal of
+// sel (amount less vscFee): coins selected for sel plus more than the dust limit, so
+// the leftover is a change output. ok is false when no such selection of at most
+// maxInputs coins exists or its build has no change; it writes no state.
+func (cs *ContractState) dustFreeDeductBuild(to, changeAddress string, sel int64, maxInputs int) (*unmapPlan, bool) {
+	target, err := safeAdd64(sel, dustThreshold+1)
+	if err != nil {
+		return nil, false
+	}
+	ids, total, _, err := cs.getInputUtxoIds(target)
+	if err != nil || len(ids) > maxInputs {
+		return nil, false
+	}
+	inputs, err := getInputUtxos(ids)
+	if err != nil {
+		return nil, false
+	}
+	est, err := cs.estimateFee(int64(len(ids)), sel, total)
+	if err != nil {
+		return nil, false
+	}
+	sendAmount, err := safeSubtract64(sel, est)
+	if err != nil || sendAmount <= dustThreshold {
+		return nil, false
+	}
+	tx, witnessScripts, btcFee, err := cs.buildSpendTransaction(inputs, total, to, changeAddress, sendAmount)
+	if err != nil || len(tx.TxOut) < 2 {
+		return nil, false
+	}
+	return &unmapPlan{inputIds: ids, inputUtxos: inputs, tx: tx, witnessScripts: witnessScripts, btcFee: btcFee, sendAmount: sendAmount}, true
+}
+
 // planUnmap selects inputs and builds the withdrawal. It writes no state. held reports
 // that the selection failed while coins were skipped only because they are held for now
 // (reserved by a spend in flight, or on a superseded generation awaiting its sweep), the
@@ -301,7 +332,6 @@ func (cs *ContractState) planUnmap(to string, amount, vscFee, utxoSelectionAmoun
 	if err != nil {
 		return nil, held, ce.Prepend(err, "error getting input utxos")
 	}
-
 	inputUtxos, err := getInputUtxos(inputUtxoIds)
 	if err != nil {
 		return nil, false, ce.Prepend(err, "error getting input utxos")
@@ -355,6 +385,26 @@ func (cs *ContractState) planUnmap(to string, amount, vscFee, utxoSelectionAmoun
 	)
 	if err != nil {
 		return nil, false, err
+	}
+	// DUST-DEDUCT-1 (mainnet 11-05: a 25 HIVE -> BTC swap failed 'balance 1468
+	// insufficient needs 1883'): with deduct_fee, a build without a change output
+	// burned the sub-dust leftover to the miner, and ACCT-1 charges it ON TOP of
+	// `amount` (there the debit became the whole 1,883-sat coin), so a caller holding
+	// exactly `amount` (the DEX router settling a swap output) could not pay and the
+	// swap reverted. Then coins are selected for more than the dust limit above the
+	// send and, when that build keeps a change output, it is used: the debit (vscFee +
+	// sendAmount + the size fee) is at most `amount` and the vault stays exactly
+	// backed. Only with no more inputs than the first build: an extra input costs RC a
+	// withdrawal that used to pass may not have. And only within max_fee: the change
+	// output adds to the size fee, so at a high fee rate the second build can pass a
+	// max_fee the first one met. Otherwise the first build stands.
+	if deductFee && len(tx.TxOut) == 1 {
+		if alt, ok := cs.dustFreeDeductBuild(to, changeAddress, utxoSelectionAmount, len(inputUtxoIds)); ok {
+			altTotal, err := safeAdd64(vscFee, alt.btcFee)
+			if err == nil && (maxFee == nil || altTotal <= *maxFee) {
+				inputUtxoIds, inputUtxos, tx, witnessScripts, btcFee, sendAmount = alt.inputIds, alt.inputUtxos, alt.tx, alt.witnessScripts, alt.btcFee, alt.sendAmount
+			}
+		}
 	}
 
 	totalFee, err := safeAdd64(vscFee, btcFee)
@@ -559,9 +609,9 @@ func (cs *ContractState) requireConfirmationDepth(minedHeight uint32, what strin
 // to a block header already accepted by the contract. Without a valid proof the
 // call reverts, so no authorization check is needed.
 func (cs *ContractState) HandleConfirmSpend(txData *VerificationRequest, indices []uint32) error {
-	rawTx, err := hex.DecodeString(txData.RawTxHex)
+	rawTx, err := txData.rawTx()
 	if err != nil {
-		return ce.WrapContractError(ce.ErrInput, err, "invalid raw tx hex")
+		return ce.WrapContractError(ce.ErrInput, err, "invalid raw tx")
 	}
 	if err := verifyTransaction(txData, rawTx); err != nil {
 		return ce.Prepend(err, "error verifying transaction")

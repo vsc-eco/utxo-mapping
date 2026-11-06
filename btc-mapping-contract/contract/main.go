@@ -612,8 +612,11 @@ func ConfirmSpend(input *string) *string {
 	if err != nil {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
 	}
-	if params.TxData == nil || params.TxData.RawTxHex == "" {
-		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "tx_data.raw_tx_hex required"))
+	// MAP-SIZE-1: either encoding (the handler decodes it and refuses both at once). A
+	// vault spend of more than ~15 coins (a sweep: up to MaxMigrationInputs) passes the
+	// node's 8 KB payload cap in hex, so it can be proven only in raw_tx_b64.
+	if params.TxData == nil || (params.TxData.RawTxHex == "" && params.TxData.RawTxB64 == "") {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "tx_data.raw_tx_hex or tx_data.raw_tx_b64 required"))
 	}
 
 	publicKeys, err := loadPublicKeys()
@@ -651,8 +654,11 @@ func ReportUnauthorizedSpend(input *string) *string {
 	if err != nil {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
 	}
-	if params.TxData == nil || params.TxData.RawTxHex == "" {
-		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "tx_data.raw_tx_hex required"))
+	// MAP-SIZE-1: either encoding (the handler decodes it and refuses both at once). A
+	// vault spend of more than ~15 coins (a sweep: up to MaxMigrationInputs) passes the
+	// node's 8 KB payload cap in hex, so it can be proven only in raw_tx_b64.
+	if params.TxData == nil || (params.TxData.RawTxHex == "" && params.TxData.RawTxB64 == "") {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "tx_data.raw_tx_hex or tx_data.raw_tx_b64 required"))
 	}
 	publicKeys, err := loadPublicKeys()
 	if err != nil {
@@ -693,8 +699,11 @@ func TopUpFeeReserve(input *string) *string {
 	if err != nil {
 		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
 	}
-	if params.TxData == nil || params.TxData.RawTxHex == "" {
-		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "tx_data.raw_tx_hex required"))
+	// MAP-SIZE-1: either encoding (the handler decodes it and refuses both at once). A
+	// vault spend of more than ~15 coins (a sweep: up to MaxMigrationInputs) passes the
+	// node's 8 KB payload cap in hex, so it can be proven only in raw_tx_b64.
+	if params.TxData == nil || (params.TxData.RawTxHex == "" && params.TxData.RawTxB64 == "") {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "tx_data.raw_tx_hex or tx_data.raw_tx_b64 required"))
 	}
 	publicKeys, err := loadPublicKeys()
 	if err != nil {
