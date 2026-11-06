@@ -247,8 +247,15 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 			ms.UtxoList = append(ms.UtxoList, UtxoRegistryEntry{Id: utxoInternalId, Amount: utxo.Amount})
 			saveUtxo(utxoInternalId, &utxo)
 
-			// Mark observed
+			// Mark observed, and PERSIST it before the switch below, which is
+			// the only thing in this function that can call another contract
+			// (15a). Defence in depth behind the guard: the dedup check that
+			// protects this output from being credited twice reads STATE, so
+			// leaving the entry in memory until after the loop is what made a
+			// re-entrant map able to credit it again. Writing it now means the
+			// window does not depend on the guard being correct.
 			observedList = append(observedList, entry)
+			saveObservedList(blockHeight, observedList)
 
 			sdk.Log(createMapLog(from, metadata.Recipient, utxo.Amount))
 			switch metadata.Type {
@@ -320,7 +327,12 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 				// (Requires consensus version >= 0.2.0. Below it, Try is ignored and a
 				// reverting swap traps as before — the legacy strand-on-permanent-
 				// failure behaviour, until the network activates the feature.)
+				// 15a: refuse re-entry into any blob-writing export for the
+				// duration of this call. The router may still pull its
+				// allowance through transferFrom, which touches no blob.
+				enterExternalCall()
 				res := sdk.TryContractCall(routerId, "execute", string(instrJson), nil)
+				exitExternalCall()
 				// PER-SWAP PROVENANCE: capture how much of THIS swap's allowance the
 				// router did NOT consume, BEFORE clearing it. checkAndDeductBalance
 				// decrements the allowance on every third-party pull, so the remainder
@@ -405,10 +417,11 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 		}
 	}
 
-	// Persist the observed list for this block height
-	if len(observedList) > 0 {
-		saveObservedList(blockHeight, observedList)
-	}
+	// 15a: the observed list is NOT written back here any more. Each entry is
+	// persisted at the point it is appended, above. Re-writing the whole
+	// in-memory copy after the loop would also re-write it after the external
+	// call, so any entry a re-entrant frame had added to state would be erased
+	// by this frame's older snapshot -- the lost-update half of MAP-CEI.
 
 	if totalMapped != 0 {
 		newActive, err := safeAdd64(ms.Supply.ActiveSupply, totalMapped)

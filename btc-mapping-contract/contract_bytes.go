@@ -16,6 +16,10 @@ var (
 	Testnet4Wasm []byte
 	Testnet3Wasm []byte
 	RegtestWasm  []byte
+	// MainnetWasm is needed by the BTC-HDR-1 difficulty tests: mainnet is the
+	// only network the contract builds for with ReduceMinDifficulty false, so
+	// it is the only one where the retarget rules are enforced at all.
+	MainnetWasm []byte
 )
 
 func init() {
@@ -23,6 +27,7 @@ func init() {
 	Testnet4Wasm, _ = loadWasmFile("testnet4.wasm")
 	Testnet3Wasm, _ = loadWasmFile("testnet3.wasm")
 	RegtestWasm, _ = loadWasmFile("regtest.wasm")
+	MainnetWasm, _ = loadWasmFile("mainnet.wasm")
 }
 
 // loadWasmFile reads a WASM file from the embedded artifacts directory

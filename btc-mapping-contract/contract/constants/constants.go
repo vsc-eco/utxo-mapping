@@ -321,6 +321,57 @@ const AllowancePrefix = "q" + AllowanceDelimiter
 const PausedKey = "paused"     // "1" when contract is paused, absent/empty when active
 const MigrateVersionKey = "mv" // current migration version (decimal string)
 
+// V2TopUpFeeReserveFloorKey ("v2h") is the BTC height at or above which a
+// topUpFeeReserve deposit must be confirmed (TOPUP-REPLAY-1).
+//
+// topUpFeeReserve is permissionless by design, and dedups a given output via
+// the shared observed list. fee_reserve.go's own comment leaned on pruning as
+// the outer bound on a replay: "once the block header is pruned the deposit can
+// no longer be SPV-verified at all, so a replay outside the retention window is
+// blocked even without the observed entry". That bound is gone. Raising
+// MaxBlockRetention from 1080 to 4608 pushed retainFrom BELOW the live prune
+// floor, so PruneOldHeaders returns 0 and NO header is pruned for roughly 24
+// days -- the retention window stopped closing behind us, and with it the only
+// thing bounding how far back a never-observed vault-paying output can be
+// dredged up and submitted as a top-up.
+//
+// So the bound is now explicit rather than a side effect of pruning. The floor
+// is pinned ONCE, to the chain tip at the first addBlocks after this code goes
+// live (LastHeightToState's caller sets it), which needs no operator action and
+// lands within a block relay of activation. Every pre-upgrade deposit is then
+// permanently out of reach regardless of what pruning does, and no backfill is
+// required -- unlike a tombstone scheme, which depends on observed entries that
+// v1 never wrote. An unset floor REJECTS; see topUpProvenanceFloor.
+const V2TopUpFeeReserveFloorKey = "v2h"
+
+// ExternalCallGuardKey ("rg") is set for the duration of the ONE external
+// contract call this contract makes -- the ingress-swap TryContractCall in
+// mapping.go -- so a re-entrant call from the router can be refused
+// (MAP-CEI / 15a).
+//
+// The window is real and the damage is twofold. During TryContractCall the
+// in-memory ContractState has already registered the deposit's UTXO and
+// credited supply, but NOTHING is persisted: the observed list is written after
+// the loop, and the eight whole-state blobs (UTXO registry, pool counters, tx
+// spends, migration sweeps, supply, vault registry, next/active gen) are
+// written by SaveToState after the handler returns. So a router that calls back
+// into `map` with the same output sees an observed list in state that does not
+// yet contain it, and credits the SAME real BTC a second time -- unbacked
+// wrapped BTC. And a router that calls back into any of the other nine
+// blob-writing exports has its writes silently ERASED moments later, when the
+// outer frame's SaveToState overwrites all eight blobs from its stale snapshot,
+// while the account-balance credits that same inner call made (written straight
+// to "a-" keys, not via SaveToState) survive -- which breaks
+// Sigma(UTXO) == ActiveSupply + FeeSupply in the mint direction.
+//
+// Deliberately NOT a blanket lock. The router is SUPPOSED to re-enter: the
+// allowance granted before the call exists so it can pull the credited tokens
+// back through transferFrom. HandleTransfer touches only balances and
+// allowances, never the eight blobs, so the token path stays open and only the
+// ten SaveToState exports are gated. A lock on everything would break the very
+// swap this code is executing.
+const ExternalCallGuardKey = "rg"
+
 // BtcTheftHaltKey (M1.1b) is the DETERMINISTIC BTC-keysign theft-halt flag: "1" once
 // reportUnauthorizedSpend has SPV-proven an unauthorised spend of a registered vault UTXO,
 // absent otherwise. Set by the permissionless auto-trip, cleared only by an owner
