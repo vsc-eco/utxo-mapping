@@ -469,6 +469,18 @@ func HandleReplaceBlock(rawHeader BlockHeaderBytes, networkMode string) (uint32,
 		)
 	}
 
+	// BTC-HDR-1 also applies to a REPLACEMENT. The PoW check above proves only
+	// that the header beats networkParams.PowLimit -- the network MINIMUM -- so
+	// without this a minimum-difficulty header that addBlocks refuses is
+	// accepted here as the tip, and mid-period addBlocks afterwards only compares
+	// bits against that poisoned parent, so the forgery sticks. The add path had
+	// this check and the replace paths did not: the same guard missing from the
+	// second of two entry points into one store. Reported by lordbutterfly
+	// reviewing #39.
+	if err := validateDifficulty(networkParams, lastHeight, &newHeader, &prevHeader); err != nil {
+		return 0, err
+	}
+
 	// overwrite the tip
 	sdk.StateSetObject(
 		constants.BlockPrefix+strconv.FormatUint(uint64(lastHeight), 10),
@@ -545,6 +557,10 @@ func HandleReplaceBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uin
 		)
 	}
 	prevHash := anchorHeader.BlockHash()
+	// BTC-HDR-1: the difficulty check needs the PARENT header, not just its
+	// hash, so carry it alongside prevHash. For the first replacement that is
+	// the anchor; after that it is the header this loop just validated.
+	prevHeader := anchorHeader
 
 	// Validate and overwrite each header in order.
 	powLimit := networkParams.PowLimit
@@ -576,6 +592,13 @@ func HandleReplaceBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uin
 			)
 		}
 
+		// BTC-HDR-1, as in HandleReplaceBlock above: PoW only proves the header
+		// beats the network minimum, so the difficulty schedule has to be
+		// checked here too or a replacement is the way around it.
+		if err := validateDifficulty(networkParams, height, &hdr, &prevHeader); err != nil {
+			return 0, err
+		}
+
 		sdk.StateSetObject(
 			constants.BlockPrefix+strconv.FormatUint(uint64(height), 10),
 			string(headerBytes[:]),
@@ -585,6 +608,7 @@ func HandleReplaceBlocks(rawHeaders []BlockHeaderBytes, networkMode string) (uin
 		// technically persist after replacement, but the oracle waits for 2 confirmations and a 3+ block
 		// reorg is unprecendented on BTC mainnet, so very low likelihood of encountering this guard at all
 		prevHash = hdr.BlockHash()
+		prevHeader = hdr
 	}
 
 	return lastHeight, nil

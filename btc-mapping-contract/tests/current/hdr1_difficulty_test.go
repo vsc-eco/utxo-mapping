@@ -143,3 +143,98 @@ func TestHDR1_Wasm_MidPeriodDifficultyChangeRejected(t *testing.T) {
 			"a refused header must not advance the tip")
 	})
 }
+
+// replaceBlock drives the replaceBlock export. Its payload is a bare 80-byte
+// header in hex, not JSON, and checkAdmin admits constants.OracleAddress — the
+// same role that relays through addBlocks.
+func replaceBlock(t *testing.T, ct *test_utils.ContractTest, contractId, headerHex, txId string) test_utils.ContractTestCallResult {
+	t.Helper()
+	return ct.Call(stateEngine.TxVscCallContract{
+		Self: stateEngine.TxSelf{
+			TxId: txId, BlockId: "block:hdr1-replace", Index: 0, OpIndex: 0,
+			Timestamp: "2026-11-07T00:00:00", RequiredAuths: []string{btcOracleCaller},
+			RequiredPostingAuths: []string{},
+		},
+		ContractId: contractId, Action: "replaceBlock",
+		Payload: []byte(headerHex),
+		RcLimit: 10000, Intents: []contracts.Intent{}, Caller: btcOracleCaller,
+	})
+}
+
+// BTC-HDR-1 on the REPLACE path.
+//
+// validateDifficulty was originally called from HandleAddBlocks and nowhere
+// else, so the guard had one entry point and the store had two. replaceBlock
+// checks CheckProofOfWork against networkParams.PowLimit — the network MINIMUM —
+// plus chain linkage, and nothing about the retarget schedule, so a
+// minimum-difficulty header that addBlocks refuses was accepted as the tip; a
+// mid-period addBlocks afterwards only compares bits against that poisoned
+// parent, so the forgery sticks. Reported by lordbutterfly reviewing #39.
+//
+// Severity, stated honestly: replaceBlock is checkAdmin-gated, so this is not a
+// permissionless forgery. checkAdmin admits constants.OracleAddress, which is
+// the same role that relays headers through addBlocks — i.e. exactly the actor
+// the add-path check exists to constrain — so the guard belongs on both paths,
+// but a reader should not read this as open to anyone.
+//
+// The forgeries are the ones already committed for the add-path tests: MINED at
+// minimum difficulty against real mainnet parents, because rewriting nBits
+// changes the hash and the header then dies on PoW without ever reaching the
+// difficulty branch.
+func TestHDR1_Wasm_ReplacePathAlsoChecksDifficulty(t *testing.T) {
+	// CONTROL. Replacing with the REAL header must still succeed, or a refusal
+	// below would prove only that replaceBlock is broken.
+	t.Run("the real header is accepted", func(t *testing.T) {
+		const id = "hdr1_replace_ok"
+		ct := newMainnetBlocklistCT(t, id, "974001", map[string]string{
+			"974000": mainnetHdr974000, // parent
+			"974001": mainnetHdr974001, // the block being replaced
+		})
+		r := replaceBlock(t, ct, id, mainnetHdr974001, "hdr1-replace-ok")
+		require.True(t, r.Success,
+			"replacing with the real mainnet header must be accepted; err=%q msg=%q", r.Err, r.ErrMsg)
+	})
+
+	t.Run("a minimum-difficulty replacement is refused mid-period", func(t *testing.T) {
+		const id = "hdr1_replace_forged_mid"
+		ct := newMainnetBlocklistCT(t, id, "974001", map[string]string{
+			"974000": mainnetHdr974000,
+			"974001": mainnetHdr974001,
+		})
+		r := replaceBlock(t, ct, id, minedForgery974001, "hdr1-replace-forged-mid")
+		require.False(t, r.Success,
+			"a mined minimum-difficulty replacement must be refused — this is BTC-HDR-1 on the replace path")
+		t.Logf("refused: err=%q msg=%q", r.Err, r.ErrMsg)
+
+		// The stored tip header must be untouched: a refused replacement that
+		// still overwrote state would be the same bug wearing an error message.
+		assert.Equal(t, decodeHex(t, mainnetHdr974001),
+			ct.StateGet(id, constants.BlockPrefix+"974001"),
+			"a refused replacement must leave the stored header as it was")
+	})
+
+	t.Run("a minimum-difficulty replacement is refused at a retarget boundary", func(t *testing.T) {
+		const id = "hdr1_replace_forged_boundary"
+		ct := newMainnetBlocklistCT(t, id, "973728", map[string]string{
+			"971712": mainnetHdr971712, // period's first block -> the exact check
+			"973727": mainnetHdr973727, // parent
+			"973728": mainnetHdr973728, // the block being replaced
+		})
+		r := replaceBlock(t, ct, id, minedForgery973728, "hdr1-replace-forged-boundary")
+		require.False(t, r.Success, "a minimum-difficulty retarget replacement must be refused")
+		t.Logf("refused: err=%q msg=%q", r.Err, r.ErrMsg)
+		assert.Equal(t, decodeHex(t, mainnetHdr973728),
+			ct.StateGet(id, constants.BlockPrefix+"973728"),
+			"a refused replacement must leave the stored header as it was")
+	})
+
+	// NOT PROVEN BY RUNNING: the multi-header replaceBlocks loop. The same
+	// validateDifficulty call is in it, carrying the parent header forward
+	// (anchor for the first, the previously validated header after that), but
+	// driving the loop needs TWO headers that chain to each other AND are both
+	// mined at minimum difficulty against real mainnet parents. The repo has two
+	// mined forgeries and neither chains to the other, and mining a chaining
+	// pair is ~4 minutes of CPU each. A one-header replaceBlocks call delegates
+	// to HandleReplaceBlock, so it would exercise the single path again and
+	// prove nothing about the loop. Code-read only; flagged rather than faked.
+}

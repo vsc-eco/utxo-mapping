@@ -11,7 +11,7 @@ toolchain go1.25.10
 // use .
 // replace vsc-node => path-to-local-node
 
-replace vsc-node => github.com/vsc-eco/go-vsc-node v0.0.0-20261101142645-b10d0fabd6f5
+replace vsc-node => github.com/vsc-eco/go-vsc-node v0.0.0-20261106001722-fd9f1b567403
 
 replace github.com/agl/ed25519 => github.com/binance-chain/edwards25519 v0.0.0-20200305024217-f36fc4b53d43
 

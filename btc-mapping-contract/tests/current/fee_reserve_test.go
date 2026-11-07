@@ -97,6 +97,16 @@ func newFeeReserveCT(t *testing.T, fx ConfirmSpendFixture, depth uint32) (*test_
 		string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
 	ct.StateSet(contractId, constants.BlockPrefix+strconv.FormatUint(uint64(fx.BlockHeight), 10), fx.BlockHeaderRaw)
 	ct.StateSet(contractId, constants.LastHeightKey, strconv.FormatUint(uint64(fx.BlockHeight)+uint64(depth), 10))
+	// TOPUP-REPLAY-1: pin the provenance floor at the fixture's own deposit
+	// height. An unset floor now REFUSES every top-up, and this helper builds
+	// state with StateSet rather than through addBlocks/seedBlocks, so nothing
+	// would pin one. A real chain always has a floor at or below any creditable
+	// deposit -- it is pinned by the first relay after activation, and a
+	// creditable deposit is mined after that -- so "pinned at the deposit's own
+	// height" is the realistic state, and the boundary (>= passes) is covered
+	// explicitly by TestTopUpProvenanceFloor_*. Tests that want the unset case
+	// clear this key themselves.
+	ct.StateSet(contractId, constants.V2TopUpFeeReserveFloorKey, strconv.FormatUint(uint64(fx.BlockHeight), 10))
 	seedActiveGen0(t, &ct, contractId, owner)
 	return &ct, contractId, owner
 }

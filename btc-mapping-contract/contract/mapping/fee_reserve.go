@@ -54,44 +54,64 @@ import (
 // step, which matters because an owner-driven step would leave the window open
 // for however long the owner took.
 //
-// `tip` is the height addBlocks just wrote to LastHeight. Deliberately pinned
-// to the TIP and not tip-minus-a-grace-window: any grace is exactly the replay
-// window this closes. The cost is that a deposit confirmed shortly BEFORE
-// activation cannot fund the reserve, which is acceptable here -- FeeSupply is
-// 0, so no legitimate top-up is in flight, and funding the reserve again costs
-// a new deposit, not a stuck rotation.
-func InitTopUpProvenanceFloor(tip uint32) {
+// `height` is the FIRST height the relay adds, not the batch tip. Pinning at the
+// tip stranded a deposit mined AFTER activation whenever the first relay carried
+// more than one header: tip 1000, deposit at 1001, relay adds 1001-1003, floor
+// 1003, and the deposit is refused as predating the floor -- permanently, since
+// nothing else credits it (lordbutterfly, reviewing #39). The first added height
+// is the earliest height this code could not already have seen, which is exactly
+// the bound wanted.
+//
+// Still no grace window below that: any grace is exactly the replay window this
+// closes. The remaining cost is that a deposit confirmed at or below the tip when
+// the update goes live cannot fund the reserve, so the reserve should not be
+// funded shortly before activation -- FeeSupply is 0 at that point, so no
+// legitimate top-up is in flight, and funding it again costs a new deposit
+// rather than a stuck rotation.
+func InitTopUpProvenanceFloor(height uint32) {
 	if v := sdk.StateGetObject(constants.V2TopUpFeeReserveFloorKey); v != nil && *v != "" {
 		return
 	}
-	sdk.StateSetObject(constants.V2TopUpFeeReserveFloorKey, strconv.FormatUint(uint64(tip), 10))
-	sdk.Log("feereserve|floor-init|height=" + strconv.FormatUint(uint64(tip), 10))
+	sdk.StateSetObject(constants.V2TopUpFeeReserveFloorKey, strconv.FormatUint(uint64(height), 10))
+	sdk.Log("feereserve|floor-init|height=" + strconv.FormatUint(uint64(height), 10))
 }
 
 // topUpProvenanceFloor returns the pinned floor, and false when it is unset or
 // unparseable.
 //
-// An unset floor does NOT reject. That is a deliberate trade, and worth stating
-// because the instinct is the other way round:
+// An unset floor REJECTS, and callers must treat !ok that way. This reverses an
+// earlier decision in this file; the original argument is kept below because it
+// is instructive about how it was wrong.
 //
-//   - Pinning CANNOT be done lazily on the first top-up. A legitimate deposit is
-//     always some confirmations BELOW the tip (requireConfirmationDepth insists
-//     on it), so a floor pinned to the tip at that moment would reject the very
-//     deposit that triggered it, and every other already-confirmed one. The
-//     floor has to be pinned to the tip as of ACTIVATION, which is what the
-//     addBlocks hook gives.
-//   - So "unset" means "this code is live but the oracle has not relayed a
-//     header yet" -- at most one relay. Rejecting during it would break the
-//     NEVER-TERMINAL guarantee the whole file is built around (a fee-starved
-//     migration must always be un-wedgeable by adding BTC), to defend a window
-//     the attacker also has to win a race inside.
-//   - And the thing being defended is bounded: a replay credits FeeSupply for a
-//     coin genuinely sitting in the vault, leaves ActiveSupply/UserSupply
-//     untouched, and cannot re-index a coin already in the registry
-//     (outpointRegistered). It is an accounting fault, not a theft.
+// Pinning still CANNOT be done lazily on the first top-up: a legitimate deposit
+// always sits some confirmations BELOW the tip (requireConfirmationDepth insists
+// on it), so a floor pinned at that moment would reject the very deposit that
+// triggered it. The floor is pinned by the first addBlocks after activation, so
+// "unset" means "this code is live and the oracle has not relayed yet".
 //
-// Pre-upgrade deployments therefore behave exactly as before until their first
-// addBlocks, and are protected permanently after it, with no operator step.
+// The original argument for ALLOWING during that window was that it is at most
+// one relay, that rejecting would dent the NEVER-TERMINAL guarantee this file is
+// built around, and that a replay is "an accounting fault, not a theft" because
+// outpointRegistered stops a coin being re-indexed. Two of those three premises
+// do not survive contact with mainnet (lordbutterfly, reviewing #39):
+//
+//   - The window is not short and needs no race won. Mainnet addBlocks gaps over
+//     the last 100 relays run a 10-minute median and a 74-minute maximum, and
+//     the activation height of a timelocked update is PUBLIC. An attacker picks
+//     the moment; it is not a race.
+//   - It is not merely an accounting fault. Replaying a real, already-spent coin
+//     (426a54eb:1, against mainnet state at activation, on a contract test
+//     harness) produces a phantom coin, FeeSupply 24,998, and trips the THEFT
+//     HALT -- which re-arms after a clear. That is a liveness denial on the
+//     vault, not a rounding error.
+//   - And refusing during the window costs nothing real: anything provable
+//     before the first relay is below the floor that relay pins, so it would be
+//     refused a moment later anyway. The NEVER-TERMINAL guarantee is preserved
+//     by a NEW deposit, which is what the refusal message asks for.
+//
+// constants.go's own comment on V2TopUpFeeReserveFloorKey already said "an unset
+// floor REJECTS" -- the code and the constant disagreed, and the constant was
+// right.
 func topUpProvenanceFloor() (uint32, bool) {
 	raw := sdk.StateGetObject(constants.V2TopUpFeeReserveFloorKey)
 	if raw == nil || *raw == "" {
@@ -172,7 +192,19 @@ func (cs *ContractState) HandleTopUpFeeReserve(txData *VerificationRequest) erro
 	// floor. Placed after the four vault-spend guards above deliberately -- they
 	// identify exactly WHY a tx is not a deposit, and a provenance refusal in
 	// front of them would mask that with a less useful message.
-	if floor, haveFloor := topUpProvenanceFloor(); haveFloor && txData.BlockHeight < floor {
+	floor, haveFloor := topUpProvenanceFloor()
+	if !haveFloor {
+		// The floor is pinned by the first addBlocks after activation, so this
+		// is the window between the code going live and the oracle's next
+		// relay -- a 10-minute median on mainnet but up to 74, at a publicly
+		// known activation height. Refusing costs nothing real: a deposit
+		// provable now is below the floor that relay will pin, so it would be
+		// refused a moment later anyway.
+		return ce.NewContractError(ce.ErrInput,
+			"fee-reserve provenance floor is not pinned yet (no header relayed since activation); "+
+				"retry after the next addBlocks")
+	}
+	if txData.BlockHeight < floor {
 		return ce.NewContractError(ce.ErrInput,
 			"fee-reserve deposit at height "+strconv.FormatUint(uint64(txData.BlockHeight), 10)+
 				" predates the provenance floor "+strconv.FormatUint(uint64(floor), 10)+

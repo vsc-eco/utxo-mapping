@@ -279,6 +279,14 @@ func AddBlocks(addBlocksInput *string) *string {
 		)
 	}
 
+	// TOPUP-REPLAY-1: read the tip BEFORE the relay, so the floor can be pinned
+	// at the first height this relay ADDS rather than at the batch tip. Pinning
+	// at the tip stranded a deposit mined after activation whenever the first
+	// relay carried more than one header (lordbutterfly, reviewing #39).
+	// HandleAddBlocks does not persist the height itself -- LastHeightToState
+	// below does -- but this is read first so the ordering cannot drift.
+	tipBeforeRelay, tipErr := blocklist.LastHeightFromState()
+
 	var resultBuilder strings.Builder
 	lastHeight, err := blocklist.HandleAddBlocks(blockHeaders, NetworkMode)
 	if err != nil {
@@ -290,7 +298,11 @@ func AddBlocks(addBlocksInput *string) *string {
 
 	// TOPUP-REPLAY-1: pin the fee-reserve provenance floor on the first relay
 	// after this code goes live. No-op once set.
-	mapping.InitTopUpProvenanceFloor(lastHeight)
+	floorInitHeight := lastHeight
+	if tipErr == nil && tipBeforeRelay < lastHeight {
+		floorInitHeight = tipBeforeRelay + 1
+	}
+	mapping.InitTopUpProvenanceFloor(floorInitHeight)
 
 	// update base fee rate, do this after blocks because blocks more likely to fail
 	systemSupply, err := mapping.SupplyFromState()

@@ -159,12 +159,26 @@ func TestTopUpProvenanceFloor_RejectsDepositBelowFloorAndAllowsAbove(t *testing.
 	const blockHeight = uint32(100)
 	fx := buildFeeReserveFixture(t, amount, blockHeight)
 
-	t.Run("unset floor behaves exactly as before the upgrade", func(t *testing.T) {
+	// REVERSED 2026-11-07. This subtest used to assert that an unset floor
+	// "behaves exactly as before the upgrade", i.e. credits the top-up. It no
+	// longer does, and the reversal is the point: replaying a real spent coin
+	// during the unset window produces a phantom coin and trips the theft halt,
+	// and the window is not the sliver the original argument assumed -- mainnet
+	// addBlocks gaps run a 10-minute median and a 74-minute maximum, at a
+	// publicly known activation height. constants.go always documented the
+	// refusal; the code disagreed with it. See topUpProvenanceFloor's comment.
+	t.Run("an unset floor refuses the top-up", func(t *testing.T) {
 		ct, contractId, _ := newFeeReserveCT(t, fx, 3)
+		// The shared helper pins a floor, so clear it to reach the unset state.
+		ct.StateSet(contractId, constants.V2TopUpFeeReserveFloorKey, "")
 		require.Empty(t, ct.StateGet(contractId, constants.V2TopUpFeeReserveFloorKey),
 			"fixture precondition: no floor pinned")
 		res := callTopUpFeeReserve(t, ct, contractId, "hive:some-random-funder", fx, "tx-floor-unset")
-		require.True(t, res.Success, res.ErrMsg)
+		require.False(t, res.Success, "an unset floor must refuse, not credit")
+		assert.Contains(t, res.ErrMsg, "not pinned yet")
+
+		supply := loadSupply(t, ct, contractId)
+		assert.Zero(t, supply.FeeSupply, "a refused top-up must move no reserve")
 	})
 
 	t.Run("a deposit below the pinned floor is refused", func(t *testing.T) {
