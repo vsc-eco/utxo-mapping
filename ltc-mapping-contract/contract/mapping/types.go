@@ -88,6 +88,9 @@ type AddressMetadata struct {
 	OutNetwork  NetworkName
 	Tag         []byte // tag (hashed instruction) used to create the address
 	Type        MappingType
+	// RefundAccount is refund_to's hive: account: where a swap that does not
+	// complete goes back to. "" means none: such a swap is held (refund.go).
+	RefundAccount string
 }
 
 // SystemSupply tracks protocol-wide BTC accounting.

@@ -739,6 +739,21 @@ func RenewKey(_ *string) *string {
 	return mapping.StrPtr("key \"" + keyId + "\" renewed")
 }
 
+// Moves a held deposit swap (one that did not complete and named no usable
+// refund_to) to the account the owner has confirmed is its sender. OWNER ONLY.
+// Input: "o=<txid>:<vout>&to=<user address>".
+//
+//go:wasmexport releaseHold
+func ReleaseHold(input *string) *string {
+	if input == nil || *input == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "releaseHold requires o=<txid>:<vout>&to=<address>"))
+	}
+	if err := mapping.HandleReleaseHold(*input, sdk.GetEnv().Caller.String(), *sdk.GetEnvKey("contract.owner")); err != nil {
+		ce.CustomAbort(err)
+	}
+	return mapping.StrPtr("0")
+}
+
 //go:wasmexport registerRouter
 func RegisterRouter(input *string) *string {
 	env := sdk.GetEnv()

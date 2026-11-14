@@ -128,3 +128,16 @@ const (
 func IsTestnet(networkName string) bool {
 	return networkName == Testnet || networkName == Regtest
 }
+
+// Deposit-swap refunds (refund.go).
+const (
+	// RefundToKey names where a deposit swap goes back to if it does not
+	// complete: the sender's own hive: account.
+	RefundToKey = "refund_to"
+	// RefundHoldAccount holds a deposit swap that did not complete and names no
+	// usable refund_to, for a manual refund by the owner (releaseHold). No caller
+	// is this account, so nothing else can move it.
+	RefundHoldAccount = "system:refund-hold"
+	// RefundHoldPrefix + "<txid>:<vout>" records what a held deposit holds.
+	RefundHoldPrefix = "rh" + DirPathDelimiter
+)

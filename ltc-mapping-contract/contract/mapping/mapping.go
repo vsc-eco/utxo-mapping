@@ -192,6 +192,19 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 					return ce.NewContractError(ce.ErrInput, "asset out required to execute a swap")
 				}
 				assetOut := metadata.Params.Get(constants.SwapAssetOut)
+				outpoint := outpointLabel(utxo.TxId, utxo.Vout)
+				if destChain := metadata.Params.Get(constants.DestinationChainKey); metadata.RefundAccount == "" && !settlesSynchronously(destChain) {
+					// A payout on another chain can fail after the swap, and the
+					// router refunds it to the return_address. With no hive: refund_to
+					// that would be this contract, where nobody can move it. Hold the
+					// deposit for a manual refund instead of attempting the swap.
+					reason := "a payout on " + destChain + " needs a hive: refund_to"
+					if err := holdDeposit(utxo.Amount, reason, outpoint); err != nil {
+						return err
+					}
+					sdk.Log("deposit-swap not attempted (" + reason + "); " + refundWording(metadata, utxo.Amount, "credited"))
+					break
+				}
 
 				instruction := DexInstruction{
 					Type:             "swap",
@@ -201,6 +214,10 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 					AssetOut:         assetOut,
 					Recipient:        metadata.Recipient,
 					DestinationChain: metadata.Params.Get(constants.DestinationChainKey),
+				}
+				if metadata.RefundAccount != "" {
+					// The router's settlement refund goes to the sender, not to this contract.
+					instruction.ReturnAddress = &ReturnAddress{Chain: "MAGI", Address: metadata.RefundAccount}
 				}
 				instrJson, err := tinyjson.Marshal(instruction)
 				if err != nil {
@@ -253,11 +270,12 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 							"swap failed and allowance partially consumed; manual recovery required")
 					}
 					setAccBal(selfAddr, selfBal-utxo.Amount)
-					if err := incAccBalance(metadata.Recipient, utxo.Amount); err != nil {
-						return ce.Prepend(err, "btc-c4 refund: error crediting depositor")
+					// Back to the sender (refund_to), or held: never to swap_to, which
+					// may be a third party (an exchange, a payment processor).
+					if err := refundDepositSwap(metadata, utxo.Amount, "router failed", outpoint); err != nil {
+						return err
 					}
-					sdk.Log("btc-c4 refund: swap failed; credited " + metadata.Recipient + " " +
-						strconv.FormatInt(utxo.Amount, 10) + " litoshis")
+					sdk.Log("deposit-swap failed; " + refundWording(metadata, utxo.Amount, "refunded"))
 				}
 			default:
 				// should never happen
