@@ -289,11 +289,13 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 					unusable = "asset out required to execute a swap"
 				}
 				if unusable != "" {
-					if err := incAccBalance(metadata.Recipient, utxo.Amount); err != nil {
-						return ce.Prepend(err, "error crediting deposit balance")
+					// Back to the sender (refund_to), or held: never to swap_to, which
+					// may be a third party (an exchange, a payment processor).
+					if err := refundDepositSwap(metadata, utxo.Amount, unusable, outpointLabel(utxo.TxId, utxo.Vout)); err != nil {
+						return err
 					}
-					sdk.Log("deposit-swap not attempted (" + unusable + "); credited " +
-						strconv.FormatInt(utxo.Amount, 10) + " sats to depositor")
+					sdk.Log("deposit-swap not attempted (" + unusable + "); " +
+						refundWording(metadata, utxo.Amount, "credited", ""))
 					break
 				}
 				assetOut := metadata.Params.Get(constants.SwapAssetOut)
@@ -382,6 +384,12 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 						routerFailure = "zero amount out"
 					}
 				}
+				if routerFailure == "" && unspentAllowance > 0 {
+					// A router that reports success but did not pull the whole deposit
+					// leaves the rest on this contract's own account, which nobody can
+					// withdraw. Treat that remainder like a failed swap.
+					routerFailure = "router left " + strconv.FormatInt(unspentAllowance, 10) + " sats unpulled"
+				}
 				if routerFailure != "" {
 					// Refund ONLY the part of THIS deposit the router did not take.
 					//
@@ -398,12 +406,16 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 							return ce.NewContractError(ce.ErrStateAccess, "swap refund: contract balance underflow")
 						}
 						setAccBal(selfAddr, selfBal-unspentAllowance)
-						if err := incAccBalance(metadata.Recipient, unspentAllowance); err != nil {
-							return ce.Prepend(err, "swap refund: crediting depositor")
+						if err := refundDepositSwap(metadata, unspentAllowance, routerFailure, outpointLabel(utxo.TxId, utxo.Vout)); err != nil {
+							return err
 						}
 					}
-					sdk.Log("deposit-swap failed (" + routerFailure + "); refunded " +
-						strconv.FormatInt(unspentAllowance, 10) + " unspent sats to depositor")
+					sdk.Log("deposit-swap failed (" + routerFailure + "); " +
+						refundWording(metadata, unspentAllowance, "refunded", "unspent "))
+				}
+			case MapHold:
+				if err := holdDeposit(utxo.Amount, metadata.HoldReason, outpointLabel(utxo.TxId, utxo.Vout)); err != nil {
+					return err
 				}
 			default:
 				// should never happen

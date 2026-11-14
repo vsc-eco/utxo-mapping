@@ -94,6 +94,15 @@ func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 
 // Returns: raw tx hex to be broadcast
 func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
+	return cs.handleUnmap(instructions, false)
+}
+
+// handleUnmap is HandleUnmap. homeRefund is set only by HandleSendHome, which
+// pins From to a Bitcoin address's own Magi account, To to that same address and
+// the amount to what was refunded to it: the debit then needs no allowance from
+// that account, and the withdrawal is never queued (a busy vault refuses it and
+// sendHome is simply called again later).
+func (cs *ContractState) handleUnmap(instructions *TransferParams, homeRefund bool) error {
 	env := sdk.GetEnv()
 	err := checkAuth(env)
 	if err != nil {
@@ -196,7 +205,7 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	// (see enqueueUnmap). Behind a non-empty queue it waits its turn (FIFO). Anyone else
 	// (a contract, or a spender using an allowance) keeps the refusal, so their own
 	// transaction still reverts as a whole.
-	queueable := isOwnDirectWithdrawal(env, from)
+	queueable := !homeRefund && isOwnDirectWithdrawal(env, from)
 	// Self-heal: a non-empty queue with nothing in flight has no settle coming to drain it
 	// (refunds used up the last settle's cap, or it ran while paused). Drain it here, paid by
 	// this caller, before deciding; only this stranded state costs a requester extra.
@@ -224,7 +233,11 @@ func (cs *ContractState) HandleUnmap(instructions *TransferParams) error {
 	finalAmt := plan.finalAmt
 
 	// check whether caller (or delegated from) has enough balance to cover transaction
-	err = checkAndDeductBalance(env, from, finalAmt)
+	if homeRefund {
+		err = deductOwnRefund(from, finalAmt)
+	} else {
+		err = checkAndDeductBalance(env, from, finalAmt)
+	}
 	if err != nil {
 		return err
 	}

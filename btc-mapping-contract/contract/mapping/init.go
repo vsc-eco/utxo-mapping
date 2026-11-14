@@ -234,43 +234,37 @@ func (cs *ContractState) parseInstructions(
 	genKeys := cs.depositAddressGenerations()
 	registry := make(map[string]*AddressMetadata, len(instrs)*len(genKeys))
 	for _, instr := range instrs {
-		params, err := url.ParseQuery(instr)
-		if err != nil {
-			return nil, err
-		}
-
-		// Validate the destination once per instruction (generation-independent);
-		// assumes VSC as the network for deposits and unspecified swaps.
-		var recipient string
+		// An instruction the contract cannot carry out used to revert the whole map
+		// (or, with no destination, was skipped): either way BTC already sent to its
+		// address was never credited. It is now registered as MapHold, so such a
+		// deposit is held for a manual refund instead. Nothing here can abort.
+		params, parseErr := url.ParseQuery(instr)
+		var recipient, holdReason string
 		var mappingType MappingType
-		if params.Has(constants.DepositToKey) {
+		switch {
+		case parseErr != nil:
+			params = url.Values{}
+			mappingType, holdReason = MapHold, "instruction does not parse"
+		case params.Has(constants.DepositToKey):
 			recipient = params.Get(constants.DepositToKey)
-			if sdk.VerifyAddress(recipient) == string(sdk.AddressDomainUnknown) {
-				return nil, ce.NewContractError(
-					ce.ErrInput,
-					"address \""+recipient+"\" invalid on magi",
-					"bad instruction \""+instr+"\"",
-				)
-			}
 			mappingType = MapDeposit
-		} else if params.Has(constants.SwapToKey) {
+			if sdk.VerifyAddress(recipient) == string(sdk.AddressDomainUnknown) {
+				mappingType, holdReason = MapHold, "deposit_to is not a magi address"
+			}
+		case params.Has(constants.SwapToKey):
 			recipient = params.Get(constants.SwapToKey)
-			destinationChain := params.Get(constants.DestinationChainKey)
-			if strings.ToLower(destinationChain) == "btc" {
-				return nil, ce.NewContractError(ce.ErrInput, "output network cannot be btc")
-			}
 			mappingType = MapSwap
-			if !strings.HasPrefix(sdk.VerifyAddress(recipient), "user:") {
-				return nil, ce.NewContractError(
-					ce.ErrInput,
-					"address \""+recipient+"\" is not a user address",
-					"bad instruction \""+instr+"\"",
-				)
+			if strings.ToLower(params.Get(constants.DestinationChainKey)) == "btc" {
+				mappingType, holdReason = MapHold, "output network cannot be btc"
+			} else if !strings.HasPrefix(sdk.VerifyAddress(recipient), "user:") {
+				mappingType, holdReason = MapHold, "swap_to is not a user address"
 			}
+		default:
+			mappingType, holdReason = MapHold, "no deposit_to or swap_to"
 		}
-		if recipient == "" {
-			// should error for unsupported instruction?
-			continue
+		refundKind, refundAccount, refundBtcAddr := RefundNone, "", ""
+		if mappingType == MapSwap {
+			refundKind, refundAccount, refundBtcAddr = parseRefundTo(params.Get(constants.RefundToKey), networkParams)
 		}
 
 		hasher := sha256.New()
@@ -297,11 +291,15 @@ func (cs *ContractState) parseInstructions(
 				continue
 			}
 			registry[address] = &AddressMetadata{
-				Instruction: instr,
-				Recipient:   recipient,
-				Params:      &params,
-				Tag:         hashBytes,
-				Type:        mappingType,
+				Instruction:   instr,
+				Recipient:     recipient,
+				Params:        &params,
+				Tag:           hashBytes,
+				Type:          mappingType,
+				RefundKind:    refundKind,
+				RefundAccount: refundAccount,
+				RefundBtcAddr: refundBtcAddr,
+				HoldReason:    holdReason,
 				// S1.3 C-1 / S1.4 NR-4: tag with the generation whose keys derived THIS
 				// address, so the spend path resolves the correct per-generation witness
 				// keys + TSS keyId after a rotation.

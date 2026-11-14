@@ -240,6 +240,25 @@ type MappingType string
 const (
 	MapDeposit MappingType = "deposit"
 	MapSwap    MappingType = "swap"
+	// MapHold: an instruction the contract cannot carry out (unparseable, no
+	// destination, an invalid recipient, a BTC payout). A deposit to its address
+	// is held for a manual refund instead of reverting the whole map, which would
+	// leave the BTC in the vault with no credit at all.
+	MapHold MappingType = "hold"
+)
+
+// RefundKind says where a deposit swap that does not complete goes.
+type RefundKind uint8
+
+const (
+	// RefundNone: no usable refund_to (legacy instruction or a bad value): held.
+	RefundNone RefundKind = iota
+	// RefundMagi: a hive: account, which has free RC to move it.
+	RefundMagi
+	// RefundBtc: the sender's own Bitcoin address. Credited to that address's
+	// Magi account and recorded as refundable, so sendHome can return it on
+	// Bitcoin without the owner needing RC.
+	RefundBtc
 )
 
 type NetworkName string
@@ -257,6 +276,12 @@ type AddressMetadata struct {
 	// S1.4: the registry holds an address for EVERY fund-holding generation, each
 	// entry carrying its own Generation, so a late deposit to a superseded gen credits.
 	Generation uint32
+	// Refund target for a swap that does not complete (refund_to).
+	RefundKind    RefundKind
+	RefundAccount string // credited account: the hive: account, or the Bitcoin address's DID
+	RefundBtcAddr string // RefundBtc only: the address sendHome pays
+	// HoldReason: MapHold only, why the instruction cannot be carried out.
+	HoldReason string
 }
 
 // SystemSupply tracks protocol-wide BTC accounting.

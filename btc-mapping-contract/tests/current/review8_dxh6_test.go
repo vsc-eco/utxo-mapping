@@ -44,7 +44,7 @@ func TestReview8_DXH6_DepositSwapRefund(t *testing.T) {
 	// swap_to a hive address (VerifyAddress -> user:hive, accepted by the swap
 	// path); an unreachable min_amount_out doesn't matter — the router reverts
 	// regardless because it has no `execute` entrypoint.
-	const instruction = "swap_to=hive:milo-hpr&swap_asset_out=hbd&min_amount_out=99999999"
+	const instruction = "swap_to=hive:milo-hpr&swap_asset_out=hbd&min_amount_out=99999999&refund_to=hive:milo-hpr"
 	const blockHeight = uint32(100)
 	const amount = int64(10000)
 	const depositor = "hive:milo-hpr"

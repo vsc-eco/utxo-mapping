@@ -475,6 +475,52 @@ func doUnmap(instructions *mapping.TransferParams) {
 	}
 }
 
+// Returns sats that a failed deposit swap refunded to a Bitcoin address back to that
+// address on Bitcoin (miner fee from the amount). PERMISSIONLESS: the destination is the
+// address itself and the amount is at most what was refunded to it, so any caller may pay
+// the RC for it; the address's owner does not need any. Input: the Bitcoin address.
+// PAUSE-GATED like unmap.
+//
+//go:wasmexport sendHome
+func SendHome(input *string) *string {
+	checkNoReentry("sendHome")
+	checkNotPaused()
+	if input == nil || *input == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "sendHome requires the Bitcoin address"))
+	}
+	publicKeys, err := loadPublicKeys()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	contractState, err := mapping.IntializeContractState(publicKeys, NetworkMode)
+	if err != nil {
+		ce.CustomAbort(ce.Prepend(err, "error initializing contract state"))
+	}
+	if err := contractState.HandleSendHome(*input); err != nil {
+		ce.CustomAbort(err)
+	}
+	if err := contractState.SaveToState(); err != nil {
+		ce.CustomAbort(err)
+	}
+	return mapping.StrPtr("0")
+}
+
+// Moves a held deposit (a swap without a usable refund_to that did not complete, or an
+// instruction the contract cannot carry out) to the account its sender proves. OWNER
+// ONLY. Input: "o=<txid>:<vout>&to=<user address>". Moves no BTC, so not pause-gated.
+//
+//go:wasmexport releaseHold
+func ReleaseHold(input *string) *string {
+	checkNoReentry("releaseHold")
+	if input == nil || *input == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "releaseHold requires o=<txid>:<vout>&to=<address>"))
+	}
+	if err := mapping.HandleReleaseHold(*input, sdk.GetEnv().Caller.String(), *sdk.GetEnvKey("contract.owner")); err != nil {
+		ce.CustomAbort(err)
+	}
+	return mapping.StrPtr("0")
+}
+
 // Builds queued withdrawals (WQ-1) whose coins are free again. PERMISSIONLESS: it only
 // builds withdrawals the contract already accepted, through the same path as unmap, and
 // the caller pays for it. confirmSpend already does this after every settle; this is for
