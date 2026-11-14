@@ -328,3 +328,42 @@ func TestSwapRefund_ReleaseHoldIsOwnerOnly(t *testing.T) {
 	r = e.call(rfOwner, "releaseHold", in)
 	assert.False(t, r.Success, "a hold is released once")
 }
+
+func TestSwapRefund_EvmPayoutNeedsAHiveRefundTo(t *testing.T) {
+	addr := refundBtcAddr(t)
+	eth := func(refundTo string) string {
+		i := "swap_to=" + rfRecipient + "&swap_asset_out=eth&destination_chain=ETH"
+		if refundTo != "" {
+			i += "&refund_to=" + refundTo
+		}
+		return i
+	}
+	const reason = "a payout on ETH needs a hive: refund_to"
+
+	t.Run("bitcoin refund address: back on Bitcoin, not attempted", func(t *testing.T) {
+		e := newRfEnv(t, mocks.MockRouterWasm)
+		r, _ := e.mapDeposit(eth(addr))
+		require.True(t, r.Success, "%s %s", r.Err, r.ErrMsg)
+		assert.True(t, hasLog(r, "deposit-swap not attempted ("+reason+")"))
+		assert.Equal(t, rfAmount, e.bal(rfDID(addr)))
+		assert.Equal(t, strconv.FormatInt(rfAmount, 10), e.state(constants.RefundablePrefix+addr))
+		e.assertNothingToRecipientOrContract()
+	})
+	t.Run("no refund_to: held", func(t *testing.T) {
+		e := newRfEnv(t, mocks.MockRouterWasm)
+		r, _ := e.mapDeposit(eth(""))
+		require.True(t, r.Success, "%s %s", r.Err, r.ErrMsg)
+		assert.True(t, hasLog(r, "deposit-swap not attempted ("+reason+")"))
+		assert.Equal(t, rfAmount, e.bal(constants.RefundHoldAccount))
+		e.assertNothingToRecipientOrContract()
+	})
+	t.Run("hive refund_to: attempted", func(t *testing.T) {
+		e := newRfEnv(t, mocks.MockRouterWasm) // zero output: refunded to the hive account
+		r, _ := e.mapDeposit(eth(rfSender))
+		require.True(t, r.Success, "%s %s", r.Err, r.ErrMsg)
+		assert.False(t, hasLog(r, "deposit-swap not attempted"))
+		assert.True(t, hasLog(r, "deposit-swap failed (zero amount out)"))
+		assert.Equal(t, rfAmount, e.bal(rfSender))
+		e.assertNothingToRecipientOrContract()
+	})
+}

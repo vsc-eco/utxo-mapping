@@ -248,3 +248,14 @@ func refundWording(metadata *AddressMetadata, amount int64, verb, qualifier stri
 	}
 	return verb + " " + n + " " + qualifier + "sats to depositor"
 }
+
+// settlesSynchronously: a payout that either happens inside the swap call or
+// reverts it (Magi itself, or Hive through the gateway). Any other chain is paid
+// by a withdrawal that can fail later, after the swap.
+func settlesSynchronously(destinationChain string) bool {
+	switch strings.ToUpper(strings.TrimSpace(destinationChain)) {
+	case "", "MAGI", "HIVE":
+		return true
+	}
+	return false
+}

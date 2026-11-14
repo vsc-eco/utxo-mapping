@@ -287,6 +287,14 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 					unusable = "swap instruction missing parameters"
 				case !metadata.Params.Has(constants.SwapAssetOut):
 					unusable = "asset out required to execute a swap"
+				case metadata.RefundKind != RefundMagi && !settlesSynchronously(metadata.Params.Get(constants.DestinationChainKey)):
+					// A payout on another chain (an EVM withdrawal) can fail after the
+					// swap, and its refund comes back in the output asset to the
+					// return_address. Only a hive: account can use that (free RC); a
+					// Bitcoin-address refund target can only be sent home in BTC, and
+					// with none it would land on this contract. So such a swap needs a
+					// hive: refund_to, or it goes back in BTC now.
+					unusable = "a payout on " + metadata.Params.Get(constants.DestinationChainKey) + " needs a hive: refund_to"
 				}
 				if unusable != "" {
 					// Back to the sender (refund_to), or held: never to swap_to, which
@@ -301,6 +309,10 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 				assetOut := metadata.Params.Get(constants.SwapAssetOut)
 
 				instruction := buildSwapInstruction(metadata.Params, metadata.Recipient, assetOut, utxo.Amount)
+				if metadata.RefundKind == RefundMagi {
+					// The router's settlement refund goes to the sender, not to this contract.
+					instruction.ReturnAddress = &ReturnAddress{Chain: "MAGI", Address: metadata.RefundAccount}
+				}
 				instrJson, err := tinyjson.Marshal(instruction)
 				if err != nil {
 					return ce.NewContractError(ce.ErrJson, "error marshalling swap instruction: "+err.Error())
