@@ -274,10 +274,15 @@ func TestSwapRefund_SendHomeReturnsBitcoinRefund(t *testing.T) {
 	assert.False(t, r.Success, "a mainnet address on regtest is refused")
 	r = e.call("hive:keeper", "sendHome", refundBtcAddrOther(t))
 	assert.False(t, r.Success, "an address with nothing refundable is refused")
+	assert.Contains(t, r.ErrMsg, "nothing refundable", "a bare address parses")
+	r = e.call("hive:keeper", "sendHome", `"`+refundBtcAddrOther(t)+`"`)
+	assert.False(t, r.Success, "an address with nothing refundable is refused")
+	assert.Contains(t, r.ErrMsg, "nothing refundable", "a JSON-quoted address parses")
 
-	// Any caller (it pays the RC) returns the refund to the address itself.
+	// Any caller (it pays the RC) returns the refund to the address itself. The
+	// mapping bot sends the address as a JSON string.
 	before := e.supply()
-	r = e.call("hive:keeper", "sendHome", addr)
+	r = e.call("hive:keeper", "sendHome", `"`+addr+`"`)
 	require.True(t, r.Success, "sendHome must succeed: %s %s", r.Err, r.ErrMsg)
 	assert.True(t, hasLog(r, "sendhome|t="+addr+"|a="+strconv.FormatInt(rfAmount, 10)))
 	// ACCT-1: the debit is the Magi fee + what is sent + the true miner fee; an

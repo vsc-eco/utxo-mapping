@@ -150,8 +150,13 @@ func holdDeposit(amount int64, reason, outpoint string) error {
 // Bitcoin. Anyone may call it (the caller pays the RC); the destination is the
 // address itself and the amount is at most what was refunded to it, so it cannot
 // move anyone's funds anywhere else. The miner fee comes out of the amount.
+// Input: the address, bare or as a JSON string (the mapping bot sends JSON).
 func (cs *ContractState) HandleSendHome(input string) error {
-	addr, err := btcutil.DecodeAddress(strings.TrimSpace(input), cs.NetworkParams)
+	raw := strings.TrimSpace(input)
+	if len(raw) >= 2 && raw[0] == '"' && raw[len(raw)-1] == '"' {
+		raw = raw[1 : len(raw)-1]
+	}
+	addr, err := btcutil.DecodeAddress(raw, cs.NetworkParams)
 	if err != nil || !addr.IsForNet(cs.NetworkParams) {
 		return ce.NewContractError(ce.ErrInput, "sendHome needs a Bitcoin address on this network")
 	}
