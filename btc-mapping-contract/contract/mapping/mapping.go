@@ -287,18 +287,32 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 					unusable = "swap instruction missing parameters"
 				case !metadata.Params.Has(constants.SwapAssetOut):
 					unusable = "asset out required to execute a swap"
+				case metadata.RefundKind != RefundMagi && !settlesSynchronously(metadata.Params.Get(constants.DestinationChainKey)):
+					// A payout on another chain (an EVM withdrawal) can fail after the
+					// swap, and its refund comes back in the output asset to the
+					// return_address. Only a hive: account can use that (free RC); a
+					// Bitcoin-address refund target can only be sent home in BTC, and
+					// with none it would land on this contract. So such a swap needs a
+					// hive: refund_to, or it goes back in BTC now.
+					unusable = "a payout on " + metadata.Params.Get(constants.DestinationChainKey) + " needs a hive: refund_to"
 				}
 				if unusable != "" {
-					if err := incAccBalance(metadata.Recipient, utxo.Amount); err != nil {
-						return ce.Prepend(err, "error crediting deposit balance")
+					// Back to the sender (refund_to), or held: never to swap_to, which
+					// may be a third party (an exchange, a payment processor).
+					if err := refundDepositSwap(metadata, utxo.Amount, unusable, outpointLabel(utxo.TxId, utxo.Vout)); err != nil {
+						return err
 					}
-					sdk.Log("deposit-swap not attempted (" + unusable + "); credited " +
-						strconv.FormatInt(utxo.Amount, 10) + " sats to depositor")
+					sdk.Log("deposit-swap not attempted (" + unusable + "); " +
+						refundWording(metadata, utxo.Amount, "credited", ""))
 					break
 				}
 				assetOut := metadata.Params.Get(constants.SwapAssetOut)
 
 				instruction := buildSwapInstruction(metadata.Params, metadata.Recipient, assetOut, utxo.Amount)
+				if metadata.RefundKind == RefundMagi {
+					// The router's settlement refund goes to the sender, not to this contract.
+					instruction.ReturnAddress = &ReturnAddress{Chain: "MAGI", Address: metadata.RefundAccount}
+				}
 				instrJson, err := tinyjson.Marshal(instruction)
 				if err != nil {
 					return ce.NewContractError(ce.ErrJson, "error marshalling swap instruction: "+err.Error())
@@ -382,6 +396,12 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 						routerFailure = "zero amount out"
 					}
 				}
+				if routerFailure == "" && unspentAllowance > 0 {
+					// A router that reports success but did not pull the whole deposit
+					// leaves the rest on this contract's own account, which nobody can
+					// withdraw. Treat that remainder like a failed swap.
+					routerFailure = "router left " + strconv.FormatInt(unspentAllowance, 10) + " sats unpulled"
+				}
 				if routerFailure != "" {
 					// Refund ONLY the part of THIS deposit the router did not take.
 					//
@@ -398,12 +418,16 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 							return ce.NewContractError(ce.ErrStateAccess, "swap refund: contract balance underflow")
 						}
 						setAccBal(selfAddr, selfBal-unspentAllowance)
-						if err := incAccBalance(metadata.Recipient, unspentAllowance); err != nil {
-							return ce.Prepend(err, "swap refund: crediting depositor")
+						if err := refundDepositSwap(metadata, unspentAllowance, routerFailure, outpointLabel(utxo.TxId, utxo.Vout)); err != nil {
+							return err
 						}
 					}
-					sdk.Log("deposit-swap failed (" + routerFailure + "); refunded " +
-						strconv.FormatInt(unspentAllowance, 10) + " unspent sats to depositor")
+					sdk.Log("deposit-swap failed (" + routerFailure + "); " +
+						refundWording(metadata, unspentAllowance, "refunded", "unspent "))
+				}
+			case MapHold:
+				if err := holdDeposit(utxo.Amount, metadata.HoldReason, outpointLabel(utxo.TxId, utxo.Vout)); err != nil {
+					return err
 				}
 			default:
 				// should never happen

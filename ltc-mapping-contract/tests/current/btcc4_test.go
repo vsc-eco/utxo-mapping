@@ -1,11 +1,13 @@
 package current_test
 
 import (
+	"encoding/binary"
+	"encoding/json"
 	"ltc-mapping-contract/contract/constants"
 	"ltc-mapping-contract/contract/mapping"
 	"ltc-mapping-contract/tests/mocks"
-	"encoding/binary"
-	"fmt"
+	"strconv"
+	"strings"
 	"testing"
 
 	"vsc-node/lib/test_utils"
@@ -29,111 +31,162 @@ func decodeBalance(t *testing.T, raw string) int64 {
 	return int64(binary.BigEndian.Uint64(buf[:]))
 }
 
-// Pentest finding BTC-C4: when the DEX router fails or returns
-// `amount_out == "0"`, mapping.go:processUtxos previously returned an
-// error → entire map reverted → user's BTC sat in the contract vault
-// with no L2 credit until the backup CSV timelock (~1 month) let them
-// reclaim. Fix: when the router didn't actually pull the contract's
-// allowance, refund the depositor with raw BTC-equivalent L2 tokens
-// instead of reverting.
+// Pentest finding BTC-C4: a router failure used to revert the whole map (coins
+// stuck in the vault). The fix credited the swap's own deposit instead, but to
+// swap_to, which may be a third party (an exchange, a payment processor): that
+// is a delayed payment, not a refund. A deposit swap that does not complete now
+// goes back to its sender (refund_to, a hive: account), or is held for a manual
+// refund by the owner (releaseHold). Never to swap_to.
 //
-// This test uses a mock router contract (tests/mocks/mockrouter/) that
-// always returns `{"amount_out":"0", "pool_state":...}` to drive the
-// btc-mapping contract into the failure branch deterministically.
-// Pre-fix: map errors with "swap returned zero amount out" and the
-// recipient balance stays 0. Post-fix: map succeeds and the recipient
-// is credited with utxo.Amount sats.
+// The mock router (tests/mocks/mockrouter/) always answers amount_out "0", which
+// drives the failure branch.
 
-func TestBTCC4_RouterFailureRefundsDepositor(t *testing.T) {
-	const swapRecipient = "hive:milo-receiver"
-	const instruction = "swap_to=" + swapRecipient + "&swap_asset_out=HBD&destination_chain=hive"
-	const blockHeight = uint32(100)
-	const utxoAmount int64 = 10_000
+const (
+	c4MappingId   = "mapping_for_btcc4"
+	c4RouterId    = "mock_router_for_btcc4"
+	c4Owner       = "hive:milo-hpr"
+	c4SwapTo      = "hive:milo-receiver"
+	c4RefundTo    = "hive:refund-sender"
+	c4UtxoAmount  = int64(10_000)
+	c4BlockHeight = uint32(100)
+)
 
-	fixture := buildMapFixture(t, instruction, utxoAmount, blockHeight)
+type c4Env struct {
+	t  *testing.T
+	ct test_utils.ContractTest
+	n  int
+}
 
-	ct := test_utils.NewContractTest()
-	t.Cleanup(func() { ct.DataLayer.Stop() })
+func (e *c4Env) bal(acct string) int64 {
+	return decodeBalance(e.t, e.ct.StateGet(c4MappingId, constants.BalancePrefix+acct))
+}
 
-	const (
-		btcContractId   = "btc_mapping_for_btcc4"
-		routerContractId = "mock_router_for_btcc4"
-	)
+func (e *c4Env) call(caller, action, payload string) test_utils.ContractTestCallResult {
+	e.n++
+	return e.ct.Call(stateEngine.TxVscCallContract{
+		Self: stateEngine.TxSelf{
+			TxId:                 "btcc4-" + action + "-" + strconv.Itoa(e.n),
+			Index:                e.n,
+			BlockId:              "block:btcc4",
+			Timestamp:            "2026-05-07T00:00:00",
+			RequiredAuths:        []string{caller},
+			RequiredPostingAuths: []string{},
+		},
+		ContractId: c4MappingId,
+		Action:     action,
+		Payload:    json.RawMessage(payload),
+		RcLimit:    1_000_000,
+		Intents:    []contracts.Intent{},
+		Caller:     caller,
+	})
+}
 
-	// Register both contracts: the BTC mapping under test, and the
-	// mock router that always returns AmountOut="0".
-	ct.RegisterContract(btcContractId, "hive:milo-hpr", ContractWasm)
-	ct.RegisterContract(routerContractId, "hive:milo-hpr", mocks.MockRouterWasm)
-
-	// Wire the mapping contract to the mock router.
-	ct.StateSet(btcContractId, constants.RouterContractIdKey, routerContractId)
-
-	// Standard mapping-contract state seed (mirrors TestMap).
-	ct.StateSet(btcContractId, constants.SupplyKey,
+// c4Map maps one deposit to the address of instruction, with the mock router.
+func c4Map(t *testing.T, instruction string) (*c4Env, test_utils.ContractTestCallResult) {
+	t.Helper()
+	fixture := buildMapFixture(t, instruction, c4UtxoAmount, c4BlockHeight)
+	e := &c4Env{t: t, ct: test_utils.NewContractTest()}
+	t.Cleanup(func() { e.ct.DataLayer.Stop() })
+	e.ct.RegisterContract(c4MappingId, c4Owner, ContractWasm)
+	e.ct.RegisterContract(c4RouterId, c4Owner, mocks.MockRouterWasm)
+	e.ct.StateSet(c4MappingId, constants.RouterContractIdKey, c4RouterId)
+	e.ct.StateSet(c4MappingId, constants.SupplyKey,
 		string(mapping.MarshalSupply(&mapping.SystemSupply{BaseFeeRate: 1})))
-	ct.StateSet(btcContractId, constants.LastHeightKey, "100")
-	ct.StateSet(btcContractId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
-	ct.StateSet(btcContractId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
-	ct.StateSet(btcContractId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
+	e.ct.StateSet(c4MappingId, constants.LastHeightKey, "100")
+	e.ct.StateSet(c4MappingId, constants.BlockPrefix+"100", decodeHex(t, fixture.BlockHeaderHex))
+	e.ct.StateSet(c4MappingId, constants.PrimaryPublicKeyStateKey, decodeHex(t, TestPrimaryPubKeyHex))
+	e.ct.StateSet(c4MappingId, constants.BackupPublicKeyStateKey, decodeHex(t, TestBackupPubKeyHex))
 
-	// Pre-conditions: depositor has zero balance.
-	preBal := ct.StateGet(btcContractId, constants.BalancePrefix+swapRecipient)
-	require.Empty(t, preBal, "depositor should start with zero balance")
-
-	params := mapping.MapParams{
+	payload, err := tinyjson.Marshal(mapping.MapParams{
 		TxData: &mapping.VerificationRequest{
-			BlockHeight:    blockHeight,
+			BlockHeight:    c4BlockHeight,
 			RawTxHex:       fixture.RawTxHex,
 			MerkleProofHex: fixture.MerkleProofHex,
 			TxIndex:        fixture.TxIndex,
 		},
 		Instructions: []string{instruction},
-	}
-	payload, err := tinyjson.Marshal(params)
-	if err != nil {
-		t.Fatal("error marshalling params:", err)
-	}
-
-	r := ct.Call(stateEngine.TxVscCallContract{
-		Self: stateEngine.TxSelf{
-			TxId:                 "btcc4-test-tx",
-			BlockId:              "block:btcc4",
-			Index:                0,
-			OpIndex:              0,
-			Timestamp:            "2026-05-07T00:00:00",
-			RequiredAuths:        []string{"hive:milo-hpr"},
-			RequiredPostingAuths: []string{},
-		},
-		ContractId: btcContractId,
-		Action:     "map",
-		Payload:    payload,
-		RcLimit:    10000,
-		Intents:    []contracts.Intent{},
-		Caller:     "hive:milo-hpr",
 	})
+	require.NoError(t, err)
+	return e, e.call(c4Owner, "map", string(payload))
+}
 
-	if !r.Success {
-		// Pre-fix: the test fails here with "swap returned zero amount out".
-		// Post-fix: success — the refund branch routed BTC to the depositor.
-		t.Fatalf("BTC-C4 leak: map reverted on router AmountOut=0 instead of refunding depositor. err=%q msg=%q",
-			r.Err, r.ErrMsg)
+func c4Log(r test_utils.ContractTestCallResult, prefix string) string {
+	for _, out := range r.Logs {
+		for _, l := range out.Logs {
+			if strings.HasPrefix(l, prefix) {
+				return l
+			}
+		}
 	}
+	return ""
+}
 
-	// Post-fix invariant: the swap recipient was credited with utxo.Amount
-	// raw BTC-equivalent L2 tokens.
-	postBalRaw := ct.StateGet(btcContractId, constants.BalancePrefix+swapRecipient)
-	postBal := decodeBalance(t, postBalRaw)
-	assert.Equal(t, utxoAmount, postBal,
-		"BTC-C4 fix: depositor must be credited with utxo amount when router fails; got %d, want %d",
-		postBal, utxoAmount)
+// c4Outpoint is the o=<txid>:<vout> field of a refund log line.
+func c4Outpoint(line string) string {
+	for _, f := range strings.Split(line, "|") {
+		if strings.HasPrefix(f, "o=") {
+			return strings.TrimPrefix(f, "o=")
+		}
+	}
+	return ""
+}
 
-	// And the contract's self-credit was drained back out (no double-mint).
-	selfAddr := "contract:" + btcContractId
-	selfBalRaw := ct.StateGet(btcContractId, constants.BalancePrefix+selfAddr)
-	selfBal := decodeBalance(t, selfBalRaw)
-	assert.Zero(t, selfBal,
-		"BTC-C4 fix: contract self-credit must be cleared after refund; got %d",
-		selfBal)
+func TestBTCC4_RouterFailureRefundsTheSender(t *testing.T) {
+	e, r := c4Map(t, "swap_to="+c4SwapTo+"&swap_asset_out=HBD&destination_chain=hive&refund_to="+c4RefundTo)
+	require.True(t, r.Success, "map must not revert on a router failure: %s %s", r.Err, r.ErrMsg)
+	assert.Equal(t, c4UtxoAmount, e.bal(c4RefundTo), "refunded to refund_to")
+	assert.Zero(t, e.bal(c4SwapTo), "swap_to gets nothing from a swap that did not complete")
+	assert.Zero(t, e.bal("contract:"+c4MappingId), "no self-credit left behind")
+	assert.Zero(t, e.bal(constants.RefundHoldAccount))
+	assert.NotEmpty(t, c4Log(r, "swaprefund|t="+c4RefundTo+"|a=10000|"))
+}
 
-	fmt.Printf("btc-c4 refund verified: recipient=%s credited=%d\n", swapRecipient, postBal)
+func TestBTCC4_NoRefundToIsHeldAndOnlyTheOwnerReleasesIt(t *testing.T) {
+	e, r := c4Map(t, "swap_to="+c4SwapTo+"&swap_asset_out=HBD&destination_chain=hive")
+	require.True(t, r.Success, "%s %s", r.Err, r.ErrMsg)
+	assert.Zero(t, e.bal(c4SwapTo), "a legacy instruction's failed swap is not paid to swap_to")
+	assert.Equal(t, c4UtxoAmount, e.bal(constants.RefundHoldAccount), "held")
+	assert.Zero(t, e.bal("contract:"+c4MappingId))
+	hold := c4Log(r, "swaphold|")
+	require.NotEmpty(t, hold)
+	op := c4Outpoint(hold)
+	require.NotEmpty(t, op)
+	assert.Equal(t, "10000", e.ct.StateGet(c4MappingId, constants.RefundHoldPrefix+op))
+
+	rel := "o=" + op + "&to=" + c4RefundTo
+	r = e.call("hive:someone-else", "releaseHold", rel)
+	assert.False(t, r.Success, "only the owner releases a hold")
+	assert.Equal(t, c4UtxoAmount, e.bal(constants.RefundHoldAccount))
+
+	r = e.call(c4Owner, "releaseHold", rel)
+	require.True(t, r.Success, "%s %s", r.Err, r.ErrMsg)
+	assert.Equal(t, c4UtxoAmount, e.bal(c4RefundTo), "released to the sender")
+	assert.Zero(t, e.bal(constants.RefundHoldAccount))
+	assert.Equal(t, "", e.ct.StateGet(c4MappingId, constants.RefundHoldPrefix+op))
+
+	r = e.call(c4Owner, "releaseHold", rel)
+	assert.False(t, r.Success, "a hold is released once")
+}
+
+func TestBTCC4_PayoutOnAnotherChainNeedsAHiveRefundTo(t *testing.T) {
+	// With no hive: refund_to the router would refund a failed payout to this
+	// contract: the swap is not attempted and the deposit is held.
+	e, r := c4Map(t, "swap_to="+c4SwapTo+"&swap_asset_out=ETH&destination_chain=ETH")
+	require.True(t, r.Success, "%s %s", r.Err, r.ErrMsg)
+	assert.Equal(t, c4UtxoAmount, e.bal(constants.RefundHoldAccount))
+	assert.Zero(t, e.bal(c4SwapTo))
+	assert.Contains(t, c4Log(r, "swaphold|"), "needs a hive: refund_to")
+
+	// With one, it is attempted, and the router's failure goes back to the sender.
+	e, r = c4Map(t, "swap_to="+c4SwapTo+"&swap_asset_out=ETH&destination_chain=ETH&refund_to="+c4RefundTo)
+	require.True(t, r.Success, "%s %s", r.Err, r.ErrMsg)
+	assert.Equal(t, c4UtxoAmount, e.bal(c4RefundTo))
+	assert.Zero(t, e.bal(constants.RefundHoldAccount))
+}
+
+func TestBTCC4_ARefundToThatIsNotAHiveAccountIsHeld(t *testing.T) {
+	e, r := c4Map(t, "swap_to="+c4SwapTo+"&swap_asset_out=HBD&destination_chain=hive&refund_to=did:pkh:eip155:1:0x00000000000000000000000000000000000000a1")
+	require.True(t, r.Success, "%s %s", r.Err, r.ErrMsg)
+	assert.Equal(t, c4UtxoAmount, e.bal(constants.RefundHoldAccount))
+	assert.Zero(t, e.bal(c4SwapTo))
 }

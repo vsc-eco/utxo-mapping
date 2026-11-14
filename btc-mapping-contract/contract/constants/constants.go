@@ -288,7 +288,32 @@ const (
 	// (DX-H5). It is baked into the deposit address (part of the hashed
 	// instruction), so the depositor commits to a minimum output up front.
 	MinAmountOutKey = "min_amount_out"
+	// RefundToKey names where a deposit swap goes if it does not complete: the
+	// sender's own hive: account, or the sender's own Bitcoin address (credited to
+	// that address's Magi account and returned on Bitcoin by sendHome). It is part
+	// of the instruction, so it is committed in the deposit address and cannot be
+	// changed by whoever submits the map (the proof does not cover the witness,
+	// so the sending address itself cannot be trusted).
+	RefundToKey = "refund_to"
 )
+
+// RefundablePrefix + <btc address> holds the sats refunded to that address's Magi
+// account that sendHome may still return to the address on Bitcoin.
+const RefundablePrefix = "rf" + DirPathDelimiter
+
+// RefundHoldPrefix + <txid>:<vout> records a deposit held for a manual refund: a
+// swap without a usable refund_to that did not complete, or an instruction the
+// contract cannot use. Value: the held sats. Released by the owner (releaseHold).
+const RefundHoldPrefix = "rh" + DirPathDelimiter
+
+// RefundHoldAccount is the balance holding every held deposit. No caller can be
+// this account, so only releaseHold moves it.
+const RefundHoldAccount = "system:refund-hold"
+
+// BtcDIDMainnetPrefix / BtcDIDTestnetPrefix: the Magi identity of a Bitcoin address
+// (go-vsc-node lib/dids btc.go). A refund to a Bitcoin address is credited here.
+const BtcDIDMainnetPrefix = "did:pkh:bip122:000000000019d6689c085ae165831e93:"
+const BtcDIDTestnetPrefix = "did:pkh:bip122:000000000933ea01ad0ee984209779ba:"
 
 // Address Creation
 const BackupCSVBlocks = 4320 // ~1 month

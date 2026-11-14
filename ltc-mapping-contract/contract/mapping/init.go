@@ -149,6 +149,7 @@ func (cs *ContractState) parseInstructions(
 		// assumes VSC as the network for deposits and unspecified swaps
 		var recipient string
 		var mappingType MappingType
+		var refundAccount string
 		if params.Has(constants.DepositToKey) {
 			recipient = params.Get(constants.DepositToKey)
 			if sdk.VerifyAddress(recipient) == string(sdk.AddressDomainUnknown) {
@@ -173,6 +174,7 @@ func (cs *ContractState) parseInstructions(
 					"bad instruction \""+instr+"\"",
 				)
 			}
+			refundAccount = parseRefundTo(params.Get(constants.RefundToKey))
 		}
 		if recipient != "" {
 			hasher := sha256.New()
@@ -193,6 +195,8 @@ func (cs *ContractState) parseInstructions(
 				Params:      &params,
 				Tag:         hashBytes,
 				Type:        mappingType,
+
+				RefundAccount: refundAccount,
 			}
 		}
 		// should error for unsupported instruction?

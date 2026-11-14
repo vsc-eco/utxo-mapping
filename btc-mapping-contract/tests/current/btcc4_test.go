@@ -45,8 +45,11 @@ func decodeBalance(t *testing.T, raw string) int64 {
 // is credited with utxo.Amount sats.
 
 func TestBTCC4_RouterFailureRefundsDepositor(t *testing.T) {
+	// The refund goes to the sender named in refund_to, never to swap_to (which may
+	// be a third party): swap_refund_test.go covers the other refund targets.
 	const swapRecipient = "hive:milo-receiver"
-	const instruction = "swap_to=" + swapRecipient + "&swap_asset_out=HBD&destination_chain=hive"
+	const sender = "hive:milo-sender"
+	const instruction = "swap_to=" + swapRecipient + "&swap_asset_out=HBD&destination_chain=hive&refund_to=" + sender
 	const blockHeight = uint32(100)
 	const utxoAmount int64 = 10_000
 
@@ -121,7 +124,9 @@ func TestBTCC4_RouterFailureRefundsDepositor(t *testing.T) {
 
 	// Post-fix invariant: the swap recipient was credited with utxo.Amount
 	// raw BTC-equivalent L2 tokens.
-	postBalRaw := ct.StateGet(btcContractId, constants.BalancePrefix+swapRecipient)
+	assert.Empty(t, ct.StateGet(btcContractId, constants.BalancePrefix+swapRecipient),
+		"swap_to must not receive the refund")
+	postBalRaw := ct.StateGet(btcContractId, constants.BalancePrefix+sender)
 	postBal := decodeBalance(t, postBalRaw)
 	assert.Equal(t, utxoAmount, postBal,
 		"BTC-C4 fix: depositor must be credited with utxo amount when router fails; got %d, want %d",
@@ -135,5 +140,5 @@ func TestBTCC4_RouterFailureRefundsDepositor(t *testing.T) {
 		"BTC-C4 fix: contract self-credit must be cleared after refund; got %d",
 		selfBal)
 
-	fmt.Printf("btc-c4 refund verified: recipient=%s credited=%d\n", swapRecipient, postBal)
+	fmt.Printf("btc-c4 refund verified: sender=%s credited=%d\n", sender, postBal)
 }

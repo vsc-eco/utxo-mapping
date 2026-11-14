@@ -3,8 +3,8 @@ package current_test
 // STRAND-2: a deposit to a swap address whose swap cannot even be attempted (no
 // asset out in its instruction, or no router registered yet) used to revert the
 // whole `map`, so the SPV-verified BTC was never credited and every retry failed
-// the same way. It must now be credited to the depositor as a plain deposit, like
-// a swap the router refuses. Needs the regtest dev.wasm (`make test` builds it).
+// the same way. It must now go back to the sender (refund_to), like a swap the
+// router refuses; with no refund_to it is held (swap_refund_test.go). Needs the regtest dev.wasm (`make test` builds it).
 
 import (
 	"strings"
@@ -33,8 +33,8 @@ func TestStrand2_UnattemptableSwapIsCreditedAsDeposit(t *testing.T) {
 		router      bool
 		reason      string
 	}{
-		{"no asset out", "swap_to=hive:milo-hpr", true, "asset out required to execute a swap"},
-		{"no router registered", "swap_to=hive:milo-hpr&swap_asset_out=hbd", false, "router contract not initialized"},
+		{"no asset out", "swap_to=hive:milo-hpr&refund_to=hive:milo-hpr", true, "asset out required to execute a swap"},
+		{"no router registered", "swap_to=hive:milo-hpr&swap_asset_out=hbd&refund_to=hive:milo-hpr", false, "router contract not initialized"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

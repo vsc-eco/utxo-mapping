@@ -50,7 +50,9 @@ func TestMapCEI_RouterCannotReenterBlobWritingExport(t *testing.T) {
 	const routerContractId = "mock_reentrant_router"
 
 	const swapRecipient = "hive:milo-receiver"
-	const instruction = "swap_to=" + swapRecipient + "&swap_asset_out=HBD&destination_chain=hive"
+	// refund_to names the sender (here the same account, a self-swap): a failed
+	// swap goes back to it, never to swap_to (swap_refund_test.go).
+	const instruction = "swap_to=" + swapRecipient + "&swap_asset_out=HBD&destination_chain=hive&refund_to=" + swapRecipient
 	const blockHeight = uint32(100)
 	const utxoAmount int64 = 250_000
 
