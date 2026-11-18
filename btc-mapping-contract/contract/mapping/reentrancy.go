@@ -26,6 +26,7 @@ func enterExternalCall() {
 // the flag cannot be left stuck on across transactions in either direction.
 func exitExternalCall() {
 	sdk.StateSetObject(constants.ExternalCallGuardKey, "")
+	forgetVaultState() // re-read whatever a re-entrant call may have written
 }
 
 // InExternalCallGuard reports whether this invocation is re-entering while one

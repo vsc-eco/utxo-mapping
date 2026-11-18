@@ -82,22 +82,11 @@ func IntializeContractState(publicKeys PublicKeys, networkMode string) (*Contrac
 
 	// Load vault registry (S1 dual-generation vault list — VaultEntrySize bytes/entry).
 	// Empty on any contract not yet folded (S1.1); tolerant of absent keys.
-	var vaults VaultRegistry
-	vaultState := sdk.StateGetObject(constants.VaultRegistryKey)
-	if len(*vaultState) > 0 {
-		var err error
-		vaults, err = UnmarshalVaultRegistry([]byte(*vaultState))
-		if err != nil {
-			return nil, ce.NewContractError(ce.ErrStateAccess, "error decoding vault registry: "+err.Error())
-		}
-	}
-	// Load vault generation counters (4 bytes BE each; absent → 0).
-	var nextGen, activeGen uint32
-	if s := sdk.StateGetObject(constants.VaultNextGenKey); len(*s) == 4 {
-		nextGen = binary.BigEndian.Uint32([]byte(*s))
-	}
-	if s := sdk.StateGetObject(constants.VaultActiveGenKey); len(*s) == 4 {
-		activeGen = binary.BigEndian.Uint32([]byte(*s))
+	// With its generation counters (4 bytes BE each; absent → 0), through
+	// LoadVaultState so the rest of the call reuses this read (REGISTRY-RC-GROWTH-1).
+	vaults, nextGen, activeGen, verr := LoadVaultState()
+	if verr != nil {
+		return nil, verr
 	}
 
 	cs := &ContractState{
@@ -330,12 +319,19 @@ func (cs *ContractState) SaveToState() error {
 	sdk.StateSetObject(constants.SupplyKey, string(MarshalSupply(&cs.Supply)))
 
 	// Vault registry + generation counters (S1 dual-generation vault list, binary).
-	sdk.StateSetObject(constants.VaultRegistryKey, string(MarshalVaultRegistry(cs.Vaults)))
-	var nextGenBuf, activeGenBuf [4]byte
-	binary.BigEndian.PutUint32(nextGenBuf[:], cs.NextGen)
-	binary.BigEndian.PutUint32(activeGenBuf[:], cs.ActiveGen)
-	sdk.StateSetObject(constants.VaultNextGenKey, string(nextGenBuf[:]))
-	sdk.StateSetObject(constants.VaultActiveGenKey, string(activeGenBuf[:]))
+	// REGISTRY-RC-GROWTH-1: not rewritten when this call left them as they are in
+	// state. Rewriting an existing key costs its old and its new bytes, and the
+	// registry holds every generation ever made, so the rewrite every map, unmap
+	// and settle made grew by 182 RC with each rotation for nothing.
+	if !vaultStateUnchanged(cs.Vaults, cs.NextGen, cs.ActiveGen) {
+		sdk.StateSetObject(constants.VaultRegistryKey, string(MarshalVaultRegistry(cs.Vaults)))
+		var nextGenBuf, activeGenBuf [4]byte
+		binary.BigEndian.PutUint32(nextGenBuf[:], cs.NextGen)
+		binary.BigEndian.PutUint32(activeGenBuf[:], cs.ActiveGen)
+		sdk.StateSetObject(constants.VaultNextGenKey, string(nextGenBuf[:]))
+		sdk.StateSetObject(constants.VaultActiveGenKey, string(activeGenBuf[:]))
+		memoVaultState(cs.Vaults, cs.NextGen, cs.ActiveGen)
+	}
 
 	return nil
 }

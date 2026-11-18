@@ -58,6 +58,9 @@ const (
 // IntializeContractState. The key ceremony uses this so a key op never reads or
 // re-marshals UTXOs / supply / balances (minimal blast radius).
 func LoadVaultState() (VaultRegistry, uint32, uint32, error) {
+	if m := vaultStateMemo; m != nil {
+		return append(VaultRegistry(nil), m.vaults...), m.next, m.active, nil
+	}
 	var vaults VaultRegistry
 	vaultState := sdk.StateGetObject(constants.VaultRegistryKey)
 	if len(*vaultState) > 0 {
@@ -74,13 +77,56 @@ func LoadVaultState() (VaultRegistry, uint32, uint32, error) {
 	if s := sdk.StateGetObject(constants.VaultActiveGenKey); len(*s) == 4 {
 		activeGen = binary.BigEndian.Uint32([]byte(*s))
 	}
+	memoVaultState(vaults, nextGen, activeGen)
 	return vaults, nextGen, activeGen, nil
+}
+
+// vaultStateMemo is the vault registry and its two counters as this call last
+// read or wrote them (REGISTRY-RC-GROWTH-1). A read costs 1 RC per byte and the
+// registry holds every generation ever made, so each re-read, and each rewrite
+// of an unchanged registry, grows with every rotation: the contract state load,
+// assertInputsSignable and the key ceremony ops read it again, and SaveToState
+// rewrote it on every call. Each call runs in its own wasm instance, and every
+// write of the three keys sets the memo (SaveVaultState,
+// ContractState.SaveToState), so it is never stale within a call. It is dropped
+// when one of our external calls returns (exitExternalCall): a re-entrant call
+// is a separate instance, so whatever it wrote is read back from state, as
+// before.
+var vaultStateMemo *vaultStateSnap
+
+type vaultStateSnap struct {
+	vaults       VaultRegistry
+	next, active uint32
+}
+
+func memoVaultState(vaults VaultRegistry, next, active uint32) {
+	vaultStateMemo = &vaultStateSnap{append(VaultRegistry(nil), vaults...), next, active}
+}
+
+func forgetVaultState() { vaultStateMemo = nil }
+
+// vaultStateUnchanged reports whether a populated registry and its counters are
+// exactly what this call read or last wrote, so writing them again changes
+// nothing in state. An empty registry is always written, as before (that also
+// creates the counter keys of a contract not yet folded).
+func vaultStateUnchanged(vaults VaultRegistry, next, active uint32) bool {
+	m := vaultStateMemo
+	if m == nil || len(m.vaults) == 0 || m.next != next || m.active != active || len(m.vaults) != len(vaults) {
+		return false
+	}
+	for i := range vaults {
+		if vaults[i] != m.vaults[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // SaveVaultState persists ONLY the vault list + generation counters. Mirrors the
 // fold's direct writes, keeping the key ceremony's write blast-radius to exactly
 // the three vault keys (never touches UTXO/supply/txspends registries).
 func SaveVaultState(vaults VaultRegistry, nextGen, activeGen uint32) {
+	memoVaultState(vaults, nextGen, activeGen)
 	sdk.StateSetObject(constants.VaultRegistryKey, string(MarshalVaultRegistry(vaults)))
 	var nextGenBuf, activeGenBuf [4]byte
 	binary.BigEndian.PutUint32(nextGenBuf[:], nextGen)
@@ -102,7 +148,9 @@ func SaveVaultState(vaults VaultRegistry, nextGen, activeGen uint32) {
 // legacy UTXO (they'd resolve to the zero-key pending gen-0). Folding first makes
 // that impossible: genesis only ever fires on a truly fresh deploy (no legacy key).
 func FoldLegacyGen0IfNeeded() bool {
-	if existing := sdk.StateGetObject(constants.VaultRegistryKey); len(*existing) > 0 {
+	// Through LoadVaultState (memoized for the rest of the call) rather than a
+	// second whole-registry read. An undecodable list is never folded over either.
+	if vaults, _, _, err := LoadVaultState(); err != nil || len(vaults) > 0 {
 		return false // already populated — never clobber a real vault list
 	}
 	primaryRaw := sdk.StateGetObject(constants.PrimaryPublicKeyStateKey)
