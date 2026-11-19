@@ -1,6 +1,6 @@
 module ltc-mapping-contract
 
-go 1.25.6
+go 1.25.0
 
 // replace vsc-node => path-to-local-node
 

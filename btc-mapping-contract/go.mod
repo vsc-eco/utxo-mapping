@@ -1,8 +1,7 @@
 module btc-mapping-contract
 
-go 1.25.7
+go 1.25.0
 
-toolchain go1.25.10
 
 // DO NOT modify. Auto-updated by the Makefile. To use a local or deprecated version, use a go.work file, e.g.
 //

@@ -1,6 +1,6 @@
 module dash-mapping-contract
 
-go 1.25.6
+go 1.25.0
 
 // DO NOT modify. Auto-updated by the Makefile. To use a local or deprecated version, use a go.work file, e.g.
 //
