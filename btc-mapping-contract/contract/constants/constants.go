@@ -295,6 +295,9 @@ const (
 	// changed by whoever submits the map (the proof does not cover the witness,
 	// so the sending address itself cannot be trusted).
 	RefundToKey = "refund_to"
+	// PayoutGasLimitKey (an ETH payout only): the Ethereum gas limit the client
+	// sized for the recipient; passed to the router, bounded by the EVM bridge.
+	PayoutGasLimitKey = "payout_gas_limit"
 )
 
 // RefundablePrefix + <btc address> holds the sats refunded to that address's Magi
@@ -309,6 +312,29 @@ const RefundHoldPrefix = "rh" + DirPathDelimiter
 // RefundHoldAccount is the balance holding every held deposit. No caller can be
 // this account, so only releaseHold moves it.
 const RefundHoldAccount = "system:refund-hold"
+
+// SENDER-REFUND-1 (owner 11-21: a failed swap goes back to the SENDING address,
+// nobody types a refund address, never a Magi balance; THORChain bifrost
+// getSender: the address of the output the deposit's first input spends).
+//
+// SenderPrefix + <deposit txid> holds the proven sending address of a deposit
+// (proveSender before map); map reads it and removes it.
+const SenderPrefix = "snd" + DirPathDelimiter
+
+// SenderPendingPrefix + <txid>:<vout> marks a held deposit whose sender is not
+// proven yet: proveSender with that deposit's sender proof sends it home.
+const SenderPendingPrefix = "sph" + DirPathDelimiter
+
+// BtcRefundHoldAccount holds every refund owed to a Bitcoin address, recorded
+// per address under RefundHeldPrefix (and in its RefundablePrefix total); only
+// sendHome moves it, to that address. No caller can be this account. A refund
+// is never credited to the address's own Magi account any more.
+const BtcRefundHoldAccount = "system:btc-refund"
+
+// RefundHeldPrefix + <btc address>: the part of that address's refundable total
+// that is held on BtcRefundHoldAccount (the rest, from before SENDER-REFUND-1,
+// is on the address's own Magi account).
+const RefundHeldPrefix = "rfh" + DirPathDelimiter
 
 // BtcDIDMainnetPrefix / BtcDIDTestnetPrefix: the Magi identity of a Bitcoin address
 // (go-vsc-node lib/dids btc.go). A refund to a Bitcoin address is credited here.

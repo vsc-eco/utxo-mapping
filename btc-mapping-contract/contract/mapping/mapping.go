@@ -35,6 +35,10 @@ func buildSwapInstruction(params *url.Values, recipient, assetOut string, amount
 		minOut := params.Get(constants.MinAmountOutKey)
 		instruction.MinAmountOut = &minOut
 	}
+	// An ETH payout's gas limit as the client sized it (the EVM bridge bounds it).
+	if g, err := strconv.ParseUint(params.Get(constants.PayoutGasLimitKey), 10, 64); err == nil && g > 0 {
+		instruction.PayoutGasLimit = g
+	}
 	return instruction
 }
 
@@ -212,7 +216,9 @@ func (cs *ContractState) updateUtxoSpends(txId string, blockHeight uint32) error
 	return nil
 }
 
-func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHeight uint32) error {
+// sender is the deposit's proven sending address ("" when not proven, see
+// proveSender): a swap that does not complete goes back there.
+func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHeight uint32, sender string) error {
 	totalMapped := int64(0)
 	env := sdk.GetEnv()
 	routerId := ""
@@ -266,6 +272,19 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 					return ce.Prepend(err, "error crediting deposit balance")
 				}
 			case MapSwap:
+				// SENDER-REFUND-1: the refund target is the proven sending address;
+				// else the instruction's Bitcoin refund_to (a Bitcoin wallet login's
+				// own address, filled in by Altera); else it is held for the deposit
+				// until someone proves the sender. A hive: refund_to is no longer
+				// credited to that account's Magi balance.
+				refundTo := *metadata
+				switch {
+				case sender != "":
+					refundTo.RefundKind, refundTo.RefundAccount, refundTo.RefundBtcAddr = RefundBtc, btcRefundAccount(sender, ms.NetworkParams), sender
+				case refundTo.RefundKind == RefundMagi:
+					refundTo.RefundKind, refundTo.RefundAccount = RefundNone, ""
+				}
+				metadata := &refundTo
 
 				// get router id and check it only if there is a swap in the tx
 				if routerId == "" {
@@ -287,14 +306,22 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 					unusable = "swap instruction missing parameters"
 				case !metadata.Params.Has(constants.SwapAssetOut):
 					unusable = "asset out required to execute a swap"
-				case metadata.RefundKind != RefundMagi && !settlesSynchronously(metadata.Params.Get(constants.DestinationChainKey)):
+				case metadata.RefundKind == RefundBtc && !settlesSynchronously(metadata.Params.Get(constants.DestinationChainKey)) &&
+					!magiNamesBtcAddress(metadata.RefundBtcAddr, ms.NetworkParams):
+					// The router and the EVM bridge name a payout's return by the
+					// sender's Magi identity, and the node only has one for P2PKH,
+					// P2SH and P2WPKH addresses (go-vsc-node lib/dids btc.go). A
+					// Taproot or P2WSH sender's Ethereum payout could never come back
+					// to it, so it is not attempted: the BTC goes back now.
+					unusable = "a payout on " + metadata.Params.Get(constants.DestinationChainKey) + " needs a P2PKH, P2SH or P2WPKH sending address"
+				case metadata.RefundKind != RefundBtc && !settlesSynchronously(metadata.Params.Get(constants.DestinationChainKey)):
 					// A payout on another chain (an EVM withdrawal) can fail after the
-					// swap, and its refund comes back in the output asset to the
-					// return_address. Only a hive: account can use that (free RC); a
-					// Bitcoin-address refund target can only be sent home in BTC, and
-					// with none it would land on this contract. So such a swap needs a
-					// hive: refund_to, or it goes back in BTC now.
-					unusable = "a payout on " + metadata.Params.Get(constants.DestinationChainKey) + " needs a hive: refund_to"
+					// swap; the bridge then swaps it back to BTC and pays it to the
+					// sender on Bitcoin (return_address BTC). Without a known sending
+					// address (a map raced in before proveSender) it is not attempted
+					// and the BTC is held until the sender is proven: a map without the
+					// proof can delay a refund, never redirect one.
+					unusable = "a payout on " + metadata.Params.Get(constants.DestinationChainKey) + " needs the sender's Bitcoin address (proveSender)"
 				}
 				if unusable != "" {
 					// Back to the sender (refund_to), or held: never to swap_to, which
@@ -309,9 +336,13 @@ func (ms *MappingState) processUtxos(relevantUtxos []Utxo, from string, blockHei
 				assetOut := metadata.Params.Get(constants.SwapAssetOut)
 
 				instruction := buildSwapInstruction(metadata.Params, metadata.Recipient, assetOut, utxo.Amount)
-				if metadata.RefundKind == RefundMagi {
-					// The router's settlement refund goes to the sender, not to this contract.
-					instruction.ReturnAddress = &ReturnAddress{Chain: "MAGI", Address: metadata.RefundAccount}
+				if metadata.RefundKind == RefundBtc && !settlesSynchronously(metadata.Params.Get(constants.DestinationChainKey)) {
+					// A payout that comes back after the swap is swapped back to BTC
+					// and paid to the sender on Bitcoin (the router and the EVM bridge).
+					// The sender's Magi identity (did:pkh:bip122:<chain>:<address>): the
+					// router passes it as refund_to, the bridge pays the bare address on
+					// Bitcoin, and only that identity may release a held return.
+					instruction.ReturnAddress = &ReturnAddress{Chain: "BTC", Address: metadata.RefundAccount}
 				}
 				instrJson, err := tinyjson.Marshal(instruction)
 				if err != nil {

@@ -117,11 +117,15 @@ func TestMapCEI_RouterCannotReenterBlobWritingExport(t *testing.T) {
 	// earlier version of this test re-entered topUpFeeReserve with an empty
 	// payload, which failed on input validation either way, so it passed with
 	// the guard gone and proved nothing.
-	depositorBal := decodeBalance(t, ct.StateGet(btcContractId, constants.BalancePrefix+swapRecipient))
+	// SENDER-REFUND-1: the refund is held for the sender (not credited to the
+	// hive: refund_to), so the held amount is what tells the two apart now.
+	depositorBal := decodeBalance(t, ct.StateGet(btcContractId, constants.BalancePrefix+constants.RefundHoldAccount))
 	assert.Equal(t, utxoAmount, depositorBal,
-		"re-entry into a blob-writing export must be refused; the depositor balance of %d "+
+		"re-entry into a blob-writing export must be refused; a held refund of %d "+
 			"means the router's re-entrant drainUnmapQueue SUCCEEDED and the guard did not hold",
 		depositorBal)
+	assert.Zero(t, decodeBalance(t, ct.StateGet(btcContractId, constants.BalancePrefix+swapRecipient)),
+		"a hive: refund_to must not be credited on Magi")
 
 	// The deposit is credited exactly ONCE. This is the double-credit assertion:
 	// one real output, one registry entry, one output's worth of supply.

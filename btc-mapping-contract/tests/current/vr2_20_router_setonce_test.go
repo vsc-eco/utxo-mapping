@@ -142,7 +142,9 @@ func TestVR220_RouterIdIsSetOnceEvenOnTestnetBuilds(t *testing.T) {
 	// The honest mock reports zero output without pulling, so the depositor is
 	// made whole by the BTC-C4 refund. That confirms the deposit went down the
 	// ORIGINAL router's path rather than being lost or double-counted.
-	depositorBal := decodeBalance(t, ct.StateGet(btcContractId, constants.BalancePrefix+swapRecipient))
+	// SENDER-REFUND-1: the refund is held for the sender, not credited to the
+	// hive: refund_to.
+	depositorBal := decodeBalance(t, ct.StateGet(btcContractId, constants.BalancePrefix+constants.RefundHoldAccount))
 	assert.Equal(t, utxoAmount, depositorBal,
-		"deposit must have been routed through the original router and refunded")
+		"deposit must have been routed through the original router and its refund held")
 }

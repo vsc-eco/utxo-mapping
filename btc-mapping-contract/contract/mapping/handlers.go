@@ -81,9 +81,16 @@ func (ms *MappingState) HandleMap(txData *VerificationRequest) error {
 		return ce.Prepend(err, "error updating utxo spends")
 	}
 
-	err = ms.processUtxos(relevantOutputs, senderLabel(msgTx.TxIn, ms.NetworkParams), txData.BlockHeight)
+	sender := ""
+	if v := sdk.StateGetObject(constants.SenderPrefix + txId); v != nil {
+		sender = *v
+	}
+	err = ms.processUtxos(relevantOutputs, senderLabel(msgTx.TxIn, ms.NetworkParams), txData.BlockHeight, sender)
 	if err != nil {
 		return err
+	}
+	if sender != "" {
+		sdk.StateDeleteObject(constants.SenderPrefix + txId)
 	}
 	if len(relevantOutputs) == 0 {
 		sdk.Log(createMapNoneLog(txId, isVaultSpend))
@@ -231,6 +238,18 @@ func (cs *ContractState) handleUnmap(instructions *TransferParams, homeRefund bo
 		return err
 	}
 	finalAmt := plan.finalAmt
+	// SENDER-REFUND-1 (owner 11-21: no funds ever stranded): with deduct_fee the
+	// unused part of the miner-fee estimate stays with the payer (ACCT-1). A
+	// contract payer (the DEX router paying a swap out on Bitcoin) can never
+	// withdraw a few sats left on its own account, so for a contract it is
+	// booked as fee income instead: the whole amount is debited, and the vault's
+	// change, which holds it, stays counted (Fee). A user keeps it, as before.
+	extraFee := int64(0)
+	if instructions.DeductFee && !homeRefund && strings.HasPrefix(from, "contract:") && amount > finalAmt {
+		extraFee = amount - finalAmt
+		finalAmt = amount
+		plan.finalAmt = finalAmt
+	}
 
 	// check whether caller (or delegated from) has enough balance to cover transaction
 	if homeRefund {
@@ -268,6 +287,9 @@ func (cs *ContractState) handleUnmap(instructions *TransferParams, homeRefund bo
 	cs.Supply.UserSupply = newUser
 
 	newFee, err := safeAdd64(cs.Supply.FeeSupply, vscFee)
+	if err == nil {
+		newFee, err = safeAdd64(newFee, extraFee)
+	}
 	if err != nil {
 		return ce.WrapContractError(ce.ErrArithmetic, err, "error incrementing fee supply")
 	}

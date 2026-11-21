@@ -83,8 +83,12 @@ func TestStrand2_UnattemptableSwapIsCreditedAsDeposit(t *testing.T) {
 			dumpLogs(t, r.Logs)
 
 			require.True(t, r.Success, "the map must succeed, not revert: %s %s", r.Err, r.ErrMsg)
-			assert.Equal(t, encodeBalance(t, amount), ct.StateGet(contractId, constants.BalancePrefix+depositor),
-				"the depositor must be credited the full amount")
+			// SENDER-REFUND-1: held in full for its sender, not credited to the
+			// hive: refund_to on Magi.
+			assert.Equal(t, encodeBalance(t, amount), ct.StateGet(contractId, constants.BalancePrefix+constants.RefundHoldAccount),
+				"the depositor's full amount must be held for its refund")
+			assert.Equal(t, "", ct.StateGet(contractId, constants.BalancePrefix+depositor),
+				"a hive: refund_to must not be credited on Magi")
 			assert.Equal(t, "", ct.StateGet(contractId, constants.BalancePrefix+"contract:"+contractId),
 				"the contract must not hold the deposit")
 			supply, err := mapping.UnmarshalSupply([]byte(ct.StateGet(contractId, constants.SupplyKey)))

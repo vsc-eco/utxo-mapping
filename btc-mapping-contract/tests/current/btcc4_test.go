@@ -126,10 +126,13 @@ func TestBTCC4_RouterFailureRefundsDepositor(t *testing.T) {
 	// raw BTC-equivalent L2 tokens.
 	assert.Empty(t, ct.StateGet(btcContractId, constants.BalancePrefix+swapRecipient),
 		"swap_to must not receive the refund")
-	postBalRaw := ct.StateGet(btcContractId, constants.BalancePrefix+sender)
-	postBal := decodeBalance(t, postBalRaw)
+	// SENDER-REFUND-1: a hive: refund_to is no longer credited to that account's
+	// Magi balance; the whole deposit is held until its sender is proven.
+	assert.Zero(t, decodeBalance(t, ct.StateGet(btcContractId, constants.BalancePrefix+sender)),
+		"a hive: refund_to must not be credited on Magi")
+	postBal := decodeBalance(t, ct.StateGet(btcContractId, constants.BalancePrefix+constants.RefundHoldAccount))
 	assert.Equal(t, utxoAmount, postBal,
-		"BTC-C4 fix: depositor must be credited with utxo amount when router fails; got %d, want %d",
+		"BTC-C4 fix: the depositor's whole deposit must be held for its refund when the router fails; got %d, want %d",
 		postBal, utxoAmount)
 
 	// And the contract's self-credit was drained back out (no double-mint).

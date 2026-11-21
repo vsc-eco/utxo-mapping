@@ -481,6 +481,40 @@ func doUnmap(instructions *mapping.TransferParams) {
 // the RC for it; the address's owner does not need any. Input: the Bitcoin address.
 // PAUSE-GATED like unmap.
 //
+// proveSender (SENDER-REFUND-1): anyone proves a deposit's sending address (an
+// SPV proof of the transaction its first input spends). Before the deposit is
+// mapped it is recorded for map; after, the deposit's held refund goes home to
+// that address. PAUSE-GATED like map.
+//
+//go:wasmexport proveSender
+func ProveSender(input *string) *string {
+	checkNoReentry("proveSender")
+	checkNotPaused()
+	if input == nil || *input == "" {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, "proveSender requires a payload"))
+	}
+	var p mapping.ProveSenderParams
+	if err := tinyjson.Unmarshal([]byte(*input), &p); err != nil {
+		ce.CustomAbort(ce.NewContractError(ce.ErrInput, err.Error(), ce.MsgBadInput))
+	}
+	publicKeys, err := loadPublicKeys()
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	contractState, err := mapping.IntializeContractState(publicKeys, NetworkMode)
+	if err != nil {
+		ce.CustomAbort(ce.Prepend(err, "error initializing contract state"))
+	}
+	sender, err := contractState.HandleProveSender(&p)
+	if err != nil {
+		ce.CustomAbort(err)
+	}
+	if err := contractState.SaveToState(); err != nil {
+		ce.CustomAbort(err)
+	}
+	return &sender
+}
+
 //go:wasmexport sendHome
 func SendHome(input *string) *string {
 	checkNoReentry("sendHome")
