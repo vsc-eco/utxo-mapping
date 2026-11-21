@@ -111,15 +111,11 @@ func refundDepositSwap(metadata *AddressMetadata, amount int64, reason, outpoint
 		sdk.Log(refundLog("swaprefund", metadata.RefundAccount, amount, reason, outpoint))
 		return nil
 	case RefundBtc:
-		if err := incAccBalance(metadata.RefundAccount, amount); err != nil {
-			return ce.Prepend(err, "swap refund: crediting refund_to")
+		// SENDER-REFUND-1: held for the address and sent home from the hold, never
+		// credited to the address's own Magi account (owner 11-21).
+		if err := holdForAddress(metadata.RefundBtcAddr, amount); err != nil {
+			return ce.Prepend(err, "swap refund")
 		}
-		key := constants.RefundablePrefix + metadata.RefundBtcAddr
-		total, err := safeAdd64(getRecordAmount(key), amount)
-		if err != nil {
-			return ce.WrapContractError(ce.ErrArithmetic, err, "swap refund: refundable total")
-		}
-		setRecordAmount(key, total)
 		sdk.Log(refundLog("swaprefund", metadata.RefundAccount, amount, reason, outpoint))
 		return nil
 	default:
@@ -142,7 +138,29 @@ func holdDeposit(amount int64, reason, outpoint string) error {
 		return ce.WrapContractError(ce.ErrArithmetic, err, "hold: record total")
 	}
 	setRecordAmount(key, total)
+	// Until the owner releases it, proving the deposit's sender (proveSender)
+	// sends it home to the sending address.
+	setRecordAmount(constants.SenderPendingPrefix+outpoint, total)
 	sdk.Log(refundLog("swaphold", "", amount, reason, outpoint))
+	return nil
+}
+
+// holdForAddress holds amount owed to a Bitcoin address on BtcRefundHoldAccount
+// and adds it to the address's refundable total and its held part.
+func holdForAddress(addr string, amount int64) error {
+	if amount <= 0 {
+		return nil
+	}
+	if err := incAccBalance(constants.BtcRefundHoldAccount, amount); err != nil {
+		return ce.Prepend(err, "crediting the refund hold")
+	}
+	for _, key := range []string{constants.RefundablePrefix + addr, constants.RefundHeldPrefix + addr} {
+		total, err := safeAdd64(getRecordAmount(key), amount)
+		if err != nil {
+			return ce.WrapContractError(ce.ErrArithmetic, err, "refund hold: record total")
+		}
+		setRecordAmount(key, total)
+	}
 	return nil
 }
 
@@ -166,7 +184,18 @@ func (cs *ContractState) HandleSendHome(input string) error {
 	if refundable <= 0 {
 		return ce.NewContractError(ce.ErrInput, "nothing refundable for "+encoded)
 	}
+	// SENDER-REFUND-1: what is held for the address goes first, from the hold
+	// (only up to the address's own held record, so one address can never draw
+	// another's); a refund from before it sits on the address's own account.
+	heldKey := constants.RefundHeldPrefix + encoded
+	held := getRecordAmount(heldKey)
 	holder := btcRefundAccount(encoded, cs.NetworkParams)
+	if held > 0 {
+		holder = constants.BtcRefundHoldAccount
+		if held < refundable {
+			refundable = held
+		}
+	}
 	bal := getAccBal(holder)
 	amount := refundable
 	if bal < amount {
@@ -175,6 +204,27 @@ func (cs *ContractState) HandleSendHome(input string) error {
 	if amount <= 0 {
 		setRecordAmount(key, 0)
 		return ce.NewContractError(ce.ErrInput, "the refunded sats have already left "+holder)
+	}
+	// A held refund that can never be sent (not above the dust limit plus the
+	// Magi fee, whatever the miner fee) is fee (THORChain: a refund below its
+	// outbound fee is not sent): it leaves the hold for the fee supply instead
+	// of sitting there for good. Above that it waits for the miner fee.
+	if held > 0 {
+		vscFee, ferr := calcVscFee(amount)
+		if ferr != nil || amount <= dustThreshold+vscFee {
+			setAccBal(holder, bal-amount)
+			setRecordAmount(heldKey, held-amount)
+			setRecordAmount(key, getRecordAmount(key)-amount)
+			newUser, uerr := safeSubtract64(cs.Supply.UserSupply, amount)
+			newFee, ferr2 := safeAdd64(cs.Supply.FeeSupply, amount)
+			if uerr != nil || ferr2 != nil {
+				return ce.NewContractError(ce.ErrArithmetic, "sendHome: booking a dust refund as fee")
+			}
+			cs.Supply.UserSupply, cs.Supply.FeeSupply = newUser, newFee
+			sdk.Log("sendhome" + constants.LogDelimiter + "dust" + constants.LogDelimiter + "t" + constants.LogKeyDelimiter + encoded +
+				constants.LogDelimiter + "a" + constants.LogKeyDelimiter + strconv.FormatInt(amount, 10))
+			return nil
+		}
 	}
 	instr := &TransferParams{
 		Amount:    strconv.FormatInt(amount, 10),
@@ -189,11 +239,19 @@ func (cs *ContractState) HandleSendHome(input string) error {
 	// (ACCT-1). An over-estimated miner fee stays with the owner; it stays
 	// refundable too, so it goes home with the address's next refund.
 	after := getAccBal(holder)
-	left := refundable - (bal - after)
-	if left > after {
-		left = after
+	debited := bal - after
+	if held > 0 {
+		// The address's records go down by what left the hold; nothing caps them
+		// at the pooled hold's balance (it holds other addresses' refunds too).
+		setRecordAmount(heldKey, held-debited)
+		setRecordAmount(key, getRecordAmount(key)-debited)
+	} else {
+		left := refundable - debited
+		if left > after {
+			left = after
+		}
+		setRecordAmount(key, left)
 	}
-	setRecordAmount(key, left)
 	sdk.Log("sendhome" + constants.LogDelimiter + "t" + constants.LogKeyDelimiter + encoded +
 		constants.LogDelimiter + "a" + constants.LogKeyDelimiter + strconv.FormatInt(amount, 10))
 	return nil
@@ -227,6 +285,7 @@ func HandleReleaseHold(input, caller, owner string) error {
 		return ce.Prepend(err, "releaseHold: crediting the owner")
 	}
 	setRecordAmount(key, 0)
+	setRecordAmount(constants.SenderPendingPrefix+outpoint, 0)
 	sdk.Log(refundLog("holdrelease", to, amount, "owner", outpoint))
 	return nil
 }

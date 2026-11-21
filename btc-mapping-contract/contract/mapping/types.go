@@ -352,6 +352,18 @@ type DexInstruction struct {
 	Metadata         map[string]string `json:"metadata,omitempty"`
 	AmountIn         string            `json:"amount_in"`
 	DestinationChain string            `json:"destination_chain,omitempty"`
+	PayoutGasLimit   uint64            `json:"payout_gas_limit,omitempty"`
+}
+
+// ProveSenderParams proves who sent a deposit (proveSender): the deposit
+// transaction (non-witness serialization is enough: its txid is the key) and an
+// SPV proof of the transaction whose output its first input spends.
+//
+//tinyjson:json
+type ProveSenderParams struct {
+	DepositTxHex string               `json:"deposit_tx_hex,omitempty"`
+	DepositTxB64 string               `json:"deposit_tx_b64,omitempty"`
+	Sender       *VerificationRequest `json:"sender"`
 }
 
 //tinyjson:json

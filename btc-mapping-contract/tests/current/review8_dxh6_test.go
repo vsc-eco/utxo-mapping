@@ -109,9 +109,13 @@ func TestReview8_DXH6_DepositSwapRefund(t *testing.T) {
 
 	// 2. The depositor is credited the full wrapped-BTC amount (refund), so the
 	//    coins are never stranded.
-	got := ct.StateGet(contractId, constants.BalancePrefix+depositor)
+	//    SENDER-REFUND-1: held in full for its sender, not credited to the
+	//    hive: refund_to on Magi.
+	got := ct.StateGet(contractId, constants.BalancePrefix+constants.RefundHoldAccount)
 	assert.Equal(t, encodeBalance(t, amount), got,
-		"depositor must be refunded the full wrapped-BTC amount after the swap reverts")
+		"the depositor's full wrapped-BTC amount must be held for its refund after the swap reverts")
+	assert.Equal(t, "", ct.StateGet(contractId, constants.BalancePrefix+depositor),
+		"a hive: refund_to must not be credited on Magi")
 
 	// 3. The contract's own intermediary balance was handed off (not left holding
 	//    the refunded coins).
@@ -119,7 +123,8 @@ func TestReview8_DXH6_DepositSwapRefund(t *testing.T) {
 	assert.Equal(t, "", self, "contract must not retain the refunded coins")
 
 	// 4. The refund is recorded in the logs, with the amount actually returned.
-	refundLog := fmt.Sprintf("refunded %d unspent sats to depositor", amount)
+	// SENDER-REFUND-1: held for the sender until it is proven.
+	refundLog := fmt.Sprintf("held %d unspent sats for a manual refund", amount)
 	var refundLogged bool
 	for _, out := range r.Logs {
 		for _, l := range out.Logs {
